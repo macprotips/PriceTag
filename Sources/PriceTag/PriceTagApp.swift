@@ -1,4 +1,5 @@
 import AppKit
+import PriceTagKit
 import SwiftUI
 
 @main

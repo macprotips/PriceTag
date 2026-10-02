@@ -12,9 +12,9 @@ final class AppModel: ObservableObject {
     @Published var previewBackground: PreviewBackground = .checker
     @Published var showingBatch = false
 
-    @Published private(set) var price: FormattedPrice?
-    @Published private(set) var preview: CGImage?
-    @Published private(set) var toast: Toast?
+    @Published private(set) var price: FormattedPrice? = nil
+    @Published private(set) var preview: CGImage? = nil
+    @Published private(set) var toast: Toast? = nil
 
     /// Pixel size the preview is rendered at. The look scales with text size,
     /// so this matches the export exactly, just smaller.

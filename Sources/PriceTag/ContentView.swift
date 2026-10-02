@@ -21,7 +21,7 @@ struct ContentView: View {
                 .frame(width: 290)
         }
         .overlay(alignment: .bottom) { ToastView().padding(.bottom, 84) }
-        .sheet(isPresented: $model.showingBatch) { BatchExportView() }
+        .sheet(isPresented: $model.showingBatch) { BatchExportView().environmentObject(model) }
         .onAppear { inputFocused = true }
     }
 
