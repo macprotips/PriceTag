@@ -1,0 +1,20 @@
+name: build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test
+        run: swift test
+      - name: Build app
+        run: UNIVERSAL=1 BUILD_NUMBER=${{ github.run_number }} scripts/build-app.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PriceTag
+          path: build/PriceTag.zip
