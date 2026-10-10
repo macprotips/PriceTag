@@ -25,6 +25,7 @@ cp "$BIN_DIR/UnboundFix" "$APP/Contents/MacOS/UnboundFix"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 plutil -replace CFBundleShortVersionString -string "$VERSION" "$APP/Contents/Info.plist"
 plutil -replace CFBundleVersion -string "$BUILD_NUMBER" "$APP/Contents/Info.plist"
+iconutil -c icns Resources/AppIcon.iconset -o "$APP/Contents/Resources/AppIcon.icns"
 
 echo "==> Signing"
 if [[ -n "${SIGN_IDENTITY:-}" ]]; then

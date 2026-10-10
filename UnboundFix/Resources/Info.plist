@@ -8,6 +8,8 @@
 	<string>Unbound Fix</string>
 	<key>CFBundleExecutable</key>
 	<string>UnboundFix</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.macprotips.UnboundFix</string>
 	<key>CFBundleInfoDictionaryVersion</key>
@@ -20,10 +22,14 @@
 	<string>1.0.0</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.utilities</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>13.0</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>Copyright © 2026 macprotips</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 </dict>

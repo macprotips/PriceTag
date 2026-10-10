@@ -41,6 +41,13 @@ public enum FileState: Equatable, Sendable {
     case unsupported(sha256: String)
 }
 
+/// What `apply` did, for showing the user.
+public struct ApplyReport: Equatable, Sendable {
+    public let backup: URL
+    /// True when a verified backup from an earlier run was reused instead of making a new one.
+    public let reusedBackup: Bool
+}
+
 public enum PatchError: LocalizedError, Equatable {
     case notFound(fileName: String)
     case multipleFound([URL])
@@ -49,7 +56,9 @@ public enum PatchError: LocalizedError, Equatable {
     case notPatched
     case unexpectedBytes
     case patchHashMismatch
+    case readFailed(URL)
     case notWritable(URL)
+    case writeFailed(URL)
     case backupFailed
     case noBackup
     case verifyFailedRestored
@@ -58,10 +67,9 @@ public enum PatchError: LocalizedError, Equatable {
     public var errorDescription: String? {
         switch self {
         case .notFound(let name):
-            return "Couldn't find \(name) in what you dropped. Drop the Need for Speed Unbound game folder, or your CrossOver bottle."
-        case .multipleFound(let urls):
-            let list = urls.map { "• " + $0.path }.joined(separator: "\n")
-            return "Found more than one copy of the game file. Drop the one game folder you want to fix.\n\n\(list)"
+            return "Couldn't find \(name) there. Drop the Need for Speed Unbound game folder, or your CrossOver bottle."
+        case .multipleFound:
+            return "Found more than one copy of the game file, so it's not clear which to fix. Drop just the game folder you play from."
         case .unsupportedVersion:
             return "This game file isn't the version the fix was made for (Steam build 16690907), so nothing was changed. A game update may have replaced it."
         case .alreadyPatched:
@@ -72,22 +80,37 @@ public enum PatchError: LocalizedError, Equatable {
             return "The bytes at the patch location aren't what was expected, so nothing was changed."
         case .patchHashMismatch:
             return "The patched file didn't come out as expected, so nothing was changed."
+        case .readFailed(let url):
+            return "Couldn't read \(url.lastPathComponent). Nothing was changed."
         case .notWritable(let url):
             return "macOS won't let this app change \(url.lastPathComponent). Nothing was changed."
+        case .writeFailed(let url):
+            return "Couldn't save \(url.lastPathComponent). Nothing was changed."
         case .backupFailed:
             return "Couldn't make a verified backup, so nothing was changed."
         case .noBackup:
-            return "No verified backup of the original file was found. You can get the original back with Steam's \"Verify integrity of game files\"."
+            return "No verified backup of the original file was found. You can get the original back in Steam with \"Verify integrity of game files\"."
         case .verifyFailedRestored:
             return "The file didn't check out after saving, so the original was put back. Nothing has changed."
-        case .verifyFailedNotRestored(let backup):
-            return "The file didn't check out after saving and the original couldn't be put back automatically. Your backup is at \(backup.path). Copy it back into the game folder, or use Steam's \"Verify integrity of game files\"."
+        case .verifyFailedNotRestored:
+            return "The file didn't check out after saving and the original couldn't be put back automatically. Copy the backup back into the game folder, or use \"Verify integrity of game files\" in Steam."
+        }
+    }
+
+    /// Extra technical detail worth showing or copying for support.
+    public var detail: String? {
+        switch self {
+        case .multipleFound(let urls): return urls.map(\.path).joined(separator: "\n")
+        case .unsupportedVersion(let hash): return "SHA-256: \(hash)"
+        case .readFailed(let url), .notWritable(let url), .writeFailed(let url): return url.path
+        case .verifyFailedNotRestored(let backup): return "Backup: \(backup.path)"
+        default: return nil
         }
     }
 }
 
 public func sha256Hex(of data: Data) -> String {
-    SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    hex(SHA256.hash(data: data))
 }
 
 public func sha256Hex(ofFileAt url: URL) throws -> String {
@@ -97,7 +120,11 @@ public func sha256Hex(ofFileAt url: URL) throws -> String {
     while let chunk = try handle.read(upToCount: 1 << 20), !chunk.isEmpty {
         hasher.update(data: chunk)
     }
-    return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    return hex(hasher.finalize())
+}
+
+private func hex(_ digest: SHA256.Digest) -> String {
+    digest.map { String(format: "%02x", $0) }.joined()
 }
 
 public struct Patcher: Sendable {
@@ -119,13 +146,14 @@ public struct Patcher: Sendable {
     // MARK: Finding the file
 
     /// Every copy of the target file in `url`, which can be the file itself, the game
-    /// folder, or anything above it such as a CrossOver bottle.
-    public func findTargets(in url: URL) -> [URL] {
-        let root = url.resolvingSymlinksInPath()
+    /// folder, or anything above it such as a CrossOver bottle. Dropping some other file
+    /// searches the folder it's in. Throws `CancellationError` if the task is cancelled.
+    public func findTargets(in url: URL) throws -> [URL] {
+        var root = url.resolvingSymlinksInPath()
         let keys: [URLResourceKey] = [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey]
-        let rootValues = try? root.resourceValues(forKeys: Set(keys))
-        if rootValues?.isDirectory != true {
-            return isTargetName(root) ? [root] : []
+        if (try? root.resourceValues(forKeys: Set(keys)))?.isDirectory != true {
+            if isTargetName(root) { return [root] }
+            root.deleteLastPathComponent()
         }
 
         let backupPath = backupDirectory.resolvingSymlinksInPath().path
@@ -135,13 +163,14 @@ public struct Patcher: Sendable {
 
         var found: [URL] = []
         for case let item as URL in enumerator {
+            try Task.checkCancellation()
             let values = try? item.resourceValues(forKeys: Set(keys))
             // Bottles link back to the whole Mac (dosdevices, Desktop, Documents…). Never follow links.
             if values?.isSymbolicLink == true || item.lastPathComponent == "dosdevices" {
                 enumerator.skipDescendants()
                 continue
             }
-            if values?.isDirectory == true, item.path.hasPrefix(backupPath) {
+            if values?.isDirectory == true, item.path == backupPath || item.path.hasPrefix(backupPath + "/") {
                 enumerator.skipDescendants()
                 continue
             }
@@ -152,14 +181,17 @@ public struct Patcher: Sendable {
         return found
     }
 
-    /// The single copy of the target file in `url`.
+    /// The single copy of the target file in `url`. When there are several, the one
+    /// in a Steam library wins if it's the only one there.
     public func findTarget(in url: URL) throws -> URL {
-        let found = findTargets(in: url)
-        switch found.count {
-        case 0: throw PatchError.notFound(fileName: spec.fileName)
-        case 1: return found[0]
-        default: throw PatchError.multipleFound(found)
+        let found = try findTargets(in: url)
+        if found.count == 1 { return found[0] }
+        if found.isEmpty { throw PatchError.notFound(fileName: spec.fileName) }
+        let inSteam = found.filter { file in
+            file.pathComponents.contains { $0.caseInsensitiveCompare("steamapps") == .orderedSame }
         }
+        if inSteam.count == 1 { return inSteam[0] }
+        throw PatchError.multipleFound(found)
     }
 
     private func isTargetName(_ url: URL) -> Bool {
@@ -169,7 +201,11 @@ public struct Patcher: Sendable {
     // MARK: Checking
 
     public func state(of file: URL) throws -> FileState {
-        state(forHash: try sha256Hex(ofFileAt: file))
+        do {
+            return state(forHash: try sha256Hex(ofFileAt: file))
+        } catch {
+            throw PatchError.readFailed(file)
+        }
     }
 
     private func state(forHash hash: String) -> FileState {
@@ -196,10 +232,15 @@ public struct Patcher: Sendable {
     // MARK: Applying and undoing
 
     /// Backs up the original, applies the patch and checks the result.
-    /// Returns the backup. On any failure the game file is left as it was.
+    /// On any failure the game file is left as it was.
     @discardableResult
-    public func apply(to file: URL) throws -> URL {
-        let original = try Data(contentsOf: file)
+    public func apply(to file: URL) throws -> ApplyReport {
+        let original: Data
+        do {
+            original = try Data(contentsOf: file)
+        } catch {
+            throw PatchError.readFailed(file)
+        }
         switch state(forHash: sha256Hex(of: original)) {
         case .original: break
         case .patched: throw PatchError.alreadyPatched
@@ -217,18 +258,23 @@ public struct Patcher: Sendable {
         guard sha256Hex(of: patched) == spec.patchedSHA256 else { throw PatchError.patchHashMismatch }
 
         try checkWritable(file)
-        let backup = try existingBackup() ?? makeBackup(of: original)
+        let report: ApplyReport
+        if let existing = existingBackup() {
+            report = ApplyReport(backup: existing, reusedBackup: true)
+        } else {
+            report = ApplyReport(backup: try makeBackup(of: original), reusedBackup: false)
+        }
 
         try replaceContents(of: file, with: patched)
         if (try? sha256Hex(ofFileAt: file)) != spec.patchedSHA256 {
             do {
                 try replaceContents(of: file, with: original)
             } catch {
-                throw PatchError.verifyFailedNotRestored(backup: backup)
+                throw PatchError.verifyFailedNotRestored(backup: report.backup)
             }
             throw PatchError.verifyFailedRestored
         }
-        return backup
+        return report
     }
 
     /// Puts the verified backup of the original back. Only works on a patched file,
@@ -239,9 +285,10 @@ public struct Patcher: Sendable {
         case .original: throw PatchError.notPatched
         case .unsupported(let hash): throw PatchError.unsupportedVersion(sha256: hash)
         }
-        guard let backup = existingBackup() else { throw PatchError.noBackup }
-        let original = try Data(contentsOf: backup)
-        guard sha256Hex(of: original) == spec.originalSHA256 else { throw PatchError.noBackup }
+        guard let backup = existingBackup(),
+              let original = try? Data(contentsOf: backup),
+              sha256Hex(of: original) == spec.originalSHA256
+        else { throw PatchError.noBackup }
 
         try checkWritable(file)
         try replaceContents(of: file, with: original)
@@ -253,11 +300,19 @@ public struct Patcher: Sendable {
     private func makeBackup(of original: Data) throws -> URL {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyy-MM-dd HH.mm.ss"
-        let folder = backupDirectory.appendingPathComponent(formatter.string(from: Date()), isDirectory: true)
+        formatter.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
+        let stamp = formatter.string(from: Date())
+        let fm = FileManager.default
+
+        var folder = backupDirectory.appendingPathComponent(stamp, isDirectory: true)
+        var suffix = 2
+        while fm.fileExists(atPath: folder.path) {
+            folder = backupDirectory.appendingPathComponent("\(stamp) \(suffix)", isDirectory: true)
+            suffix += 1
+        }
         let backup = folder.appendingPathComponent(spec.fileName)
         do {
-            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try fm.createDirectory(at: folder, withIntermediateDirectories: true)
             try original.write(to: backup, options: .withoutOverwriting)
         } catch {
             throw PatchError.backupFailed
@@ -283,7 +338,25 @@ public struct Patcher: Sendable {
             _ = try FileManager.default.replaceItemAt(file, withItemAt: temp)
         } catch {
             try? FileManager.default.removeItem(at: temp)
-            throw error
+            throw PatchError.writeFailed(file)
         }
     }
+}
+
+/// Best-effort check for the game's process, which runs under CrossOver/Wine.
+public func isUnboundRunning() -> Bool {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/bin/ps")
+    process.arguments = ["-axo", "command="]
+    let pipe = Pipe()
+    process.standardOutput = pipe
+    process.standardError = FileHandle.nullDevice
+    do {
+        try process.run()
+    } catch {
+        return false
+    }
+    let output = pipe.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
+    return String(decoding: output, as: UTF8.self).lowercased().contains("needforspeedunbound")
 }

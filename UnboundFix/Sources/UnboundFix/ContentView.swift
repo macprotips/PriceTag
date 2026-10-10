@@ -1,38 +1,76 @@
 import SwiftUI
+import UnboundFixKit
 
 struct ContentView: View {
-    @StateObject private var model = FixModel()
+    @ObservedObject var model: FixModel
     @State private var isTargeted = false
 
+    static let size = CGSize(width: 560, height: 470)
+
     var body: some View {
-        VStack(spacing: 18) {
+        VStack(spacing: 0) {
             header
+                .padding(.horizontal, 28)
+                .padding(.top, 30)
+                .padding(.bottom, 20)
+
             content
-                .frame(maxWidth: .infinity, minHeight: 230)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(.horizontal, 28)
+
+            footer
+                .padding(.horizontal, 20)
+                .padding(.vertical, 12)
         }
-        .padding(24)
-        .frame(width: 540)
+        .frame(width: Self.size.width, height: Self.size.height)
+        .background(.background)
         .dropDestination(for: URL.self) { urls, _ in
-            guard let url = urls.first, !isBusy else { return false }
+            guard let url = urls.first(where: \.isFileURL), !model.isBusy else { return false }
             model.load(url)
             return true
-        } isTargeted: { isTargeted = $0 }
+        } isTargeted: { isTargeted = $0 && !model.isBusy }
+        .sheet(isPresented: $model.showingHelp) { HelpView() }
+        .animation(.easeOut(duration: 0.18), value: model.phase)
     }
 
-    private var isBusy: Bool {
-        if case .working = model.phase { return true }
-        return false
-    }
+    // MARK: Header and footer
 
     private var header: some View {
-        VStack(spacing: 4) {
-            Text("Unbound Black Screen Fix")
-                .font(.title2.bold())
-            Text("For Need for Speed Unbound, Steam build 16690907, in CrossOver with D3DMetal")
-                .font(.callout)
-                .foregroundStyle(.secondary)
+        HStack(spacing: 16) {
+            Image(nsImage: NSApp.applicationIconImage)
+                .resizable()
+                .frame(width: 64, height: 64)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Unbound Fix")
+                    .font(.title2.weight(.semibold))
+                Text("Fixes the startup black screen in Need for Speed Unbound on Mac.")
+                    .foregroundStyle(.secondary)
+                Text("Steam build 16690907  ·  CrossOver with D3DMetal")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+            Spacer(minLength: 0)
         }
     }
+
+    private var footer: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "lock.shield")
+                .accessibilityHidden(true)
+            Text("Your original file is always backed up and checked before anything changes.")
+            Spacer(minLength: 8)
+            Button("Backups") { model.showBackupsFolder() }
+                .buttonStyle(.link)
+                .help("Show the backups folder in Finder")
+            HelpLink { model.showingHelp = true }
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .controlSize(.small)
+    }
+
+    // MARK: States
 
     @ViewBuilder
     private var content: some View {
@@ -40,59 +78,114 @@ struct ContentView: View {
         case .waiting:
             dropZone
 
+        case .searching:
+            StatusLayout {
+                ProgressView().controlSize(.large)
+            } title: {
+                "Looking for the game file…"
+            } message: {
+                "This can take a moment for a whole CrossOver bottle."
+            } buttons: {
+                Button("Cancel") { model.cancelSearch() }
+                    .keyboardShortcut(.cancelAction)
+            }
+
         case .working(let message):
-            VStack(spacing: 12) {
-                ProgressView()
-                Text(message)
+            StatusLayout {
+                ProgressView().controlSize(.large)
+            } title: {
+                message
+            } message: {
+                "Don't open the game until this finishes."
+            } buttons: {
+                EmptyView()
             }
 
         case .ready(let file):
-            result(icon: "checkmark.seal.fill", color: .green,
-                   title: "Found the right game file",
-                   message: "It's the exact version this fix was made for. Make sure the game is closed, then apply the fix. A backup is made first.",
-                   file: file) {
+            StatusLayout {
+                StatusIcon(name: "checkmark.seal.fill", color: .accentColor)
+            } title: {
+                "Ready to fix"
+            } message: {
+                "Quit the game if it's open, then click Apply Fix."
+            } details: {
+                Checklist(items: [
+                    .init("Found the game file", detail: abbreviatedPath(file)),
+                    .init("Matches Steam build 16690907, the version this fix is for"),
+                ])
+            } buttons: {
+                Button("Cancel") { model.startOver() }
+                    .keyboardShortcut(.cancelAction)
                 Button("Apply Fix") { model.applyFix(to: file) }
                     .keyboardShortcut(.defaultAction)
             }
 
+        case .fixed(let file, let report):
+            StatusLayout {
+                StatusIcon(name: "checkmark.circle.fill", color: .green)
+            } title: {
+                "Fix applied"
+            } message: {
+                "Launch Unbound through Steam in CrossOver. If a Steam update undoes the fix, just run this again."
+            } details: {
+                Checklist(items: [
+                    .init("Checked the game version"),
+                    .init(report.reusedBackup ? "Original already backed up" : "Backed up the original",
+                          detail: abbreviatedPath(report.backup)),
+                    .init("Changed 7 bytes in \(file.lastPathComponent)"),
+                    .init("Checked the saved file"),
+                ])
+            } buttons: {
+                Button("Show Backup") { model.showInFinder(report.backup) }
+                Button("Done") { model.startOver() }
+                    .keyboardShortcut(.defaultAction)
+            }
+
         case .alreadyFixed(let file, let canUndo):
-            result(icon: "checkmark.circle.fill", color: .green,
-                   title: "The fix is already applied",
-                   message: "Nothing to do. Launch Unbound through Steam in CrossOver.",
-                   file: file) {
+            StatusLayout {
+                StatusIcon(name: "checkmark.circle.fill", color: .green)
+            } title: {
+                "Already fixed"
+            } message: {
+                "This game already has the fix. Launch Unbound through Steam in CrossOver."
+            } details: {
+                Checklist(items: [.init("Fix is applied", detail: abbreviatedPath(file))])
+            } buttons: {
                 if canUndo {
                     Button("Undo Fix") { model.undoFix(on: file) }
                 }
-            }
-
-        case .fixed(let file, let backup):
-            result(icon: "checkmark.circle.fill", color: .green,
-                   title: "Fixed!",
-                   message: "Launch Unbound through Steam in CrossOver. To undo, drop the game folder here again. A Steam update or file verification may remove the fix; just run this again afterwards.",
-                   file: file) {
-                Button("Show Backup") { model.showInFinder(backup) }
+                Button("Done") { model.startOver() }
+                    .keyboardShortcut(.defaultAction)
             }
 
         case .undone(let file):
-            result(icon: "arrow.uturn.backward.circle.fill", color: .blue,
-                   title: "Original file restored",
-                   message: "The game is back to how it was before the fix.",
-                   file: file) { EmptyView() }
+            StatusLayout {
+                StatusIcon(name: "arrow.uturn.backward.circle.fill", color: .accentColor)
+            } title: {
+                "Fix removed"
+            } message: {
+                "The original game file is back, exactly as it was."
+            } details: {
+                Checklist(items: [.init("Original restored and checked", detail: abbreviatedPath(file))])
+            } buttons: {
+                Button("Done") { model.startOver() }
+                    .keyboardShortcut(.defaultAction)
+            }
 
-        case .problem(let message, let detail):
-            VStack(spacing: 12) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.system(size: 36))
-                    .foregroundStyle(.orange)
-                Text(message)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
+        case .problem(let title, let message, let detail):
+            StatusLayout {
+                StatusIcon(name: "exclamationmark.triangle.fill", color: .orange)
+            } title: {
+                title
+            } message: {
+                message
+            } details: {
                 if let detail {
-                    Text(detail)
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                        .multilineTextAlignment(.center)
+                    DetailBox(text: detail)
+                }
+            } buttons: {
+                if detail != nil {
+                    Button("Copy Details") { model.copyToClipboard("\(title)\n\(message)\n\n\(detail ?? "")") }
                 }
                 Button("Start Over") { model.startOver() }
                     .keyboardShortcut(.defaultAction)
@@ -101,52 +194,198 @@ struct ContentView: View {
     }
 
     private var dropZone: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "folder.badge.plus")
-                .font(.system(size: 44))
+        VStack(spacing: 10) {
+            Image(systemName: isTargeted ? "folder.fill.badge.plus" : "folder.badge.plus")
+                .font(.system(size: 44, weight: .light))
                 .foregroundStyle(isTargeted ? Color.accentColor : .secondary)
-            Text("Drop your Need for Speed Unbound folder here")
-                .font(.headline)
-            Text("You can also drop your whole CrossOver bottle. The app finds the right file, checks it, backs it up and fixes it.")
-                .font(.callout)
+                .frame(height: 50)
+                .accessibilityHidden(true)
+            Text("Drop your game folder here")
+                .font(.title3.weight(.semibold))
+            Text("The Need for Speed Unbound folder, or your whole CrossOver bottle.\nThe app finds the right file for you.")
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
             Button("Choose Folder…") { model.chooseFolder() }
+                .controlSize(.large)
+                .padding(.top, 6)
+            if let recent = model.recentFile {
+                Button {
+                    model.load(recent)
+                } label: {
+                    Text("Check again: \(recent.deletingLastPathComponent().lastPathComponent)")
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .buttonStyle(.link)
+                .font(.callout)
+                .help(abbreviatedPath(recent))
+            }
         }
         .padding(24)
-        .frame(maxWidth: .infinity, minHeight: 230)
-        .background(
-            RoundedRectangle(cornerRadius: 14)
-                .strokeBorder(isTargeted ? Color.accentColor : Color.secondary.opacity(0.5),
-                              style: StrokeStyle(lineWidth: 2, dash: [8, 6]))
-                .background(RoundedRectangle(cornerRadius: 14)
-                    .fill(isTargeted ? Color.accentColor.opacity(0.08) : Color.clear))
-        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(isTargeted ? Color.accentColor.opacity(0.08) : Color.primary.opacity(0.03))
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(isTargeted ? Color.accentColor : Color.secondary.opacity(0.35),
+                              style: StrokeStyle(lineWidth: isTargeted ? 2 : 1.5, dash: [7, 5]))
+        }
+        .padding(.bottom, 8)
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Drop your Need for Speed Unbound game folder here")
+    }
+}
+
+// MARK: - Building blocks
+
+/// Icon, title, message, optional details and a row of buttons, laid out the same way in every state.
+private struct StatusLayout<Icon: View, Details: View, Buttons: View>: View {
+    let icon: Icon
+    let title: String
+    let message: String
+    let details: Details
+    let buttons: Buttons
+
+    init(@ViewBuilder icon: () -> Icon, title: () -> String, message: () -> String,
+         @ViewBuilder details: () -> Details, @ViewBuilder buttons: () -> Buttons) {
+        self.icon = icon()
+        self.title = title()
+        self.message = message()
+        self.details = details()
+        self.buttons = buttons()
     }
 
-    private func result<Actions: View>(icon: String, color: Color, title: String, message: String,
-                                       file: URL, @ViewBuilder actions: () -> Actions) -> some View {
-        VStack(spacing: 12) {
-            Image(systemName: icon)
-                .font(.system(size: 40))
-                .foregroundStyle(color)
+    var body: some View {
+        VStack(spacing: 0) {
+            Spacer(minLength: 0)
+            icon
+                .frame(height: 48)
+                .padding(.bottom, 12)
             Text(title)
-                .font(.headline)
+                .font(.title3.weight(.semibold))
+                .multilineTextAlignment(.center)
             Text(message)
+                .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
-            Text(file.path)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-                .truncationMode(.middle)
-                .textSelection(.enabled)
-            HStack {
-                Button("Start Over") { model.startOver() }
-                actions()
+                .frame(maxWidth: 440)
+                .padding(.top, 6)
+            details
+                .padding(.top, 16)
+            Spacer(minLength: 16)
+            HStack(spacing: 10) {
+                buttons
             }
-            .padding(.top, 4)
+            .controlSize(.large)
+            .padding(.bottom, 16)
         }
+    }
+}
+
+extension StatusLayout where Details == EmptyView {
+    init(@ViewBuilder icon: () -> Icon, title: () -> String, message: () -> String,
+         @ViewBuilder buttons: () -> Buttons) {
+        self.init(icon: icon, title: title, message: message, details: { EmptyView() }, buttons: buttons)
+    }
+}
+
+private struct StatusIcon: View {
+    let name: String
+    let color: Color
+
+    var body: some View {
+        Image(systemName: name)
+            .font(.system(size: 42))
+            .symbolRenderingMode(.hierarchical)
+            .foregroundStyle(color)
+            .accessibilityHidden(true)
+    }
+}
+
+private struct Checklist: View {
+    struct Item: Identifiable {
+        let id = UUID()
+        let title: String
+        let detail: String?
+
+        init(_ title: String, detail: String? = nil) {
+            self.title = title
+            self.detail = detail
+        }
+    }
+
+    let items: [Item]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            ForEach(items) { item in
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(item.title)
+                        if let detail = item.detail {
+                            Text(detail)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .textSelection(.enabled)
+                                .help(detail)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .frame(maxWidth: 460)
+        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+}
+
+private struct DetailBox: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.caption.monospaced())
+            .foregroundStyle(.secondary)
+            .lineLimit(4)
+            .truncationMode(.middle)
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(10)
+            .frame(maxWidth: 460)
+            .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+/// The standard round macOS help button.
+private struct HelpLink: NSViewRepresentable {
+    let action: () -> Void
+
+    func makeNSView(context: Context) -> NSButton {
+        let button = NSButton(title: "", target: context.coordinator, action: #selector(Coordinator.click))
+        button.bezelStyle = .helpButton
+        button.controlSize = .small
+        button.toolTip = "Unbound Fix Help"
+        return button
+    }
+
+    func updateNSView(_ nsView: NSButton, context: Context) {
+        context.coordinator.action = action
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(action: action) }
+
+    final class Coordinator: NSObject {
+        var action: () -> Void
+        init(action: @escaping () -> Void) { self.action = action }
+        @objc func click() { action() }
     }
 }

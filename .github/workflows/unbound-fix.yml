@@ -27,3 +27,22 @@ jobs:
         with:
           name: Unbound Fix
           path: UnboundFix/build/UnboundFix.zip
+      # Renders every screen in light and dark mode so the UI can be reviewed without a Mac.
+      - name: Screenshots
+        timeout-minutes: 5
+        run: |
+          mkdir -p build/screenshots
+          UNBOUNDFIX_SNAPSHOT_DIR="$PWD/build/screenshots" "build/Unbound Fix.app/Contents/MacOS/UnboundFix"
+          ls -la build/screenshots
+          # Also print them into the log, so they can be read back without downloading the artifact.
+          cd build/screenshots
+          for f in *.png; do
+            sips -s format jpeg -s formatOptions 75 "$f" --out "/tmp/${f%.png}.jpg" >/dev/null
+            echo "SNAP-BEGIN ${f%.png}"
+            base64 -i "/tmp/${f%.png}.jpg" | fold -w 3000 | sed 's/^/SNAP /'
+            echo "SNAP-END"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Screenshots
+          path: UnboundFix/build/screenshots

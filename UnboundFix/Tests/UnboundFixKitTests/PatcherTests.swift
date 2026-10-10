@@ -73,11 +73,63 @@ final class PatcherTests: XCTestCase {
     }
 
     func testMultipleCopiesIsAnError() throws {
-        try writeDLL(originalData)
-        try writeDLL(originalData, in: root.appendingPathComponent("Bottle/Other Game"))
+        try writeDLL(originalData, in: root.appendingPathComponent("Bottle/Copy A"))
+        try writeDLL(originalData, in: root.appendingPathComponent("Bottle/Copy B"))
         XCTAssertThrowsError(try patcher.findTarget(in: root.appendingPathComponent("Bottle"))) {
             guard case .multipleFound(let urls) = $0 as? PatchError else { return XCTFail("\($0)") }
             XCTAssertEqual(urls.count, 2)
+        }
+    }
+
+    func testSteamCopyWinsOverLooseCopy() throws {
+        let dll = try writeDLL(originalData)
+        try writeDLL(originalData, in: root.appendingPathComponent("Bottle/My manual backup"))
+        let found = try patcher.findTarget(in: root.appendingPathComponent("Bottle"))
+        XCTAssertEqual(found.resolvingSymlinksInPath(), dll.resolvingSymlinksInPath())
+    }
+
+    func testDroppingAnotherFileSearchesItsFolder() throws {
+        let dll = try writeDLL(originalData)
+        let exe = gameFolder.appendingPathComponent("NeedForSpeedUnbound.exe")
+        try Data([0]).write(to: exe)
+        XCTAssertEqual(try patcher.findTarget(in: exe).resolvingSymlinksInPath(), dll.resolvingSymlinksInPath())
+    }
+
+    func testSearchStopsWhenCancelled() async throws {
+        try writeDLL(originalData)
+        let patcher = self.patcher
+        let root = self.root!
+        let task = Task.detached {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try patcher.findTargets(in: root)
+        }
+        do {
+            _ = try await task.value
+            XCTFail("expected cancellation")
+        } catch is CancellationError {}
+    }
+
+    func testFolderNamedLikeBackupsIsStillSearched() throws {
+        try writeDLL(originalData, in: root.appendingPathComponent("Backups2/Need for Speed Unbound"))
+        XCTAssertEqual(try patcher.findTargets(in: root).count, 1)
+    }
+
+    func testBackupsMadeInTheSameSecondDontCollide() throws {
+        let dll = try writeDLL(originalData)
+        try patcher.apply(to: dll)
+        // Corrupt the backup so the next run has to make a new one straight away.
+        let first = try XCTUnwrap(patcher.existingBackup())
+        try Data([1, 2, 3]).write(to: first)
+        try writeDLL(originalData)
+        let report = try patcher.apply(to: dll)
+        XCTAssertFalse(report.reusedBackup)
+        XCTAssertEqual(try Data(contentsOf: report.backup), originalData)
+    }
+
+    func testUnreadableFileGivesFriendlyError() throws {
+        let missing = gameFolder.appendingPathComponent(spec.fileName)
+        XCTAssertThrowsError(try patcher.state(of: missing)) {
+            XCTAssertEqual($0 as? PatchError, .readFailed(missing))
         }
     }
 
@@ -88,19 +140,21 @@ final class PatcherTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: elsewhere) }
         try writeDLL(originalData, in: elsewhere)
         try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("link"), withDestinationURL: elsewhere)
-        XCTAssertEqual(patcher.findTargets(in: root).count, 1)
+        XCTAssertEqual(try patcher.findTargets(in: root).count, 1)
     }
 
     func testApplyThenUndo() throws {
         let dll = try writeDLL(originalData)
         XCTAssertEqual(try patcher.state(of: dll), .original)
 
-        let backup = try patcher.apply(to: dll)
+        let report = try patcher.apply(to: dll)
+        XCTAssertFalse(report.reusedBackup)
+        let backup = report.backup
         XCTAssertEqual(try Data(contentsOf: dll), patchedData)
         XCTAssertEqual(try patcher.state(of: dll), .patched)
         XCTAssertEqual(try Data(contentsOf: backup), originalData)
         XCTAssertNotNil(patcher.existingBackup())
-        XCTAssertEqual(patcher.findTargets(in: gameFolder).count, 1, "no temp files left behind")
+        XCTAssertEqual(try patcher.findTargets(in: gameFolder).count, 1, "no temp files left behind")
 
         try patcher.restore(dll)
         XCTAssertEqual(try Data(contentsOf: dll), originalData)
@@ -121,7 +175,8 @@ final class PatcherTests: XCTestCase {
         let first = try patcher.apply(to: dll)
         try writeDLL(originalData)
         let second = try patcher.apply(to: dll)
-        XCTAssertEqual(first.resolvingSymlinksInPath().path, second.resolvingSymlinksInPath().path)
+        XCTAssertTrue(second.reusedBackup)
+        XCTAssertEqual(first.backup.resolvingSymlinksInPath().path, second.backup.resolvingSymlinksInPath().path)
     }
 
     func testUnsupportedVersionIsNeverTouched() throws {
