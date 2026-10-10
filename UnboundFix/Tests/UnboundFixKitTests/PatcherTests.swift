@@ -199,6 +199,19 @@ final class PatcherTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: dll), originalData)
     }
 
+    func testEveryErrorHasAMessage() {
+        let url = URL(fileURLWithPath: "/tmp/x.dll")
+        let errors: [PatchError] = [
+            .notFound(fileName: "x"), .multipleFound([url]), .unsupportedVersion(sha256: "abc"), .alreadyPatched,
+            .notPatched, .unexpectedBytes, .patchHashMismatch, .readFailed(url), .notWritable(url),
+            .writeFailed(url), .backupFailed, .noBackup, .verifyFailedRestored, .verifyFailedNotRestored(backup: url),
+        ]
+        for error in errors {
+            XCTAssertFalse((error.errorDescription ?? "").isEmpty, "\(error)")
+        }
+        XCTAssertEqual(PatchError.unsupportedVersion(sha256: "abc").title, "Unsupported game version")
+    }
+
     func testUndoOnUnpatchedFileIsRefused() throws {
         let dll = try writeDLL(originalData)
         XCTAssertThrowsError(try patcher.restore(dll)) { XCTAssertEqual($0 as? PatchError, .notPatched) }

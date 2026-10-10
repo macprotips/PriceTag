@@ -5,7 +5,7 @@ struct ContentView: View {
     @ObservedObject var model: FixModel
     @State private var isTargeted = false
 
-    static let size = CGSize(width: 560, height: 470)
+    static let size = CGSize(width: 560, height: 500)
 
     var body: some View {
         VStack(spacing: 0) {

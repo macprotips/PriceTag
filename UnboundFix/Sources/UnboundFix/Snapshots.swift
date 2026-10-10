@@ -23,7 +23,7 @@ enum Snapshots {
             ("6-fixed", .fixed(file: game, report: ApplyReport(backup: backup, reusedBackup: false)), nil),
             ("7-already-fixed", .alreadyFixed(file: game, canUndo: true), nil),
             ("8-undone", .undone(file: game), nil),
-            ("9-unsupported", .problem(title: "Couldn't check the game",
+            ("9-unsupported", .problem(title: PatchError.unsupportedVersion(sha256: hash).title!,
                                        message: PatchError.unsupportedVersion(sha256: hash).localizedDescription,
                                        detail: PatchError.unsupportedVersion(sha256: hash).detail), nil),
             ("10-running", .problem(title: "The fix wasn't applied",

@@ -76,7 +76,7 @@ public enum PatchError: LocalizedError, Equatable {
         case .multipleFound:
             return "Found more than one copy of the game file, so it's not clear which to fix. Drop just the game folder you play from."
         case .unsupportedVersion:
-            return "This game file isn't the version the fix was made for (Steam build 16690907), so nothing was changed. A game update may have replaced it."
+            return "This game file isn't the version the fix was made for (Steam build 16690907), so nothing was changed. A game update may have replaced it, in which case this fix doesn't apply."
         case .alreadyPatched:
             return "The fix is already applied."
         case .notPatched:
@@ -99,6 +99,18 @@ public enum PatchError: LocalizedError, Equatable {
             return "The file didn't check out after saving, so the original was put back. Nothing has changed."
         case .verifyFailedNotRestored:
             return "The file didn't check out after saving and the original couldn't be put back automatically. Copy the backup back into the game folder, or use \"Verify integrity of game files\" in Steam."
+        }
+    }
+
+    /// A short heading for the error, when there's a better one than the generic "it didn't work".
+    public var title: String? {
+        switch self {
+        case .notFound: return "Game file not found"
+        case .multipleFound: return "More than one copy found"
+        case .unsupportedVersion: return "Unsupported game version"
+        case .noBackup: return "No backup to restore"
+        case .notWritable: return "No permission to change the file"
+        default: return nil
         }
     }
 

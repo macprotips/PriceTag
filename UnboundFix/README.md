@@ -12,6 +12,8 @@ Drop your game folder into the window. The app does the rest:
 
 The fix switches off an optional graphics cache involved in the startup crash.
 
+After a fix, the window shows a checklist of exactly what was checked and changed. Errors are in plain English, with a **Copy Details** button for anything technical. **Check again** on the start screen re-checks your last game folder in one click, which is handy after a Steam update.
+
 ## Undo
 
 Drop the game folder in again and click **Undo Fix**. It only restores the backup over a patched file, so it never overwrites a newer DLL from a game update. Steam's **Verify integrity of game files** also puts the original back.
@@ -26,7 +28,7 @@ Requires macOS 13 Ventura or later.
 2. Unzip it (you may need to unzip twice) and drag **Unbound Fix.app** into Applications.
 3. The app isn't notarized, so macOS blocks it the first time. Open it once, click **Done**, then go to **System Settings → Privacy & Security**, scroll down and click **Open Anyway**.
 
-Quit the game before using the app.
+Quit the game before using the app. Help is under the **?** button in the corner of the window.
 
 ## Build it yourself
 
@@ -45,3 +47,6 @@ scripts/build-app.sh       # creates build/Unbound Fix.app
 | `Sources/UnboundFixKit/Patcher.swift` | Finding, checking, backing up, patching and undoing |
 | `Sources/UnboundFix` | The SwiftUI window |
 | `Tests/UnboundFixKitTests` | Tests for every step on a stand-in file |
+| `Tools/make_icon.py` | Draws the app icon into `Resources/AppIcon.iconset` |
+
+CI also renders every screen in light and dark mode (the **Screenshots** artifact) so the UI can be reviewed without a Mac.

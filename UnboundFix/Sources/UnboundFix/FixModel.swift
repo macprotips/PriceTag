@@ -151,8 +151,9 @@ final class FixModel: ObservableObject {
         case .failure(is CancellationError):
             phase = .waiting
         case .failure(let error):
-            phase = .problem(title: failureTitle, message: error.localizedDescription,
-                             detail: (error as? PatchError)?.detail)
+            let patchError = error as? PatchError
+            phase = .problem(title: patchError?.title ?? failureTitle, message: error.localizedDescription,
+                             detail: patchError?.detail)
         }
     }
 
