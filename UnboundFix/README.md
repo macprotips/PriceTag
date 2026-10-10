@@ -2,7 +2,7 @@
 
 A small Mac app that fixes the startup black screen in **Need for Speed Unbound** (Steam build 16690907) when you play it in CrossOver with D3DMetal.
 
-Drop your game folder into the window. The app does the rest:
+Drop the game folder into the window. On Steam it's named **Excalibur**, in `steamapps/common`. The app does the rest:
 
 1. **Finds** `Engine.Render.Core2.PlatformPcDx12.dll`. You can drop the game folder, the DLL itself or your whole CrossOver bottle.
 2. **Checks** the file's SHA-256 against the exact version the fix was made for. If it's any other version, it stops and changes nothing.

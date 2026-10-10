@@ -9,7 +9,7 @@ enum Snapshots {
     static func render(to folder: URL) {
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let game = URL(fileURLWithPath: NSHomeDirectory())
-            .appendingPathComponent("Library/Application Support/CrossOver/Bottles/Steam/drive_c/Program Files (x86)/Steam/steamapps/common/Need for Speed Unbound/Engine.Render.Core2.PlatformPcDx12.dll")
+            .appendingPathComponent("Library/Application Support/CrossOver/Bottles/Steam/drive_c/Program Files (x86)/Steam/steamapps/common/Excalibur/Engine.Render.Core2.PlatformPcDx12.dll")
         let backup = Patcher.defaultBackupDirectory
             .appendingPathComponent("2026-10-10 at 17.00.00/Engine.Render.Core2.PlatformPcDx12.dll")
         let hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"

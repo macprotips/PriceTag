@@ -100,7 +100,7 @@ final class FixModel: ObservableObject {
         panel.canChooseDirectories = true
         panel.canChooseFiles = true
         panel.allowsMultipleSelection = false
-        panel.message = "Choose your Need for Speed Unbound game folder, or your CrossOver bottle."
+        panel.message = "Choose Unbound's game folder, named Excalibur, or your whole CrossOver bottle."
         panel.prompt = "Choose"
         let bottles = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/CrossOver/Bottles")

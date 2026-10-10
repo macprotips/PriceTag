@@ -14,7 +14,7 @@ struct HelpView: View {
                     section("What does it do?",
                             "It fixes the black screen at startup in Need for Speed Unbound when you play it in CrossOver with D3DMetal. It changes 7 bytes in one game file, Engine.Render.Core2.PlatformPcDx12.dll, to switch off an optional graphics cache involved in the crash.")
                     section("Where's my game folder?",
-                            "It's inside your CrossOver bottle, usually ~/Library/Application Support/CrossOver/Bottles/Steam/drive_c/Program Files (x86)/Steam/steamapps/common/Need for Speed Unbound. You don't have to find it exactly: drop the whole bottle and the app finds the file.")
+                            "The game's folder is named Excalibur, not Need for Speed Unbound. It's inside your CrossOver bottle, usually ~/Library/Application Support/CrossOver/Bottles/Steam/drive_c/Program Files (x86)/Steam/steamapps/common/Excalibur. You don't have to find it exactly: drop the whole bottle and the app finds the file.")
                     section("Is it safe?",
                             "It only changes the exact file version the fix was made for (Steam build 16690907) and stops if anything else is different. It backs up the original first, checks the result before and after saving, and puts the original back if anything doesn't match.")
                     section("How do I undo it?",

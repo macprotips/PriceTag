@@ -16,7 +16,7 @@ final class PatcherTests: XCTestCase {
 
     override func setUpWithError() throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        gameFolder = root.appendingPathComponent("Bottle/drive_c/Steam/steamapps/common/Need for Speed Unbound")
+        gameFolder = root.appendingPathComponent("Bottle/drive_c/Steam/steamapps/common/Excalibur")
         backups = root.appendingPathComponent("Backups")
         try FileManager.default.createDirectory(at: gameFolder, withIntermediateDirectories: true)
 

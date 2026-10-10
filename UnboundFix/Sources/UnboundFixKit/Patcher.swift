@@ -72,7 +72,7 @@ public enum PatchError: LocalizedError, Equatable {
     public var errorDescription: String? {
         switch self {
         case .notFound(let name):
-            return "Couldn't find \(name) there. Drop the Need for Speed Unbound game folder, or your CrossOver bottle."
+            return "Couldn't find \(name) there. Drop Unbound's game folder (named Excalibur), or your whole CrossOver bottle."
         case .multipleFound:
             return "Found more than one copy of the game file, so it's not clear which to fix. Drop just the game folder you play from."
         case .unsupportedVersion:

@@ -202,7 +202,7 @@ struct ContentView: View {
                 .accessibilityHidden(true)
             Text("Drop your game folder here")
                 .font(.title3.weight(.semibold))
-            Text("The Need for Speed Unbound folder, or your whole CrossOver bottle.\nThe app finds the right file for you.")
+            Text("Unbound's game folder is named **Excalibur**.\nYou can also drop your whole CrossOver bottle.")
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
@@ -213,7 +213,7 @@ struct ContentView: View {
                 Button {
                     model.load(recent)
                 } label: {
-                    Text("Check again: \(recent.deletingLastPathComponent().lastPathComponent)")
+                    Text("Check again: \(recent.deletingLastPathComponent().lastPathComponent) folder")
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
@@ -234,7 +234,7 @@ struct ContentView: View {
         .padding(.bottom, 8)
         .contentShape(Rectangle())
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Drop your Need for Speed Unbound game folder here")
+        .accessibilityLabel("Drop Unbound's game folder, named Excalibur, here")
     }
 }
 
