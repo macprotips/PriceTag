@@ -46,6 +46,11 @@ public struct ApplyReport: Equatable, Sendable {
     public let backup: URL
     /// True when a verified backup from an earlier run was reused instead of making a new one.
     public let reusedBackup: Bool
+
+    public init(backup: URL, reusedBackup: Bool) {
+        self.backup = backup
+        self.reusedBackup = reusedBackup
+    }
 }
 
 public enum PatchError: LocalizedError, Equatable {
