@@ -1,0 +1,29 @@
+name: unbound-fix
+
+on:
+  push:
+    paths:
+      - "UnboundFix/**"
+      - ".github/workflows/unbound-fix.yml"
+  pull_request:
+    paths:
+      - "UnboundFix/**"
+      - ".github/workflows/unbound-fix.yml"
+  workflow_dispatch:
+
+jobs:
+  macos:
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: UnboundFix
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test
+        run: swift test
+      - name: Build app
+        run: UNIVERSAL=1 BUILD_NUMBER=${{ github.run_number }} scripts/build-app.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Unbound Fix
+          path: UnboundFix/build/UnboundFix.zip
