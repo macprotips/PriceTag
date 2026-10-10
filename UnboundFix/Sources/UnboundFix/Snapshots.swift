@@ -36,7 +36,8 @@ enum Snapshots {
             model.phase = phase
             model.recentFile = recent
             for dark in [false, true] {
-                write(ContentView(model: model), size: ContentView.size, dark: dark,
+                write(ContentView(model: model).overlay(alignment: .topLeading) { WindowButtons() },
+                      size: ContentView.size, dark: dark,
                       to: folder.appendingPathComponent("\(name)-\(dark ? "dark" : "light").png"))
             }
         }
@@ -62,5 +63,20 @@ enum Snapshots {
         hosting.cacheDisplay(in: hosting.bounds, to: rep)
         try? rep.representation(using: .png, properties: [:])?.write(to: url)
         window.orderOut(nil)
+    }
+}
+
+/// Stand-ins for the red, yellow and green window buttons, at their real positions,
+/// so screenshots show the spacing at the top of the window as it really looks.
+private struct WindowButtons: View {
+    var body: some View {
+        HStack(spacing: 8) {
+            Circle().fill(Color(red: 1, green: 0.37, blue: 0.34))
+            Circle().fill(Color(red: 1, green: 0.74, blue: 0.18))
+            Circle().fill(Color(red: 0.16, green: 0.79, blue: 0.25))
+        }
+        .frame(width: 52, height: 12)
+        .padding(.leading, 13)
+        .padding(.top, 9)
     }
 }

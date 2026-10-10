@@ -5,25 +5,26 @@ struct ContentView: View {
     @ObservedObject var model: FixModel
     @State private var isTargeted = false
 
-    static let size = CGSize(width: 560, height: 500)
+    static let size = CGSize(width: 560, height: 470)
+    /// One margin for every edge, so the icon, drop zone and footer all line up.
+    private static let margin: CGFloat = 24
 
     var body: some View {
         VStack(spacing: 0) {
             header
-                .padding(.horizontal, 28)
-                .padding(.top, 30)
-                .padding(.bottom, 20)
+                .padding(.top, 38) // clears the window buttons in the hidden title bar
+                .padding(.bottom, 18)
 
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .padding(.horizontal, 28)
 
             footer
-                .padding(.horizontal, 20)
-                .padding(.vertical, 12)
+                .padding(.vertical, 14)
         }
+        .padding(.horizontal, Self.margin)
         .frame(width: Self.size.width, height: Self.size.height)
         .background(.background)
+        .ignoresSafeArea()
         .dropDestination(for: URL.self) { urls, _ in
             guard let url = urls.first(where: \.isFileURL), !model.isBusy else { return false }
             model.load(url)
@@ -36,19 +37,19 @@ struct ContentView: View {
     // MARK: Header and footer
 
     private var header: some View {
-        HStack(spacing: 16) {
+        HStack(spacing: 12) {
             Image(nsImage: NSApp.applicationIconImage)
                 .resizable()
-                .frame(width: 64, height: 64)
+                .frame(width: 56, height: 56)
+                // App icons have about 10% clear space around the artwork; pull it back so
+                // the artwork itself lines up with the drop zone's edge.
+                .padding(.leading, -5.5)
                 .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text("Unbound Fix")
                     .font(.title2.weight(.semibold))
-                Text("Fixes the startup black screen in Need for Speed Unbound on Mac.")
+                Text("Fixes the startup black screen in Need for Speed Unbound.")
                     .foregroundStyle(.secondary)
-                Text("Steam build 16690907  ·  CrossOver with D3DMetal")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
             }
             Spacer(minLength: 0)
         }
@@ -58,7 +59,7 @@ struct ContentView: View {
         HStack(spacing: 6) {
             Image(systemName: "lock.shield")
                 .accessibilityHidden(true)
-            Text("Your original file is always backed up and checked before anything changes.")
+            Text("The original file is backed up before any change.")
             Spacer(minLength: 8)
             Button("Backups") { model.showBackupsFolder() }
                 .buttonStyle(.link)
