@@ -267,7 +267,7 @@ fi
 
 say ""
 say "What do you want to do?"
-say "  1) Test #21: catch the code that animates characters  <-- do this one"
+say "  1) Test #22: GPU data-format check (1 minute, no game)  <-- do this one"
 say "  2) Test #16: GPU check (done: the shader works on your Mac)"
 say "  3) Save my results to the Desktop (to send for help)"
 say "  4) Remove everything (back to normal)"
@@ -292,13 +292,15 @@ say "  21) Test #17: rewritten skinning shader (done: not needed, shader is fine
 say "  22) Test #18: skinning inputs trace (done: some bone sets are never written)"
 say "  23) Test #19: always animate (done: didn't help)"
 say "  24) Test #20: GPU readback watch (done: readbacks are fine)"
+say "  25) Test #21: catch the code that animates characters (done: only caught memory clears)"
 say "  10) Quit"
 read -r -p "Type a number and press Return: " action
 say ""
 
 # Map the new menu numbers onto the handlers below.
 case "$action" in
-    1) action=t21 ;;
+    1) action=t22 ;;
+    25) action=t21 ;;
     24) action=t20 ;;
     23) action=t19 ;;
     22) action=t18 ;;
@@ -347,6 +349,41 @@ pick_wine() {
 }
 
 case "$action" in
+    t22)
+        TDIR="$HERE/gpu-test"
+        pick_wine
+        say "Using: $CX_WINE"
+        say "Running the GPU data-format check. It takes under a minute and"
+        say "doesn't change anything. Please wait..."
+        say ""
+        rm -f "$TDIR/format-report.txt"
+        for TRY in "winemac.drv=d" ""; do
+            (cd "$TDIR" && WINEDEBUG=-all WINEDLLOVERRIDES="$TRY" "${RUN[@]}" format_test.exe formats \
+                format-report.txt) > "$TDIR/wine-output.txt" 2>&1
+            grep -q "^RESULT" "$TDIR/format-report.txt" 2>/dev/null && break
+            [ -n "$TRY" ] && say "First attempt didn't finish, trying again with the normal Wine setup..."
+        done
+        if grep -q "^RESULT" "$TDIR/format-report.txt" 2>/dev/null; then
+            OUT="$HOME/Desktop/format-report-$(date +%Y%m%d-%H%M).txt"
+            {
+                echo "mac: $(sysctl -n machdep.cpu.brand_string 2>/dev/null) / macOS $(sw_vers -productVersion 2>/dev/null)"
+                echo "bottle: $KIND / $NAME"
+                cat "$TDIR/format-report.txt"
+            } > "$OUT"
+            say ""
+            grep "^RESULT" "$TDIR/format-report.txt"
+            say ""
+            say "Saved: $OUT"
+            say "Send me that file."
+            open -R "$OUT" 2>/dev/null
+        else
+            OUT="$HOME/Desktop/format-report-FAILED-$(date +%Y%m%d-%H%M).txt"
+            { echo "wine: $CX_WINE"; cat "$TDIR/format-report.txt" 2>/dev/null; echo "--- wine output (last 60 lines)"; \
+              tail -n 60 "$TDIR/wine-output.txt" 2>/dev/null; } > "$OUT"
+            say "The test didn't finish. Saved what happened to: $OUT"
+            say "Send me that file."
+        fi
+        ;;
     t16)
         TDIR="$HERE/gpu-test"
         pick_wine

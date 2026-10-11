@@ -22,7 +22,7 @@ for variant in no-crossover crossover; do
         A="$H/Applications/CrossOver.app/Contents/SharedSupport/CrossOver/bin"
         mkdir -p "$A"
         # Fake wine: records its arguments; for the GPU check it writes a report like the real test.
-        printf '#!/bin/bash\nprintf "%%s\\n" "$@" "OVERRIDES=$WINEDLLOVERRIDES" > "%s/wine-args"\ncase "$*" in *skin_gpu_test.exe*) echo "RESULT: fake" > skin-report.txt ;; esac\nexit 0\n' "$H" > "$A/wine"
+        printf '#!/bin/bash\nprintf "%%s\\n" "$@" "OVERRIDES=$WINEDLLOVERRIDES" > "%s/wine-args"\ncase "$*" in *skin_gpu_test.exe*) echo "RESULT: fake" > skin-report.txt ;; *format_test.exe*) echo "RESULT: fake" > format-report.txt ;; esac\nexit 0\n' "$H" > "$A/wine"
         chmod +x "$A/wine"
     fi
     run() { printf '%s\n\n' "$1" | HOME="$H" TERM=dumb SM2FIX_VOLUMES=/nonexistent bash "$CMD" > "$TMP/out" 2>&1; }
@@ -30,7 +30,7 @@ for variant in no-crossover crossover; do
     out() { grep -q "$1" "$TMP/out"; }
 
     echo "== $variant"
-    run 1;  check "1 test#21 writer trap"          eval 'ini trap_writer 1 && ini probe_skin 1 && ini force_anim 0'
+    run 25; check "25 test#21 writer trap"         eval 'ini trap_writer 1 && ini probe_skin 1 && ini force_anim 0'
     run 24; check "24 test#20 readback watch"      eval 'ini probe_skin 1 && ini trap_writer 0 && ini force_anim 0'
     run 23; check "23 test#19 force anim"          eval 'ini force_anim 1 && ini probe_skin 1 && ini skip_skinning 0'
     run 22; check "22 test#18 inputs trace"        eval 'ini probe_skin 1 && ini replace_skinning 0 && ini skip_skinning 0 && ini profile 1'
@@ -60,6 +60,9 @@ for variant in no-crossover crossover; do
         run 2; check "2 test#16 GPU check runs in the bottle" eval 'ls "$H"/Desktop/skin-report-*.txt >/dev/null 2>&1 \
             && grep -qx -- "--bottle" "$H/wine-args" && grep -qx "skin_gpu_test.exe" "$H/wine-args" && grep -q "sm2fix-skinning.dxil$" "$H/wine-args" && grep -qx "OVERRIDES=winemac.drv=d" "$H/wine-args" \
             && grep -q "^Z:.*\\\\Marvel'"'"'s Spider-Man 2\\\\Spider-Man2.exe$" "$H/wine-args"'
+        rm -f "$H"/Desktop/format-report-*.txt
+        run 1; check "1 test#22 format check runs in the bottle" eval 'ls "$H"/Desktop/format-report-*.txt >/dev/null 2>&1 \
+            && grep -qx -- "--bottle" "$H/wine-args" && grep -qx "format_test.exe" "$H/wine-args" && grep -qx "formats" "$H/wine-args" && grep -qx "OVERRIDES=winemac.drv=d" "$H/wine-args"'
     else
         run 19; check "manual override hint without CrossOver" eval 'out "Do it once by hand"'
     fi
