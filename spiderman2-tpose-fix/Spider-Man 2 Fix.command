@@ -18,6 +18,20 @@ say "  Spider-Man 2 T-pose fix (for M1 / M2 / M3 / M4 Macs)"
 line
 say ""
 say "Quit Spider-Man 2 before continuing."
+# A game (or leftover Wine process) still running keeps the log open, and some
+# external-drive filesystems then block deleting it, which looks like a hang.
+game_running() {
+    # The game process itself, not shells/scripts that merely mention its name.
+    ps -axo pid=,args= 2>/dev/null | grep 'Spider-Man2\.exe' \
+        | grep -vE 'grep|bash|/sh |zsh|python|\.command|install-macos' | grep -q .
+}
+while game_running; do
+    say ""
+    say "Spider-Man 2 still seems to be running (maybe in the background)."
+    say "Quit it, or quit CrossOver completely (CrossOver menu > Quit CrossOver),"
+    read -r -p "then press Return to check again (or type s to skip): " ans || break
+    [ "$ans" = s ] && break
+done
 say ""
 say "Looking for Spider-Man 2..."
 
