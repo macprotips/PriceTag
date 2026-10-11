@@ -27,7 +27,7 @@ for mode in hash all max off; do
     if [[ $mode == hash ]] && ! { grep -q "RenderBudgets (SkinningSB about to be created): ModelInstMax=100 ModelSkinInstMax=200 ModelSkinSubsetMax=300 ModelSkinGroupMax=16 " sm2fix.log \
             && grep -q "skin_budget: raising ModelSkinGroupMax 16 -> 65536" sm2fix.log \
             && grep -q "SkinningSB created: ok=1 capacity=65536 entries, stride=32 (ModelSkinGroupMax was 16)" sm2fix.log \
-            && grep -q "exit: skin dispatch calls=4 with-work=4 over-capacity=0 capacity=65536" sm2fix.log; }; then
+            && grep -q "exit: skin dispatch calls=5 with-work=5 over-capacity=0 capacity=65536" sm2fix.log; }; then
         echo "FAIL: skin budget ($mode)"; grep -i "skin" sm2fix.log; status=1
     fi
     if [[ $mode == all || $mode == max ]] && ! { grep -q "SkinningSB created: ok=1 capacity=16 entries" sm2fix.log \
@@ -57,6 +57,11 @@ for mode in hash all max off; do
     fi
     if [[ $mode != off ]] && ! grep -q "readbacks: \[0\] 4096 bytes, 1 copies (buffer) from src .* (1048576, heap 2): 0.8% non-zero" sm2fix.log; then
         echo "FAIL: readback monitor ($mode)"; grep -i "readback" sm2fix.log; status=1
+    fi
+    if [[ $mode != off ]] && ! { grep -q "trap_writer: armed on animated palette 4 (4 bones)" sm2fix.log \
+            && grep -q "trap_writer: IDENTITY palette 0 (4 bones)" sm2fix.log \
+            && grep -q "trap_writer: a bone-matrix WRITE at game RVA 0x[0-9a-f]* <- 0x[0-9a-f]*" sm2fix.log; }; then
+        echo "FAIL: trap_writer ($mode)"; grep -i "trap" sm2fix.log; status=1
     fi
     if [[ $mode == off ]] && awk '/new launch/{buf=""} {buf=buf $0 "\n"} END{printf "%s", buf}' sm2fix.log | grep -q "SkinningSB\|skin dispatch"; then
         echo "FAIL: skin hooks active in off mode"; status=1

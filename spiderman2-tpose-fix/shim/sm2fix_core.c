@@ -184,6 +184,7 @@ void sm2_config_defaults(struct sm2_config *cfg)
     cfg->skinning_hash = SM2_DEFAULT_SKINNING_HASH;
     cfg->snapshot_ms = 10000;
     cfg->force_anim_delay_ms = 20000;
+    cfg->manager_rva = 0xbf60300;
     cfg->anim_vtbl_rva[0] = 0x5307598;
     cfg->anim_vtbl_rva[1] = 0x84f7370;
     cfg->anim_vtbl_rva[2] = 0x84f72f8;
@@ -300,6 +301,16 @@ int sm2_config_set(struct sm2_config *cfg, const char *key, const char *value)
     if (key_equals(key, "probe_dispatch_rva"))
     {
         cfg->probe_dispatch_rva = (uint32_t)strtoul(value, NULL, 16);
+        return 0;
+    }
+    if (key_equals(key, "trap_writer"))
+    {
+        cfg->trap_writer = atoi(value) != 0;
+        return 0;
+    }
+    if (key_equals(key, "manager_rva"))
+    {
+        cfg->manager_rva = (uint32_t)strtoul(value, NULL, 16);
         return 0;
     }
     if (key_equals(key, "force_anim_delay_ms"))

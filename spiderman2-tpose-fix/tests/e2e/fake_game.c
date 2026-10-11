@@ -80,6 +80,14 @@ static struct fake_td fake_tds[3] = {
 static struct fake_col fake_cols[3];
 static void *fake_vtables[3][4];    /* [0] = COL pointer, the "vtable" starts at [1] */
 
+/* Fake skinning manager for trap_writer: +0x58 palette copy list, +0x60 count. */
+static uint8_t fake_mgr[0x100];
+static uint8_t *fake_src_page;
+static void __attribute__((noinline)) write_bones(volatile float *dst)
+{
+    dst[0] = 0.5f;          /* the "animation code" writing a bone matrix */
+}
+
 struct sub_ptr { UINT type; UINT pad; void *p; };
 struct sub_bytecode { UINT type; UINT pad; const void *code; UINT64 size; };
 
@@ -143,6 +151,9 @@ int main(int argc, char **argv)
         SetEnvironmentVariableA("SM2FIX_ANIM_VTBL_RVAS", rvas);
         SetEnvironmentVariableA("SM2FIX_FORCE_ANIM", !strcmp(mode, "off") ? "0" : "1");
         SetEnvironmentVariableA("SM2FIX_FORCE_ANIM_DELAY_MS", "0");
+        snprintf(rvas, sizeof(rvas), "%x", (unsigned)(fake_mgr - base));
+        SetEnvironmentVariableA("SM2FIX_MANAGER_RVA", rvas);
+        SetEnvironmentVariableA("SM2FIX_TRAP_WRITER", !strcmp(mode, "off") ? "0" : "1");
     }
     SetEnvironmentVariableA("SM2FIX_TRACE_QUERIES", "1");
     /* all/max runs: mock behaves like D3DMetal (60 Hz, zero timestamps) and the shim fakes */
@@ -345,6 +356,25 @@ int main(int argc, char **argv)
         g_cb_list = list;
         fake_dispatch_cb = bind_table_cb;
         skin_dispatch_test();
+        /* trap_writer: copy list with an identity (palette 0) and an animated (palette 4) entry */
+        {
+            uint32_t *list_entries;
+            volatile float *dst;
+
+            fake_src_page = VirtualAlloc(NULL, 8192, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+            list_entries = (uint32_t *)(fake_src_page + 4096);
+            list_entries[0] = 0;  list_entries[1] = 4 * 64;  *(void **)&list_entries[2] = fake_src_page + 512;
+            list_entries[4] = 4 * 64;  list_entries[5] = 4 * 64;  *(void **)&list_entries[6] = fake_src_page + 1024;
+            *(float *)(fake_src_page + 512) = 1.0f;
+            *(void **)(fake_mgr + 0x58) = list_entries;
+            *(int32_t *)(fake_mgr + 0x60) = 2;
+            skin_dispatch_test();           /* snapshot: arms the trap on palette 4's source */
+            dst = (volatile float *)(fake_src_page + 1024);
+            printf("trap: read elsewhere on the page -> %g\n", *(volatile float *)(fake_src_page + 8));
+            write_bones(dst + 4);
+            printf("trap: wrote %g\n", dst[4]);
+            CHECK(dst[4] == 0.5f);
+        }
         fake_dispatch_cb = NULL;
     }
 

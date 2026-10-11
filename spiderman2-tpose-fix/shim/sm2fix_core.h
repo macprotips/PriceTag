@@ -67,6 +67,8 @@ struct sm2_config
     uint32_t probe_sb_rva;      /* stub that creates the SkinningSB buffer (sized by ModelSkinGroupMax) */
     uint32_t probe_dispatch_rva;/* function that fills SkinningSB and dispatches CS_ModelSkinning */
     uint64_t skinning_hash;     /* CS_ModelSkinning's hash (overridable for tests) */
+    int trap_writer;            /* catch the code that writes a character's bone matrices (guard page) */
+    uint32_t manager_rva;       /* the skinning manager object (default for the analysed build) */
     int force_anim;             /* override animation culling/freezing in the game's anim config objects */
     unsigned int force_anim_delay_ms; /* wait before the first scan */
     uint32_t anim_vtbl_rva[3];  /* AnimUpdateLOD / AnimControllerComponent / SimpleAnimComponent Prius vtables */

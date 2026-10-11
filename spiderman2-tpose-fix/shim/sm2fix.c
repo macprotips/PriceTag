@@ -116,6 +116,8 @@ static void load_config(void)
         {"SM2FIX_SKINNING_HASH", "skinning_hash"},
         {"SM2FIX_SNAPSHOT_MS", "snapshot_ms"},
         {"SM2FIX_FORCE_ANIM", "force_anim"},
+        {"SM2FIX_TRAP_WRITER", "trap_writer"},
+        {"SM2FIX_MANAGER_RVA", "manager_rva"},
         {"SM2FIX_FORCE_ANIM_DELAY_MS", "force_anim_delay_ms"},
         {"SM2FIX_ANIM_VTBL_RVAS", "anim_vtbl_rvas"},
     };
@@ -706,6 +708,8 @@ static void STDMETHODCALLTYPE hk_list_SetComputeRootSignature(ID3D12GraphicsComm
 static void log_table_views(UINT index, D3D12_GPU_DESCRIPTOR_HANDLE base);
 static void *volatile g_bone_res;           /* bone palette buffer (t0) seen in a skin window */
 static UINT64 g_bone_width, g_bone_first;
+static PVOID g_trap_handler;
+static void arm_writer_trap(void);
 
 static void STDMETHODCALLTYPE hk_list_SetComputeRootDescriptorTable(ID3D12GraphicsCommandList *list, UINT index,
         D3D12_GPU_DESCRIPTOR_HANDLE base)
@@ -2402,7 +2406,7 @@ HRESULT WINAPI sm2_D3D12GetInterface(REFCLSID clsid, REFIID riid, void **out)
  *   - the request count at manager+0x30 is non-zero.
  * This probe redirects the launcher's first 15 bytes (three register saves) to log
  * those values, then runs the original code. It only patches if the bytes match. */
-#define SKIN_MANAGER_RVA  0xbf60300
+#define SKIN_MANAGER_RVA  (g_cfg.manager_rva)
 static const uint8_t skin_launcher_bytes[15] = {
     0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18,
 };
@@ -2881,6 +2885,8 @@ static void hk_skin_dispatch(void *a1, void *a2, void *a3, void *a4)
             log_msg("skin window: snapshot (entries queued=%d)", (int)n);
             g_view_window_log = TRUE;
             log_readbacks();
+            if (g_trap_handler)
+                arm_writer_trap();
         }
     }
     if (InterlockedExchange(&recheck_pending, 0))
@@ -2954,6 +2960,169 @@ static void install_skin_budget(void)
     }
     if (readable(g_sb.count, 4) && (g_dispatch_trampoline = patch_prologue(d, 13, hk_skin_dispatch)))
         log_msg("skin_budget: hooked skin dispatch at %p (queued count at %p)", (void *)d, (void *)g_sb.count);
+}
+
+/* ------------------------------------------------------------ writer trap */
+
+/* The skinning manager keeps a per-frame list of palette copies (manager +0x58, count
+ * +0x60), 16 bytes each: { u32 palette byte offset, u32 byte size, CPU source pointer }.
+ * For broken meshes the CPU source matrices are never computed. To find the code that
+ * computes them for working characters, guard the page holding one animated source and
+ * log the first write into it: instruction address and call chain (as game RVAs). Faults
+ * from other accesses to that page are stepped over (trap flag) and the guard re-armed. */
+static volatile LONG g_trap_armed, g_trap_hits, g_trap_misses;
+static uint8_t *volatile g_trap_lo, *volatile g_trap_hi;
+static uint8_t *volatile g_trap_page;
+static volatile DWORD g_trap_rearm_tid;
+
+static unsigned long long game_rva(DWORD64 va)
+{
+    IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS *)(g_game_base + ((IMAGE_DOS_HEADER *)g_game_base)->e_lfanew);
+
+    return va >= (DWORD64)g_game_base && va < (DWORD64)g_game_base + nt->OptionalHeader.SizeOfImage
+            ? (unsigned long long)(va - (DWORD64)g_game_base) : 0ull;
+}
+
+static void log_call_chain(const CONTEXT *start, const char *what)
+{
+    CONTEXT ctx = *start;
+    char line[512];
+    size_t len = 0;
+    int depth;
+
+    len += snprintf(line + len, sizeof(line) - len, "%#llx", game_rva(ctx.Rip));
+    for (depth = 0; depth < 10; depth++)
+    {
+        DWORD64 image = 0, frame = 0;
+        PRUNTIME_FUNCTION fn = RtlLookupFunctionEntry(ctx.Rip, &image, NULL);
+        void *handler_data = NULL;
+
+        if (!fn)
+        {
+            /* leaf function: return address is at [rsp] */
+            if (!readable((void *)ctx.Rsp, 8))
+                break;
+            ctx.Rip = *(DWORD64 *)ctx.Rsp;
+            ctx.Rsp += 8;
+        }
+        else
+            RtlVirtualUnwind(UNW_FLAG_NHANDLER, image, ctx.Rip, fn, &ctx, &handler_data, &frame, NULL);
+        if (!ctx.Rip)
+            break;
+        len += snprintf(line + len, sizeof(line) - len, " <- %#llx", game_rva(ctx.Rip));
+        if (len > sizeof(line) - 32)
+            break;
+    }
+    log_msg("trap_writer: %s at game RVA %s (0 = outside the game exe)", what, line);
+}
+
+static LONG CALLBACK trap_handler(EXCEPTION_POINTERS *ep)
+{
+    EXCEPTION_RECORD *er = ep->ExceptionRecord;
+    DWORD old;
+
+    if (er->ExceptionCode == STATUS_SINGLE_STEP && g_trap_rearm_tid == GetCurrentThreadId())
+    {
+        /* the access we let through has completed: guard the page again */
+        g_trap_rearm_tid = 0;
+        ep->ContextRecord->EFlags &= ~0x100u;
+        if (g_trap_armed && g_trap_page)
+            VirtualProtect(g_trap_page, 4096, PAGE_READWRITE | PAGE_GUARD, &old);
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (er->ExceptionCode != STATUS_GUARD_PAGE_VIOLATION || !g_trap_armed || er->NumberParameters < 2)
+        return EXCEPTION_CONTINUE_SEARCH;
+    {
+        uint8_t *addr = (uint8_t *)er->ExceptionInformation[1];
+
+        if ((uint8_t *)((ULONG_PTR)addr & ~(ULONG_PTR)4095) != g_trap_page)
+            return EXCEPTION_CONTINUE_SEARCH;
+        /* the guard is cleared by the fault itself */
+        if (g_trap_misses < 3)
+            log_msg("trap_writer: guard fault kind=%llu addr=%p rip=%#llx", (unsigned long long)er->ExceptionInformation[0],
+                    (void *)addr, game_rva(ep->ContextRecord->Rip));
+        if (er->ExceptionInformation[0] == 1 && addr >= g_trap_lo && addr < g_trap_hi)
+        {
+            g_trap_armed = 0;
+            InterlockedIncrement(&g_trap_hits);
+            log_call_chain(ep->ContextRecord, "a bone-matrix WRITE");
+            return EXCEPTION_CONTINUE_EXECUTION;
+        }
+        if (InterlockedIncrement(&g_trap_misses) > 5000)
+        {
+            g_trap_armed = 0;   /* too busy a page: give up on it */
+            return EXCEPTION_CONTINUE_EXECUTION;
+        }
+        /* someone else touched the page: let this instruction run, then re-arm */
+        g_trap_rearm_tid = GetCurrentThreadId();
+        ep->ContextRecord->EFlags |= 0x100u;
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+}
+
+/* Called at a palette snapshot: look at this frame's copy list, log one animated and one
+ * identity entry's source, and guard the animated one's source page. */
+static void arm_writer_trap(void)
+{
+    const uint8_t *mgr = g_game_base + SKIN_MANAGER_RVA;
+    ID3D12Resource *res = g_bone_res;
+    D3D12_RANGE none = {0, 0};
+    const uint8_t *bones = NULL, *list;
+    int32_t n, i, shown_id = 0;
+    DWORD old;
+
+    if (!res || !readable(mgr, 0x68) || g_trap_hits >= 3 || g_trap_armed)
+        return;
+    list = *(const uint8_t *const *)(mgr + 0x58);
+    n = *(const int32_t *)(mgr + 0x60);
+    if (!list || n <= 0 || !readable(list, (size_t)n * 16))
+        return;
+    if (FAILED(res->lpVtbl->Map(res, 0, &none, (void **)&bones)) || !bones)
+        return;
+    bones += g_bone_first * 64;
+    for (i = 0; i < n; i++)
+    {
+        uint32_t dst = *(const uint32_t *)(list + (size_t)i * 16), size = *(const uint32_t *)(list + (size_t)i * 16 + 4);
+        uint8_t *src = *(uint8_t *const *)(list + (size_t)i * 16 + 8);
+        int ident;
+
+        if (!src || size < 64 || dst + 64 > g_bone_width || !readable(src, 64))
+            continue;
+        ident = bone_is_identity((const float *)(bones + dst));
+        if (ident && shown_id < 2)
+        {
+            const float *m = (const float *)src;
+
+            shown_id++;
+            log_msg("trap_writer: IDENTITY palette %u (%u bones): CPU source %p starts %.3f %.3f %.3f %.3f | %.3f %.3f %.3f %.3f",
+                    dst / 64, size / 64, (void *)src, m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7]);
+        }
+        if (!ident && !g_trap_armed)
+        {
+            uint8_t *page = (uint8_t *)((ULONG_PTR)src & ~(ULONG_PTR)4095);
+
+            g_trap_lo = src;
+            g_trap_hi = src + (size < 4096 ? size : 4096);
+            g_trap_page = page;
+            g_trap_misses = 0;
+            g_trap_armed = 1;
+            if (!VirtualProtect(page, 4096, PAGE_READWRITE | PAGE_GUARD, &old))
+            {
+                g_trap_armed = 0;
+                log_msg("trap_writer: could not guard %p (error %lu)", (void *)page, GetLastError());
+            }
+            else
+                log_msg("trap_writer: armed on animated palette %u (%u bones), CPU source %p", dst / 64, size / 64,
+                        (void *)src);
+        }
+    }
+    res->lpVtbl->Unmap(res, 0, &none);
+}
+
+static void install_writer_trap(void)
+{
+    if ((g_trap_handler = AddVectoredExceptionHandler(1, trap_handler)))
+        log_msg("trap_writer: exception handler installed (manager at %p)", (void *)(g_game_base + SKIN_MANAGER_RVA));
 }
 
 /* ------------------------------------------------------------ force_anim */
@@ -3174,6 +3343,8 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, void *reserved)
             install_skin_budget();
         if (g_cfg.force_anim)
             install_force_anim();
+        if (g_cfg.trap_writer)
+            install_writer_trap();
     }
     else if (reason == DLL_PROCESS_DETACH && g_log)
     {

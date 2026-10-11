@@ -178,6 +178,10 @@ current_mode() {
 }
 
 mode_label() {
+    if grep -q '^trap_writer = 1' "$GAME_DIR/sm2fix.ini" 2>/dev/null; then
+        echo "Test #21 animation code trap"
+        return
+    fi
     if grep -q '^force_anim = 1' "$GAME_DIR/sm2fix.ini" 2>/dev/null; then
         echo "Test #19 always animate (possible FIX)"
         return
@@ -263,7 +267,7 @@ fi
 
 say ""
 say "What do you want to do?"
-say "  1) Test #20: watch what the game reads back from the GPU  <-- do this one"
+say "  1) Test #21: catch the code that animates characters  <-- do this one"
 say "  2) Test #16: GPU check (done: the shader works on your Mac)"
 say "  3) Save my results to the Desktop (to send for help)"
 say "  4) Remove everything (back to normal)"
@@ -287,13 +291,15 @@ say "  20) Test #9: Rosetta instruction check (done: Rosetta is fine)"
 say "  21) Test #17: rewritten skinning shader (done: not needed, shader is fine)"
 say "  22) Test #18: skinning inputs trace (done: some bone sets are never written)"
 say "  23) Test #19: always animate (done: didn't help)"
+say "  24) Test #20: GPU readback watch (done: readbacks are fine)"
 say "  10) Quit"
 read -r -p "Type a number and press Return: " action
 say ""
 
 # Map the new menu numbers onto the handlers below.
 case "$action" in
-    1) action=t20 ;;
+    1) action=t21 ;;
+    24) action=t20 ;;
     23) action=t19 ;;
     22) action=t18 ;;
     19) action=t15 ;;
@@ -392,6 +398,20 @@ case "$action" in
         say "  1. Start the game, load your save, look at Spider-Man and people nearby."
         say "  2. Quit from the in-game menu."
         say "  3. Run this again, pick 3, and send me the log (fixed or not)."
+        line
+        ;;
+    t21)
+        ds_on
+        rm -rf "$GAME_DIR/sm2fix-dumps"
+        bash "$INSTALLER" "${ARGS[@]}" --mode off --profile --probe-skin --trap-writer || pause_exit 1
+        say ""
+        line
+        say "Test #21 installed. It sets a one-time tripwire on a character's bone data"
+        say "and logs exactly which part of the game writes it, so I can find why that"
+        say "code skips the T-posed pieces. The game may stutter for a moment; if it"
+        say "crashes, just tell me."
+        say "  1. Start the game, load your save, play ~2 minutes near people."
+        say "  2. Quit from the in-game menu, run this again, pick 3, send the log."
         line
         ;;
     t20)
