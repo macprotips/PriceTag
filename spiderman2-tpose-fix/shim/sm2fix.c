@@ -2774,6 +2774,15 @@ static void capture_add_view(struct cap_pending *c, uint32_t p, uint32_t slot, u
                     v->res_id = (uint64_t)(UINT_PTR)res;
                     cap_add_buffer(c, v, r->va - res_va, r->num, total);
                 }
+                else
+                {
+                    /* constant buffers often live in buffers no SRV/UAV points at: the copy
+                     * shader reads by GPU address, so the view's own range is enough */
+                    v->res_va = r->va;
+                    v->res_width = r->num;
+                    v->res_id = r->va;
+                    cap_add_buffer(c, v, 0, r->num, total);
+                }
             }
             else if ((r->kind == 1 || r->kind == 2) && r->dim == 1 && r->res)
             {

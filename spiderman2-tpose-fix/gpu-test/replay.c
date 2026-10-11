@@ -269,7 +269,11 @@ static uint64_t compare_uav(const struct view *v, const uint8_t *ref, const char
 {
     uint64_t words = v->byte_len / 4, i, exact = 0, bad = 0, nan_mac = 0, nan_ref = 0, zero_mac = 0, zero_ref = 0,
             changed_mac = 0, changed_ref = 0, shown = 0;
-    int floats = is_float_format(v->format) || v->stride || (v->flags & 1) || v->kind == 2;
+    /* typed float views: compare with a tolerance; other typed views: exactly; raw and
+     * structured data: with a tolerance only where both words look like normal floats
+     * (small integers would otherwise pass as tiny denormals) */
+    int typed_float = is_float_format(v->format) && v->format != 34 && v->format != 54 && v->format != 10;
+    int typed_other = v->format && !typed_float;
     double max_abs = 0;
 
     for (i = 0; i < words; i++)
@@ -291,7 +295,8 @@ static uint64_t compare_uav(const struct view *v, const uint8_t *ref, const char
         if (m == r)
             continue;
         exact++;
-        if (floats && fm == fm && fr == fr)
+        if (!typed_other && fm == fm && fr == fr && (typed_float || (((m >> 23) & 0xff) && ((m >> 23) & 0xff) != 0xff
+                && ((r >> 23) & 0xff) && ((r >> 23) & 0xff) != 0xff)))
         {
             double d = fabs((double)fm - (double)fr), tol = 1e-4 * fmax(1.0, fmax(fabs(fm), fabs(fr)));
 
@@ -366,7 +371,7 @@ static int replay(const uint8_t *exe, size_t exe_size, const char *path)
     }
     out("  shader %016llx Dispatch(%u, %u, %u), %u views\n", (unsigned long long)c.hash, c.x, c.y, c.z, c.nviews);
     for (i = 0, j = 0; i < c.nviews; i++)
-        j += c.v[i].res_id && !c.v[i].byte_len && c.v[i].kind;
+        j += (c.v[i].res_id || c.v[i].kind == 3) && !c.v[i].byte_len && c.v[i].kind;
     if (j)
         out("  note: %u views (too big, or textures) weren't captured; the replay reads them as empty\n", j);
     missing = (int)j;
@@ -389,9 +394,12 @@ static int replay(const uint8_t *exe, size_t exe_size, const char *path)
         for (k = 0, j = 0; k < nb; k++)
             j += b[k].type == 1 && !sm2_rootsig_locate(&rs, 3, b[k].space, b[k].lo, &sp, &ss);
     }
+    for (i = 0; i < c.nviews; i++)
+        if (c.v[i].kind == 3 && !c.v[i].byte_len)
+            j++;
     if (j)
     {
-        out("  skipped: the shader samples through a sampler table, which the replay doesn't rebuild\n");
+        out("  skipped: a constant buffer or sampler table the shader uses wasn't captured\n");
         if (nsummary < 4096)
         {
             summary[nsummary].hash = c.hash;

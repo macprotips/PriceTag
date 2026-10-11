@@ -756,13 +756,13 @@ case "$action" in
             } > "$OUT"
             say "Saved: $OUT"
             if [ -d "$GAME_DIR/sm2fix-capture" ] && [ -n "$(ls "$GAME_DIR/sm2fix-capture" 2>/dev/null)" ]; then
-                # Uploads have a size limit: pack the recordings into ~20 MB zips.
+                # Uploads have a size limit: pack the recordings into zips of ~150 MB raw (they compress ~8x).
                 ZDIR="$HOME/Desktop/sm2fix-capture-$STAMP"
                 mkdir -p "$ZDIR"
                 PART=1 SIZE=0 BATCH=()
                 for F in "$GAME_DIR"/sm2fix-capture/*; do
                     FS=$(wc -c < "$F" | tr -d " ")
-                    if [ ${#BATCH[@]} -gt 0 ] && [ $((SIZE + FS)) -gt 20000000 ]; then
+                    if [ ${#BATCH[@]} -gt 0 ] && [ $((SIZE + FS)) -gt 150000000 ]; then
                         (cd "$GAME_DIR/sm2fix-capture" && zip -q "$ZDIR/part$PART.zip" "${BATCH[@]}")
                         PART=$((PART + 1)) SIZE=0 BATCH=()
                     fi

@@ -17,6 +17,27 @@
 #include "../shim/sm2fix_core.h"
 
 #define TENSOR_HASH 0xbd8cf9af848f2800ull
+#define CLAMP_HASH 0x994bd96b532c890aull   /* tiny game shader: reads a constant buffer, clamps a counter */
+
+static const uint8_t *find_shader(const uint8_t *exe, size_t n, uint64_t hash, size_t *size)
+{
+    size_t i;
+
+    for (i = 0; i + 32 < n; i++)
+    {
+        uint32_t len;
+
+        if (exe[i] != 'D' || memcmp(exe + i, "DXBC", 4))
+            continue;
+        memcpy(&len, exe + i + 24, 4);
+        if (len >= 32 && len <= n - i && sm2_shader_hash(exe + i, len) == hash)
+        {
+            *size = len;
+            return exe + i;
+        }
+    }
+    return NULL;
+}
 #define THREADS 192
 
 static ID3D12Device *device;
@@ -266,5 +287,101 @@ int main(int argc, char **argv)
             return printf("FAIL: no output\n"), 1;
     }
     printf("capture_demo: dispatched CS_ZivaTensorSkinning (%u threads) twice, outputs agree\n", THREADS);
+
+    /* Part 2: a constant buffer that lives in a buffer no SRV/UAV refers to (captured by
+     * address). The shader: if (u1[0] > cb.m0[1].w) { u1[0] = cb.m0[1].w; u1[4] = max(u1[4], old - w); } */
+    {
+        D3D12_DESCRIPTOR_RANGE r2[2] = {
+            { D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, 2, 0, 0 },
+            { D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 1, 0, 1 },
+        };
+        D3D12_ROOT_PARAMETER p2 = {0};
+        D3D12_ROOT_SIGNATURE_DESC d2 = {0};
+        HRESULT (WINAPI *ser1)(const D3D12_ROOT_SIGNATURE_DESC *, D3D_ROOT_SIGNATURE_VERSION, ID3DBlob **, ID3DBlob **)
+                = (void *)GetProcAddress(d3d12, "D3D12SerializeRootSignature");
+        D3D12_DESCRIPTOR_HEAP_DESC hd2 = { D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 2, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE };
+        D3D12_CONSTANT_BUFFER_VIEW_DESC cv;
+        D3D12_UNORDERED_ACCESS_VIEW_DESC uv = {0};
+        D3D12_CPU_DESCRIPTOR_HANDLE c2;
+        D3D12_GPU_DESCRIPTOR_HANDLE g2;
+        ID3D12RootSignature *rs2;
+        ID3D12PipelineState *pso2;
+        ID3D12DescriptorHeap *heap2;
+        ID3D12Resource *cb, *u, *rb2;
+        D3D12_RESOURCE_BARRIER b = {0};
+        const uint8_t *code;
+        size_t code_size;
+        uint32_t init[8] = { 9, 0, 0, 0, 1, 0, 0, 0 }, *res;
+        float cbdata[64] = {0};
+
+        if (!(code = find_shader(exe, exe_size, CLAMP_HASH, &code_size)))
+            return printf("FAIL: clamp shader not found\n"), 1;
+        p2.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        p2.DescriptorTable.NumDescriptorRanges = 2;
+        p2.DescriptorTable.pDescriptorRanges = r2;
+        d2.NumParameters = 1;
+        d2.pParameters = &p2;
+        blob = NULL;
+        if (FAILED(ser1(&d2, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &err))
+                || FAILED(ID3D12Device_CreateRootSignature(device, 0, ID3D10Blob_GetBufferPointer(blob),
+                        ID3D10Blob_GetBufferSize(blob), &IID_ID3D12RootSignature, (void **)&rs2)))
+            return printf("FAIL: root signature 2\n"), 1;
+        pd.pRootSignature = rs2;
+        pd.CS.pShaderBytecode = code;
+        pd.CS.BytecodeLength = code_size;
+        if (FAILED(ID3D12Device_CreateComputePipelineState(device, &pd, &IID_ID3D12PipelineState, (void **)&pso2))
+                || FAILED(ID3D12Device_CreateDescriptorHeap(device, &hd2, &IID_ID3D12DescriptorHeap, (void **)&heap2)))
+            return printf("FAIL: setup 2\n"), 1;
+        ((uint32_t *)cbdata)[7] = 5;                /* m0[1].w */
+        cb = buffer(D3D12_HEAP_TYPE_UPLOAD, 256, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_GENERIC_READ);
+        u = buffer(D3D12_HEAP_TYPE_UPLOAD, 256, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_GENERIC_READ);
+        ID3D12Resource_Map(cb, 0, NULL, &map);
+        memcpy(map, cbdata, sizeof(cbdata));
+        ID3D12Resource_Unmap(cb, 0, NULL);
+        ID3D12Resource_Map(u, 0, NULL, &map);
+        memcpy(map, init, sizeof(init));
+        ID3D12Resource_Unmap(u, 0, NULL);
+        out = buffer(D3D12_HEAP_TYPE_DEFAULT, 256, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+                D3D12_RESOURCE_STATE_COPY_DEST);
+        rb2 = buffer(D3D12_HEAP_TYPE_READBACK, 256, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST);
+        heap2->lpVtbl->GetCPUDescriptorHandleForHeapStart(heap2, &c2);
+        heap2->lpVtbl->GetGPUDescriptorHandleForHeapStart(heap2, &g2);
+        cv.BufferLocation = ID3D12Resource_GetGPUVirtualAddress(cb);
+        cv.SizeInBytes = 256;
+        ID3D12Device_CreateConstantBufferView(device, &cv, c2);
+        c2.ptr += inc;
+        uv.Format = DXGI_FORMAT_R32_UINT;
+        uv.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+        uv.Buffer.NumElements = 64;
+        ID3D12Device_CreateUnorderedAccessView(device, out, NULL, &uv, c2);
+        ID3D12CommandAllocator_Reset(alloc);
+        ID3D12GraphicsCommandList_Reset(list, alloc, NULL);
+        ID3D12GraphicsCommandList_CopyBufferRegion(list, out, 0, u, 0, 256);
+        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        b.Transition.pResource = out;
+        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+        b.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        ID3D12GraphicsCommandList_ResourceBarrier(list, 1, &b);
+        ID3D12GraphicsCommandList_SetDescriptorHeaps(list, 1, &heap2);
+        ID3D12GraphicsCommandList_SetComputeRootSignature(list, rs2);
+        ID3D12GraphicsCommandList_SetPipelineState(list, pso2);
+        ID3D12GraphicsCommandList_SetComputeRootDescriptorTable(list, 0, g2);
+        ID3D12GraphicsCommandList_Dispatch(list, 1, 1, 1);
+        b.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+        ID3D12GraphicsCommandList_ResourceBarrier(list, 1, &b);
+        ID3D12GraphicsCommandList_CopyResource(list, rb2, out);
+        ID3D12GraphicsCommandList_Close(list);
+        ID3D12CommandQueue_ExecuteCommandLists(queue, 1, (ID3D12CommandList **)&list);
+        ID3D12CommandQueue_Signal(queue, fence, 2);
+        ID3D12Fence_SetEventOnCompletion(fence, 2, event);
+        if (WaitForSingleObject(event, 60000) != WAIT_OBJECT_0 || FAILED(ID3D12Resource_Map(rb2, 0, NULL, &map)))
+            return printf("FAIL: part 2 didn't finish\n"), 1;
+        res = map;
+        if (res[0] != 5 || res[4] != 4)
+            return printf("FAIL: part 2 output %u %u (want 5 4)\n", res[0], res[4]), 1;
+        printf("capture_demo: constant-buffer shader ok\n");
+    }
     return 0;
 }
