@@ -1,5 +1,6 @@
 /* Native unit tests for shim/sm2fix_core.c. Run: ./tests/run.sh */
 #include "../shim/sm2fix_core.h"
+#include "../shim/sm2fix_dxbc.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -132,6 +133,63 @@ static void test_stream_walk_graphics(void)
     CHECK(sm2_stream_for_each_shader(stream, sizeof(stream), on_shader, NULL) == -1);
 }
 
+/* Builds a DXBC root signature (RTS0 v1.1) with two static samplers. */
+static size_t build_rootsig(uint8_t *out, uint32_t filter0, uint32_t filter1)
+{
+    uint32_t rts0[6 + 2 * 13], hdr[9], sum[4];
+    size_t size = sizeof(hdr) + 8 + sizeof(rts0);
+    uint32_t part_size = sizeof(rts0);
+    unsigned int i;
+
+    memset(rts0, 0, sizeof(rts0));
+    rts0[0] = 2;            /* version 1.1 */
+    rts0[3] = 2;            /* static samplers */
+    rts0[4] = 24;           /* offset */
+    rts0[6] = filter0;
+    rts0[6 + 13] = filter1;
+    for (i = 0; i < 2; i++)
+        rts0[6 + i * 13 + 10] = i; /* shader register */
+    memcpy(hdr, "DXBC", 4);
+    memset(hdr + 1, 0, 16);
+    hdr[5] = 1;
+    hdr[6] = (uint32_t)size;
+    hdr[7] = 1;             /* part count */
+    hdr[8] = sizeof(hdr);   /* part offset */
+    memcpy(out, hdr, sizeof(hdr));
+    memcpy(out + sizeof(hdr), "RTS0", 4);
+    memcpy(out + sizeof(hdr) + 4, &part_size, 4);
+    memcpy(out + sizeof(hdr) + 8, rts0, sizeof(rts0));
+    sm2_dxbc_checksum(out, size, sum);
+    memcpy(out + 4, sum, 16);
+    return size;
+}
+
+static void test_rootsig_samplers(void)
+{
+    uint8_t blob[512];
+    unsigned int minmax, total;
+    uint32_t first = 0, f0, f1;
+    size_t size = build_rootsig(blob, 0x195 /* MAXIMUM_MIN_MAG_MIP_LINEAR */, 0x15 /* MIN_MAG_MIP_LINEAR */);
+
+    CHECK(sm2_dxbc_checksum_ok(blob, size));
+    CHECK(sm2_filter_is_minmax(0x195) && sm2_filter_is_minmax(0x100) && !sm2_filter_is_minmax(0x95));
+    CHECK(sm2_filter_rewrite(0x195, SM2_MINMAX_LINEAR) == 0x15);
+    CHECK(sm2_filter_rewrite(0x195, SM2_MINMAX_POINT) == 0);
+    CHECK(sm2_filter_rewrite(0x15, SM2_MINMAX_POINT) == 0x15);
+
+    CHECK(sm2_rootsig_scan_samplers(blob, size, SM2_MINMAX_KEEP, &minmax, &total, &first) == 0);
+    CHECK(minmax == 1 && total == 2 && first == 0x195);
+
+    CHECK(sm2_rootsig_scan_samplers(blob, size, SM2_MINMAX_LINEAR, &minmax, &total, &first) == 0);
+    memcpy(&f0, blob + 36 + 8 + 24, 4);
+    memcpy(&f1, blob + 36 + 8 + 24 + 52, 4);
+    CHECK(f0 == 0x15 && f1 == 0x15);
+    CHECK(sm2_dxbc_checksum_ok(blob, size)); /* checksum was fixed after the edit */
+
+    blob[0] = 'X';
+    CHECK(sm2_rootsig_scan_samplers(blob, size, SM2_MINMAX_KEEP, &minmax, &total, &first) == -1);
+}
+
 static void test_config(void)
 {
     struct sm2_config cfg;
@@ -167,6 +225,9 @@ static void test_config(void)
     CHECK(cfg.spoof == (SM2_SPOOF_UMA | SM2_SPOOF_NO_RT | SM2_SPOOF_NO_INT64));
     CHECK(sm2_config_set(&cfg, "spoof", "") == 0 && cfg.spoof == 0);
     CHECK(sm2_config_set(&cfg, "dump_compute", "1") == 0 && cfg.dump_compute == 1);
+    CHECK(sm2_config_set(&cfg, "minmax", "point") == 0 && cfg.minmax == SM2_MINMAX_POINT);
+    CHECK(sm2_config_set(&cfg, "minmax", "linear") == 0 && cfg.minmax == SM2_MINMAX_LINEAR);
+    CHECK(sm2_config_set(&cfg, "minmax", "keep") == 0 && cfg.minmax == SM2_MINMAX_KEEP);
 }
 
 int main(void)
@@ -175,6 +236,7 @@ int main(void)
     test_stream_compute();
     test_stream_graphics_and_errors();
     test_stream_walk_graphics();
+    test_rootsig_samplers();
     test_config();
     if (failures)
     {

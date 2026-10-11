@@ -267,6 +267,17 @@ int sm2_config_set(struct sm2_config *cfg, const char *key, const char *value)
         }
         return 0;
     }
+    if (key_equals(key, "dump_graphics"))
+    {
+        cfg->dump_graphics = atoi(value) != 0;
+        return 0;
+    }
+    if (key_equals(key, "minmax"))
+    {
+        /* values match enum sm2_minmax_rewrite in sm2fix_dxbc.h */
+        cfg->minmax = key_equals(value, "point") ? 2 : key_equals(value, "linear") ? 1 : 0;
+        return 0;
+    }
     if (key_equals(key, "dump_compute"))
     {
         cfg->dump_compute = atoi(value) != 0;

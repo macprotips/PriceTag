@@ -22,8 +22,26 @@ That's it. To undo everything, run the file and pick **5**.
 | --- | --- | --- | --- |
 | 2026-10-10 | M3 Max, macOS 27.0.1, CrossOver, game on external drive | #1 barrier fix, `mode = all` (361,019 barriers injected) | **Still T-poses.** A missing barrier inside a command list is ruled out. |
 | 2026-10-10 | same | #2 DirectStorage off | **Still T-poses.** DirectStorage GPU decompression is ruled out. |
-| 2026-10-10 | same | #3 deep test (`mode = max`): GPU idle after each of 35,306 submissions, barriers after 227,086 dispatches + 30,465 `ExecuteIndirect` | **Still T-poses** (assumed; awaiting confirmation). Rules out every GPU sync/race theory. **0 failed pipelines.** The game never submits to its compute queue. |
-| next | | #4 hide GPU features (`spoof = sm65,no_int64,no_fp16`), dump all compute shaders | pending |
+| 2026-10-10 | same | #3 deep test (`mode = max`): GPU idle after each of 35,306 submissions, barriers after 227,086 dispatches + 30,465 `ExecuteIndirect` | **Still T-poses.** Rules out every GPU sync/race theory. **0 failed pipelines.** The game never submits to its compute queue. |
+| 2026-10-10 | same | #4 `spoof = sm65,...` | Game refuses to start: *"Shader Model 6.6 support not detected … Current GPU: AMD Compatibility Mode"*. SM 6.6 is a hard requirement. |
+| 2026-10-10 | same | #4b `spoof = no_int64,no_fp16`, all 525 compute shaders dumped | **Still T-poses.** Shader analysis: **no compute shader uses 64-bit ints or native fp16** (only TypedUAVLoadAdditionalFormats ×52, WaveOps ×8, descriptor-heap indexing ×4). The vkd3d target `324071d329f05ccc` is in the dump; it's a 3D-texture copy, unrelated to animation. |
+| next | | #5 `minmax = linear` (rewrite MIN/MAX-reduction samplers, an Apple10-only Metal feature) + dump vertex shaders | pending |
+
+**Shader analysis so far.** The 525 compute shaders were decompiled with
+[dxil-spirv](https://github.com/HansKristian-Work/dxil-spirv) (`--glsl`). Every DXBC
+checksum verifies against `shim/sm2fix_dxbc.c`. No compute shader looks like
+main-body skinning. The closest, `968dc65df96b6aa1`, attaches points to skinned
+triangles with barycentric weights (hair/fur roots). So skinning most likely
+happens in vertex shaders, which test #5 dumps.
+
+**Why min/max samplers?** M5 (Apple10) is the first Apple GPU with hardware
+sampler min/max reduction. D3D12 exposes it as `D3D12_FILTER_MINIMUM_*` and
+`D3D12_FILTER_MAXIMUM_*`, and D3DMetal advertises it on M1–M4 (tiled resources
+tier 2). Engines use it to build Hi-Z depth pyramids for occlusion culling. If
+D3DMetal emulates it wrongly on older GPUs, culling and visibility results that
+feed animation updates could go wrong on M1–M4 only. Test #5 counts these
+samplers (static ones in root signatures and descriptor-heap ones), rewrites
+them, and dumps vertex shaders either way.
 
 **What test #3's log tells us.** D3DMetal on the M3 Max reports Shader Model 6.6,
 wave ops (32 lanes), `Int64ShaderOps = 1`, `Native16BitShaderOpsSupported = 1`,
@@ -206,6 +224,8 @@ there.
 | `log_shaders` | `0` | `1` writes every compute shader hash to `sm2fix.log`. |
 | `spoof` | *(empty)* | Feature answers to hide from the game: `sm65` (report SM 6.5), `no_int64`, `no_fp16`, `uma` (claim unified memory), `no_rt`. |
 | `dump_compute` | `0` | `1` saves every compute shader to `sm2fix-dumps\`. |
+| `dump_graphics` | `0` | `1` saves every vertex/mesh shader to `sm2fix-dumps\`. |
+| `minmax` | `keep` | Samplers with MIN/MAX reduction: `keep` (count only), `linear` (drop the reduction), `point` (point-sample). Root-signature blobs are edited on a copy and re-checksummed. |
 | `real_d3d12` | *(empty)* | Path to the real `d3d12.dll`. Empty means `system32\d3d12.dll`. |
 
 Environment variables `SM2FIX_MODE`, `SM2FIX_HASHES`, `SM2FIX_LOG_SHADERS` and

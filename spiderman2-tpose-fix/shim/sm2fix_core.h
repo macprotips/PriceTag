@@ -54,6 +54,8 @@ struct sm2_config
     char real_d3d12[512];       /* optional explicit path of the real d3d12.dll */
     unsigned int spoof;         /* SM2_SPOOF_* bits: features to hide from the game */
     int dump_compute;           /* dump every compute shader to sm2fix-dumps */
+    int dump_graphics;          /* dump every vertex/mesh shader to sm2fix-dumps */
+    int minmax;                 /* enum sm2_minmax_rewrite: what to do with min/max samplers */
 };
 
 /* Feature answers sm2fix can change, to steer the game onto a different code path. */

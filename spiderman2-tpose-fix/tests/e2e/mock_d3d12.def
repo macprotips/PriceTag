@@ -3,3 +3,4 @@ EXPORTS
     D3D12CreateDevice = mock_D3D12CreateDevice
     mock_get_counts
     mock_get_queue_counts
+    mock_get_sampler_info

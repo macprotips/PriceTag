@@ -22,6 +22,7 @@
 #include <stdarg.h>
 
 #include "sm2fix_core.h"
+#include "sm2fix_dxbc.h"
 
 _Static_assert(sizeof(void *) == 8, "Spider-Man 2 is a 64-bit game; build for x86_64");
 _Static_assert(sizeof(D3D12_SHADER_BYTECODE) == 16, "stream CS subobject layout");
@@ -43,7 +44,8 @@ static FILE *g_log;
 static SRWLOCK g_lock = SRWLOCK_INIT;
 static INIT_ONCE g_init_once = INIT_ONCE_STATIC_INIT;
 static volatile LONG64 g_barriers, g_target_psos, g_dispatches, g_indirect, g_submits[4], g_waits,
-        g_wait_timeouts, g_pso_failures, g_fence_signals, g_fence_waits;
+        g_wait_timeouts, g_pso_failures, g_fence_signals, g_fence_waits, g_minmax_static, g_minmax_heap,
+        g_samplers_heap, g_rootsigs;
 
 /* ------------------------------------------------------------------------ logging */
 
@@ -90,6 +92,8 @@ static void load_config(void)
         {"SM2FIX_REAL_D3D12", "real_d3d12"},
         {"SM2FIX_SPOOF", "spoof"},
         {"SM2FIX_DUMP_COMPUTE", "dump_compute"},
+        {"SM2FIX_DUMP_GRAPHICS", "dump_graphics"},
+        {"SM2FIX_MINMAX", "minmax"},
     };
     WCHAR path[MAX_PATH];
     char value[1024];
@@ -404,6 +408,12 @@ static void dump_stream_shader(void *ctx, uint32_t type, const void *code, size_
         dump_shader(stage_name(type), code, len);
 }
 
+static void dump_stream_vertex_shader(void *ctx, uint32_t type, const void *code, size_t len)
+{
+    if ((type == 1 || type == 25) && code && len)
+        dump_shader_ex(stage_name(type), code, len, TRUE, 20000);
+}
+
 static void log_hex(const char *what, const void *data, UINT size)
 {
     char buf[64 * 3 + 1];
@@ -586,6 +596,9 @@ static HRESULT STDMETHODCALLTYPE hk_dev_CreatePipelineState(ID3D12Device2 *devic
 
         if (r == SM2_STREAM_COMPUTE)
             note_compute_shader(*pso, code, size, "CreatePipelineState");
+        else if (r == SM2_STREAM_GRAPHICS && g_cfg.dump_graphics)
+            sm2_stream_for_each_shader(desc->pPipelineStateSubobjectStream, desc->SizeInBytes,
+                    dump_stream_vertex_shader, NULL);
         else if (r == SM2_STREAM_UNKNOWN || r == SM2_STREAM_MALFORMED)
             log_msg("warning: could not parse pipeline stream (%d) for pso %p", (int)r, *pso);
     }
@@ -639,6 +652,8 @@ static HRESULT STDMETHODCALLTYPE hk_dev_CreateGraphicsPipelineState(ID3D12Device
             = orig_fn(device, DEV_IDX(CreateGraphicsPipelineState));
     HRESULT hr = orig(device, desc, riid, pso);
 
+    if (SUCCEEDED(hr) && desc && g_cfg.dump_graphics && desc->VS.BytecodeLength)
+        dump_shader_ex("vs", desc->VS.pShaderBytecode, desc->VS.BytecodeLength, TRUE, 20000);
     if (FAILED(hr) && desc)
     {
         InterlockedIncrement64(&g_pso_failures);
@@ -657,11 +672,55 @@ static HRESULT STDMETHODCALLTYPE hk_dev_CreateRootSignature(ID3D12Device *device
 {
     HRESULT (STDMETHODCALLTYPE *orig)(ID3D12Device *, UINT, const void *, SIZE_T, REFIID, void **)
             = orig_fn(device, DEV_IDX(CreateRootSignature));
-    HRESULT hr = orig(device, node_mask, blob, size, riid, out);
+    unsigned int minmax = 0, total = 0;
+    uint32_t first = 0;
+    void *copy = NULL;
+    HRESULT hr;
 
+    InterlockedIncrement64(&g_rootsigs);
+    if (blob && size && readable(blob, size) && (copy = HeapAlloc(GetProcessHeap(), 0, size)))
+    {
+        memcpy(copy, blob, size);
+        if (!sm2_rootsig_scan_samplers(copy, size, (enum sm2_minmax_rewrite)g_cfg.minmax, &minmax, &total, &first)
+                && minmax)
+        {
+            LONG64 n = InterlockedAdd64(&g_minmax_static, minmax);
+
+            if (n - minmax < 32)
+                log_msg("root signature has %u/%u MIN/MAX static samplers (first filter %#x)%s",
+                        minmax, total, first, g_cfg.minmax ? " -> rewritten" : "");
+        }
+    }
+    hr = orig(device, node_mask, (g_cfg.minmax && minmax) ? copy : blob, size, riid, out);
     if (FAILED(hr))
         log_msg("FAILED CreateRootSignature hr=%#lx (%zu bytes)", (unsigned long)hr, (size_t)size);
+    if (copy)
+        HeapFree(GetProcessHeap(), 0, copy);
     return hr;
+}
+
+static void STDMETHODCALLTYPE hk_dev_CreateSampler(ID3D12Device *device, const D3D12_SAMPLER_DESC *desc,
+        D3D12_CPU_DESCRIPTOR_HANDLE handle)
+{
+    void (STDMETHODCALLTYPE *orig)(ID3D12Device *, const D3D12_SAMPLER_DESC *, D3D12_CPU_DESCRIPTOR_HANDLE)
+            = orig_fn(device, DEV_IDX(CreateSampler));
+    D3D12_SAMPLER_DESC copy;
+
+    InterlockedIncrement64(&g_samplers_heap);
+    if (desc && sm2_filter_is_minmax(desc->Filter))
+    {
+        LONG64 n = InterlockedIncrement64(&g_minmax_heap);
+
+        if (n <= 16)
+            log_msg("heap sampler with MIN/MAX filter %#x%s", (unsigned)desc->Filter, g_cfg.minmax ? " -> rewritten" : "");
+        if (g_cfg.minmax)
+        {
+            copy = *desc;
+            copy.Filter = (D3D12_FILTER)sm2_filter_rewrite(desc->Filter, (enum sm2_minmax_rewrite)g_cfg.minmax);
+            desc = &copy;
+        }
+    }
+    orig(device, desc, handle);
 }
 
 /* Logs what the game asks the GPU layer about and what it is told. If M5 and M1-M4
@@ -898,6 +957,7 @@ static void hook_device_object(void *obj)
                 "Device::CreateGraphicsPipelineState");
         hook_slot(dev, DEV_IDX(CreateRootSignature), (void *)hk_dev_CreateRootSignature, "Device::CreateRootSignature");
         hook_slot(dev, DEV_IDX(CheckFeatureSupport), (void *)hk_dev_CheckFeatureSupport, "Device::CheckFeatureSupport");
+        hook_slot(dev, DEV_IDX(CreateSampler), (void *)hk_dev_CreateSampler, "Device::CreateSampler");
         hook_slot(dev, DEV_IDX(CreateCommandSignature), (void *)hk_dev_CreateCommandSignature,
                 "Device::CreateCommandSignature");
         hook_slot(dev, DEV_IDX(CreateCommandQueue), (void *)hk_dev_CreateCommandQueue, "Device::CreateCommandQueue");
@@ -932,8 +992,9 @@ static BOOL CALLBACK init_once(INIT_ONCE *once, void *param, void **context)
     g_log = _wfopen(path, L"w");
     load_config();
 
-    log_msg("sm2fix loaded: mode=%s log_shaders=%d hashes=%u spoof=%#x dump_compute=%d",
-            mode_names[g_cfg.mode], g_cfg.log_shaders, g_cfg.hash_count, g_cfg.spoof, g_cfg.dump_compute);
+    log_msg("sm2fix loaded: mode=%s log_shaders=%d hashes=%u spoof=%#x dump_compute=%d dump_graphics=%d minmax=%d",
+            mode_names[g_cfg.mode], g_cfg.log_shaders, g_cfg.hash_count, g_cfg.spoof, g_cfg.dump_compute,
+            g_cfg.dump_graphics, g_cfg.minmax);
     for (i = 0; i < g_cfg.hash_count; i++)
         log_msg("  target hash %016llx", (unsigned long long)g_cfg.hashes[i]);
 
@@ -1059,6 +1120,8 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, void *reserved)
     {
         fprintf(g_log, "exit: %lld forced barriers, %lld target PSOs\n",
                 (long long)g_barriers, (long long)g_target_psos);
+        fprintf(g_log, "exit: root signatures=%lld with min/max static samplers=%lld; heap samplers=%lld min/max=%lld\n",
+                (long long)g_rootsigs, (long long)g_minmax_static, (long long)g_samplers_heap, (long long)g_minmax_heap);
         fprintf(g_log, "exit: dispatches=%lld execute_indirect=%lld pso_failures=%lld\n",
                 (long long)g_dispatches, (long long)g_indirect, (long long)g_pso_failures);
         fprintf(g_log, "exit: submits direct=%lld compute=%lld copy=%lld; fence signals=%lld waits=%lld;"

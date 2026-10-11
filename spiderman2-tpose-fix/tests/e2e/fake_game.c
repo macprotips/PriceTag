@@ -9,6 +9,7 @@
 #include <string.h>
 
 #include "../../shim/sm2fix_core.h"
+#include "../../shim/sm2fix_dxbc.h"
 
 static int failures;
 #define CHECK(c) do { if (!(c)) { printf("FAIL line %d: %s\n", __LINE__, #c); failures++; } } while (0)
@@ -43,6 +44,7 @@ int main(int argc, char **argv)
     SetEnvironmentVariableA("SM2FIX_LOG_SHADERS", "1");
     SetEnvironmentVariableA("SM2FIX_SPOOF", "sm65, no_int64,no_fp16");
     SetEnvironmentVariableA("SM2FIX_DUMP_COMPUTE", "1");
+    SetEnvironmentVariableA("SM2FIX_MINMAX", !strcmp(mode, "off") ? "keep" : "linear");
 
     shim = LoadLibraryA(".\\d3d12.dll");
     mock = LoadLibraryA("mock_d3d12.dll");
@@ -158,6 +160,44 @@ int main(int argc, char **argv)
         mock_get_queue(&signals, &executes, &indirect);
         printf("queue: executes=%ld shim_signals=%ld indirect=%ld\n", executes, signals, indirect);
         CHECK(executes == 3);
+
+        /* Min/max samplers: heap sampler and root-signature static sampler get rewritten
+         * (minmax=linear), and the edited root signature still has a valid checksum. */
+        {
+            void (*sampler_info)(UINT *, UINT *, int *) = (void *)GetProcAddress(mock, "mock_get_sampler_info");
+            static uint8_t blob[36 + 8 + 24 + 52];
+            uint32_t hdr[9] = {0}, rts0[6 + 13] = {0}, part = sizeof(rts0), sum[4];
+            D3D12_SAMPLER_DESC sdesc;
+            ID3D12RootSignature *rs = NULL;
+            D3D12_CPU_DESCRIPTOR_HANDLE handle = {0};
+            UINT heap_filter, rs_filter;
+            int checksum_ok;
+            int keep = !strcmp(mode, "off");
+
+            memcpy(hdr, "DXBC", 4);
+            hdr[5] = 1; hdr[6] = sizeof(blob); hdr[7] = 1; hdr[8] = sizeof(hdr);
+            rts0[0] = 2; rts0[3] = 1; rts0[4] = 24; rts0[6] = 0x195;
+            memcpy(blob, hdr, sizeof(hdr));
+            memcpy(blob + 36, "RTS0", 4);
+            memcpy(blob + 40, &part, 4);
+            memcpy(blob + 44, rts0, sizeof(rts0));
+            sm2_dxbc_checksum(blob, sizeof(blob), sum);
+            memcpy(blob + 4, sum, 16);
+            CHECK(SUCCEEDED(ID3D12Device4_CreateRootSignature(device, 0, blob, sizeof(blob),
+                    &IID_ID3D12RootSignature, (void **)&rs)));
+
+            memset(&sdesc, 0, sizeof(sdesc));
+            sdesc.Filter = D3D12_FILTER_MINIMUM_MIN_MAG_MIP_LINEAR;
+            ID3D12Device4_CreateSampler(device, &sdesc, handle);
+
+            sampler_info(&heap_filter, &rs_filter, &checksum_ok);
+            printf("samplers: heap filter %#x, root sig filter %#x, checksum ok %d\n", heap_filter, rs_filter, checksum_ok);
+            CHECK(heap_filter == (keep ? 0x115u : 0x15u));
+            CHECK(rs_filter == (keep ? 0x195u : 0x15u));
+            CHECK(checksum_ok);
+            CHECK(rts0[6] == 0x195); /* the game's own blob is never modified */
+            CHECK(!memcmp(blob + 44 + 24, &rts0[6], 4));
+        }
         CHECK(indirect == 1);
         /* MAX mode signals its own fence after every submission and waits for it. */
         CHECK(signals == (!strcmp(mode, "max") ? 3 : 0));

@@ -6,6 +6,17 @@
 #include <windows.h>
 #include <initguid.h>
 #include <d3d12.h>
+#include "../../shim/sm2fix_dxbc.h"
+
+static UINT g_last_sampler_filter, g_last_rootsig_filter;
+static int g_last_rootsig_checksum_ok;
+
+void mock_get_sampler_info(UINT *heap_filter, UINT *rootsig_filter, int *checksum_ok)
+{
+    *heap_filter = g_last_sampler_filter;
+    *rootsig_filter = g_last_rootsig_filter;
+    *checksum_ok = g_last_rootsig_checksum_ok;
+}
 
 static LONG g_uav_barriers, g_other_barriers, g_dispatches, g_signals, g_executes, g_indirect;
 
@@ -202,8 +213,22 @@ static HRESULT STDMETHODCALLTYPE dev_CreateCommandSignature(ID3D12Device4 *iface
 static HRESULT STDMETHODCALLTYPE dev_CreateRootSignature(ID3D12Device4 *iface, UINT mask, const void *blob, SIZE_T size,
         REFIID riid, void **out)
 {
+    unsigned int minmax, total;
+    uint32_t first = 0;
+    void *copy = HeapAlloc(GetProcessHeap(), 0, size);
+
+    memcpy(copy, blob, size);
+    g_last_rootsig_checksum_ok = sm2_dxbc_checksum_ok(copy, size);
+    sm2_rootsig_scan_samplers(copy, size, SM2_MINMAX_KEEP, &minmax, &total, &first);
+    memcpy(&g_last_rootsig_filter, (const uint8_t *)blob + 36 + 8 + 24, 4);
+    HeapFree(GetProcessHeap(), 0, copy);
     *out = new_object();
     return S_OK;
+}
+static void STDMETHODCALLTYPE dev_CreateSampler(ID3D12Device4 *iface, const D3D12_SAMPLER_DESC *desc,
+        D3D12_CPU_DESCRIPTOR_HANDLE handle)
+{
+    g_last_sampler_filter = desc->Filter;
 }
 static HRESULT STDMETHODCALLTYPE dev_CreateCommandQueue(ID3D12Device4 *iface, const D3D12_COMMAND_QUEUE_DESC *desc,
         REFIID riid, void **out)
@@ -255,6 +280,7 @@ HRESULT WINAPI mock_D3D12CreateDevice(IUnknown *adapter, D3D_FEATURE_LEVEL level
         dev_vtbl->CreateRootSignature = dev_CreateRootSignature;
         dev_vtbl->CreateCommandQueue = dev_CreateCommandQueue;
         dev_vtbl->CreateFence = dev_CreateFence;
+        dev_vtbl->CreateSampler = dev_CreateSampler;
         VirtualProtect(dev_vtbl, 4096, PAGE_READONLY, &old);
 
         list_vtbl.QueryInterface = list_QI;

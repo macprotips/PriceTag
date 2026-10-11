@@ -11,7 +11,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-BOTTLE="" PREFIX="" GAME_DIR="" WINE="" MODE="hash" UNINSTALL=0 SPOOF="" DUMP_COMPUTE=0
+BOTTLE="" PREFIX="" GAME_DIR="" WINE="" MODE="hash" UNINSTALL=0 SPOOF="" DUMP_COMPUTE=0 DUMP_GRAPHICS=0 MINMAX=keep
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -23,6 +23,8 @@ while [[ $# -gt 0 ]]; do
         --uninstall) UNINSTALL=1; shift ;;
         --spoof) SPOOF="$2"; shift 2 ;;
         --dump-compute) DUMP_COMPUTE=1; shift ;;
+        --dump-graphics) DUMP_GRAPHICS=1; shift ;;
+        --minmax) MINMAX="$2"; shift 2 ;;
         -h|--help) sed -n 2,12p "$0"; exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 1 ;;
     esac
@@ -92,7 +94,8 @@ if [[ ! -w "$GAME_DIR" ]]; then
 fi
 cp "$DLL" "$GAME_DIR/d3d12.dll"
 sed -e "s/^mode = .*/mode = $MODE/" -e "s/^spoof =.*/spoof = $SPOOF/" \
-    -e "s/^dump_compute = .*/dump_compute = $DUMP_COMPUTE/" "$HERE/shim/sm2fix.ini" > "$GAME_DIR/sm2fix.ini"
+    -e "s/^dump_compute = .*/dump_compute = $DUMP_COMPUTE/" -e "s/^dump_graphics = .*/dump_graphics = $DUMP_GRAPHICS/" \
+    -e "s/^minmax = .*/minmax = $MINMAX/" "$HERE/shim/sm2fix.ini" > "$GAME_DIR/sm2fix.ini"
 
 if grep -qi 'AppDefaults\\\\Spider-Man2.exe\\\\DllOverrides' "$PREFIX/user.reg" 2>/dev/null \
         && grep -qi '"d3d12"="native,builtin"' "$PREFIX/user.reg" 2>/dev/null; then
@@ -110,5 +113,5 @@ Could not set the DLL override automatically. Do it once by hand:
 EOF
 fi
 
-echo "Installed sm2fix (mode=$MODE${SPOOF:+, spoof=$SPOOF}). Launch the game, then check:"
+echo "Installed sm2fix (mode=$MODE${SPOOF:+, spoof=$SPOOF}, minmax=$MINMAX). Launch the game, then check:"
 echo "  $GAME_DIR/sm2fix.log"

@@ -9,8 +9,8 @@ else CC=(python3 -m ziglang cc -target x86_64-windows-gnu); fi
 OUT=build/e2e
 rm -rf "$OUT" && mkdir -p "$OUT"
 cp build/d3d12.dll "$OUT/"
-"${CC[@]}" -O1 -shared -o "$OUT/mock_d3d12.dll" tests/e2e/mock_d3d12.c tests/e2e/mock_d3d12.def
-"${CC[@]}" -O1 -o "$OUT/fake_game.exe" tests/e2e/fake_game.c shim/sm2fix_core.c
+"${CC[@]}" -O1 -shared -o "$OUT/mock_d3d12.dll" tests/e2e/mock_d3d12.c shim/sm2fix_dxbc.c tests/e2e/mock_d3d12.def
+"${CC[@]}" -O1 -o "$OUT/fake_game.exe" tests/e2e/fake_game.c shim/sm2fix_core.c shim/sm2fix_dxbc.c
 export WINEPREFIX="${WINEPREFIX:-$PWD/build/wineprefix}" WINEDEBUG=-all
 # Make sure the native shim beats Wine's builtin d3d12 when loaded from the app dir.
 export WINEDLLOVERRIDES="d3d12=n,b"

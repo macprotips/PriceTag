@@ -164,6 +164,10 @@ current_mode() {
 }
 
 mode_label() {
+    if grep -q '^minmax = \(linear\|point\)' "$GAME_DIR/sm2fix.ini" 2>/dev/null; then
+        echo "Test #5 sampler fix ($(sed -n 's/^minmax = //p' "$GAME_DIR/sm2fix.ini"))"
+        return
+    fi
     if grep -q '^spoof = [a-z]' "$GAME_DIR/sm2fix.ini" 2>/dev/null; then
         echo "Test #4 hide GPU features ($(sed -n 's/^spoof = //p' "$GAME_DIR/sm2fix.ini"))"
         return
@@ -205,8 +209,8 @@ fi
 
 say ""
 say "What do you want to do?"
-say "  1) Test #4: hide GPU features from the game  <-- do this one"
-say "  2) Test #4b: ONLY if test #4 crashed or wouldn't start"
+say "  1) Test #5: sampler fix  <-- do this one"
+say "  2) Test #5b: sampler fix, point version (only if I ask)"
 say "  3) Save my results to the Desktop (to send for help)"
 say "  4) Remove everything (back to normal)"
 say ""
@@ -215,14 +219,16 @@ say "  5) Test #3: deep test"
 say "  6) Test #1: barrier fix"
 say "  7) Test #2: DirectStorage off"
 say "  8) A test fixed it! Switch to the faster version"
-say "  9) Quit"
+say "  9) Test #4: hide GPU features"
+say "  10) Quit"
 read -r -p "Type a number and press Return: " action
 say ""
 
 # Map the new menu numbers onto the handlers below.
 case "$action" in
-    1) action=spoof ;;
-    2) action=spoof_b ;;
+    1) action=t5 ;;
+    2) action=t5b ;;
+    9) action=spoof_b ;;
     3) action=2 ;;
     4) action=3 ;;
     5) action=1 ;;
@@ -233,6 +239,24 @@ case "$action" in
 esac
 
 case "$action" in
+    t5|t5b)
+        ds_on
+        rm -rf "$GAME_DIR/sm2fix-dumps"
+        if [ "$action" = t5 ]; then MINMAX=linear; else MINMAX=point; fi
+        bash "$INSTALLER" "${ARGS[@]}" --mode off --minmax "$MINMAX" --dump-graphics || pause_exit 1
+        say ""
+        line
+        say "Test #5 installed. M5 Macs have a GPU feature older Macs lack"
+        say "(\"min/max samplers\", used to decide what's hidden). This test"
+        say "rewrites those samplers into ones M1-M4 support, and saves the"
+        say "game's vertex shaders so I can find the animation code."
+        say "  1. Start Spider-Man 2 and go where characters T-pose."
+        say "     The first load may take a little longer (saving shaders)."
+        say "  2. Quit the game normally."
+        say "  3. Run this again, pick 3, and send me what it saves (2 files)."
+        say "     Tell me: still T-posing? Anything look different/broken?"
+        line
+        ;;
     spoof|spoof_b)
         ds_on
         rm -rf "$GAME_DIR/sm2fix-dumps"

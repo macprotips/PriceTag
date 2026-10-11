@@ -6,7 +6,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 mkdir -p build
 
-SRC=(shim/sm2fix.c shim/sm2fix_core.c)
+SRC=(shim/sm2fix.c shim/sm2fix_core.c shim/sm2fix_dxbc.c)
 FLAGS=(-O2 -std=c11 -Wall -Wextra -Wno-unused-parameter -Wno-cast-function-type -shared)
 
 if command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
