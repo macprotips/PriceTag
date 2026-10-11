@@ -68,7 +68,7 @@ int main(int argc, char **argv)
     ID3D12DescriptorHeap *heap;
     ID3D12CommandAllocator *alloc;
     ID3D12GraphicsCommandList *list;
-    ID3D12Resource *shared, *out;
+    ID3D12Resource *shared, *out, *readback;
     ID3D12Fence *fence;
     D3D12_CPU_DESCRIPTOR_HANDLE cpu;
     D3D12_GPU_DESCRIPTOR_HANDLE gpu;
@@ -208,6 +208,10 @@ int main(int argc, char **argv)
         uv.Buffer.FirstElement = 64;
         uv.Buffer.NumElements = THREADS;
         ID3D12Device_CreateUnorderedAccessView(device, out, NULL, &uv, h);
+        /* second output for a second dispatch, table 2 at 25 -> u0 at 30 */
+        h.ptr = cpu.ptr + 30 * (SIZE_T)inc;
+        uv.Buffer.FirstElement = 320;
+        ID3D12Device_CreateUnorderedAccessView(device, out, NULL, &uv, h);
     }
     ID3D12GraphicsCommandList_SetDescriptorHeaps(list, 1, &heap);
     ID3D12GraphicsCommandList_SetComputeRootSignature(list, rs);
@@ -221,6 +225,23 @@ int main(int argc, char **argv)
         ID3D12GraphicsCommandList_SetComputeRootDescriptorTable(list, 2, uav_table);
     }
     ID3D12GraphicsCommandList_Dispatch(list, THREADS / 64, 1, 1);
+    /* The shim captures the first dispatch with its own copy shader and must leave the
+     * game's bindings as they were: this one only switches the output table. */
+    {
+        D3D12_GPU_DESCRIPTOR_HANDLE uav_table2 = { gpu.ptr + 25 * (UINT64)inc };
+        D3D12_RESOURCE_BARRIER b = {0};
+
+        ID3D12GraphicsCommandList_SetComputeRootDescriptorTable(list, 2, uav_table2);
+        ID3D12GraphicsCommandList_Dispatch(list, THREADS / 64, 1, 1);
+        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        b.Transition.pResource = out;
+        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        b.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+        ID3D12GraphicsCommandList_ResourceBarrier(list, 1, &b);
+        readback = buffer(D3D12_HEAP_TYPE_READBACK, 4096, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST);
+        ID3D12GraphicsCommandList_CopyResource(list, readback, out);
+    }
     ID3D12GraphicsCommandList_Close(list);
     ID3D12CommandQueue_ExecuteCommandLists(queue, 1, (ID3D12CommandList **)&list);
     ID3D12CommandQueue_Signal(queue, fence, 1);
@@ -228,6 +249,22 @@ int main(int argc, char **argv)
     ID3D12Fence_SetEventOnCompletion(fence, 1, event);
     if (WaitForSingleObject(event, 60000) != WAIT_OBJECT_0)
         return printf("FAIL: GPU timeout\n"), 1;
-    printf("capture_demo: dispatched CS_ZivaTensorSkinning (%u threads)\n", THREADS);
+    if (FAILED(ID3D12Resource_Map(readback, 0, NULL, &map)))
+        return printf("FAIL: map\n"), 1;
+    {
+        const float *f = map;
+        int nonzero = 0;
+
+        for (k = 0; k < THREADS; k++)
+        {
+            nonzero += f[64 + k] != 0.0f;
+            if (f[64 + k] != f[320 + k])
+                return printf("FAIL: second dispatch differs at %u (%g vs %g): bindings not restored\n", k,
+                        f[320 + k], f[64 + k]), 1;
+        }
+        if (!nonzero)
+            return printf("FAIL: no output\n"), 1;
+    }
+    printf("capture_demo: dispatched CS_ZivaTensorSkinning (%u threads) twice, outputs agree\n", THREADS);
     return 0;
 }

@@ -278,7 +278,7 @@ struct root_state
 {
     void *rs;
     UINT64 val[ROOT_PARAMS];    /* descriptor table GPU handle or root view GPU address */
-    uint32_t consts[ROOT_PARAMS][16];
+    uint32_t consts[ROOT_PARAMS][32];
 };
 
 static struct list_state g_lists[LIST_TABLE_SIZE];
@@ -390,8 +390,8 @@ static void root_note(void *list, int what, UINT index, UINT64 val, const void *
                 r->rs = (void *)(UINT_PTR)val;
             else if (what == 2 && index < ROOT_PARAMS)
                 r->val[index] = val;
-            else if (what == 3 && index < ROOT_PARAMS && offset < 16)
-                memcpy(&r->consts[index][offset], consts, 4 * (count < 16 - offset ? count : 16 - offset));
+            else if (what == 3 && index < ROOT_PARAMS && offset < 32)
+                memcpy(&r->consts[index][offset], consts, 4 * (count < 32 - offset ? count : 32 - offset));
         }
     }
     ReleaseSRWLockExclusive(&g_lock);
@@ -2312,13 +2312,14 @@ static void log_table_views(UINT index, D3D12_GPU_DESCRIPTOR_HANDLE base)
  * file on another driver, so the Mac's output can be checked against a reference. */
 #define CAPTURE_MAX_VIEWS 128
 #define CAPTURE_SLOTS 16
-#define CAPTURE_VIEW_MAX (8ull << 20)
-#define CAPTURE_TOTAL_MAX (48ull << 20)
+#define CAPTURE_VIEW_MAX (32ull << 20)
+#define CAPTURE_TOTAL_MAX (96ull << 20)
 
 struct cap_view
 {
     uint32_t param, slot, kind, dim, format, num, stride, flags, heap_type, has_after;
     uint64_t first, res_width, byte_off, byte_len, res_id, rb_before, rb_after, va;
+    uint64_t res_va;            /* GPU address of the resource start */
     ID3D12Resource *res;
 };
 
@@ -2335,6 +2336,7 @@ struct cap_pending
     SIZE_T rs_size;
     unsigned int nviews;
     struct cap_view v[CAPTURE_MAX_VIEWS];
+    ID3D12Resource *dst;        /* the shim's own buffer the copy shader fills */
 };
 
 static struct cap_pending *volatile g_cap[CAPTURE_SLOTS];
@@ -2429,6 +2431,8 @@ static BOOL find_res_by_va(UINT64 va, ID3D12Resource **res, UINT64 *res_va, UINT
 
 static void capture_free(struct cap_pending *c)
 {
+    if (c->dst)
+        c->dst->lpVtbl->Release(c->dst);
     if (c->rb)
         c->rb->lpVtbl->Release(c->rb);
     if (c->dev)
@@ -2459,11 +2463,151 @@ static void cap_add_buffer(struct cap_pending *c, struct cap_view *v, UINT64 off
         off = v->res_width;
     if (len > v->res_width - off)
         len = v->res_width - off;
+    /* the copy shader moves whole words from 4-byte aligned addresses */
+    len += off & 3;
+    off &= ~3ull;
+    len = (len + 3) & ~3ull;
+    if (off + len > v->res_width)
+        len = (v->res_width - off) & ~3ull;
     if (len > CAPTURE_VIEW_MAX || *total + len > CAPTURE_TOTAL_MAX)
         len = 0;
     v->byte_off = off;
     v->byte_len = len;
     *total += (len + 255) & ~255ull;
+}
+
+#include "sm2fix_capcopy.h"
+
+HRESULT WINAPI sm2_D3D12SerializeRootSignature(const void *desc, int version, void **blob, void **error);
+static ID3D12Device *g_cc_dev;
+static ID3D12RootSignature *g_cc_rs;
+static ID3D12PipelineState *g_cc_pso;
+
+/* Root signature: [0] 4 constants b0, [1] root SRV t0, [2] root UAV u0, [3] root UAV u1. */
+static BOOL capcopy_init(ID3D12Device *dev)
+{
+    D3D12_ROOT_PARAMETER params[4];
+    D3D12_ROOT_SIGNATURE_DESC rsd;
+    D3D12_COMPUTE_PIPELINE_STATE_DESC pd;
+    ID3DBlob *blob = NULL, *err = NULL;
+    HRESULT hr;
+
+    if (g_cc_pso && g_cc_dev == dev)
+        return TRUE;
+    memset(params, 0, sizeof(params));
+    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[0].Constants.Num32BitValues = 4;
+    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
+    params[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
+    params[3].Descriptor.ShaderRegister = 1;
+    memset(&rsd, 0, sizeof(rsd));
+    rsd.NumParameters = 4;
+    rsd.pParameters = params;
+    if (FAILED(hr = sm2_D3D12SerializeRootSignature(&rsd, D3D_ROOT_SIGNATURE_VERSION_1, (void **)&blob, (void **)&err))
+            || FAILED(hr = dev->lpVtbl->CreateRootSignature(dev, 0, blob->lpVtbl->GetBufferPointer(blob),
+                    blob->lpVtbl->GetBufferSize(blob), &IID_ID3D12RootSignature, (void **)&g_cc_rs)))
+    {
+        log_msg("capture: copy shader root signature failed, hr=%#lx", (unsigned long)hr);
+        return FALSE;
+    }
+    memset(&pd, 0, sizeof(pd));
+    pd.pRootSignature = g_cc_rs;
+    pd.CS.pShaderBytecode = capcopy_dxil;
+    pd.CS.BytecodeLength = sizeof(capcopy_dxil);
+    if (FAILED(hr = dev->lpVtbl->CreateComputePipelineState(dev, &pd, &IID_ID3D12PipelineState, (void **)&g_cc_pso)))
+    {
+        log_msg("capture: copy shader pipeline failed, hr=%#lx", (unsigned long)hr);
+        g_cc_pso = NULL;
+        return FALSE;
+    }
+    g_cc_dev = dev;
+    return TRUE;
+}
+
+static void *list_bound_pso(void *list)
+{
+    struct list_state *e;
+    void *pso = NULL;
+
+    AcquireSRWLockShared(&g_lock);
+    if ((e = find_list_locked(list, FALSE)))
+        pso = e->pso;
+    ReleaseSRWLockShared(&g_lock);
+    return pso;
+}
+
+/* These go straight to the driver, past the shim's own hooks, so the tracked game state
+ * stays what the game set. */
+static void capcopy_bind(ID3D12GraphicsCommandList *list)
+{
+    ((void (STDMETHODCALLTYPE *)(ID3D12GraphicsCommandList *, ID3D12RootSignature *))
+            real_fn(list, CL_IDX(SetComputeRootSignature)))(list, g_cc_rs);
+    ((void (STDMETHODCALLTYPE *)(ID3D12GraphicsCommandList *, ID3D12PipelineState *))
+            real_fn(list, CL_IDX(SetPipelineState)))(list, g_cc_pso);
+}
+
+static void capcopy_run(ID3D12GraphicsCommandList *list, D3D12_GPU_VIRTUAL_ADDRESS src, BOOL from_uav,
+        D3D12_GPU_VIRTUAL_ADDRESS dst, UINT64 dst_off, UINT64 bytes)
+{
+    void (STDMETHODCALLTYPE *view)(ID3D12GraphicsCommandList *, UINT, D3D12_GPU_VIRTUAL_ADDRESS);
+    UINT words = (UINT)(bytes / 4), groups = (words + 63) / 64;
+    UINT args[4];
+
+    if (groups > 4096)
+        groups = 4096;
+    args[0] = words;
+    args[1] = (UINT)dst_off;
+    args[2] = from_uav;
+    args[3] = groups * 64;
+    ((void (STDMETHODCALLTYPE *)(ID3D12GraphicsCommandList *, UINT, UINT, const void *, UINT))
+            real_fn(list, CL_IDX(SetComputeRoot32BitConstants)))(list, 0, 4, args, 0);
+    view = real_fn(list, CL_IDX(SetComputeRootShaderResourceView));
+    view(list, 1, from_uav ? dst : src);
+    view = real_fn(list, CL_IDX(SetComputeRootUnorderedAccessView));
+    view(list, 2, dst);
+    view(list, 3, from_uav ? src : dst);
+    ((void (STDMETHODCALLTYPE *)(ID3D12GraphicsCommandList *, UINT, UINT, UINT))
+            real_fn(list, CL_IDX(Dispatch)))(list, groups, 1, 1);
+}
+
+static void capcopy_restore(ID3D12GraphicsCommandList *list, const struct cap_pending *c, void *pso)
+{
+    unsigned int p;
+
+    ((void (STDMETHODCALLTYPE *)(ID3D12GraphicsCommandList *, ID3D12RootSignature *))
+            real_fn(list, CL_IDX(SetComputeRootSignature)))(list, c->root.rs);
+    ((void (STDMETHODCALLTYPE *)(ID3D12GraphicsCommandList *, ID3D12PipelineState *))
+            real_fn(list, CL_IDX(SetPipelineState)))(list, pso);
+    for (p = 0; p < c->rs.num_params && p < ROOT_PARAMS; p++)
+    {
+        UINT64 val = c->root.val[p];
+
+        switch (c->rs.param_type[p])
+        {
+        case SM2_RS_TABLE:
+            if (val)
+            {
+                D3D12_GPU_DESCRIPTOR_HANDLE h = { val };
+
+                ((void (STDMETHODCALLTYPE *)(ID3D12GraphicsCommandList *, UINT, D3D12_GPU_DESCRIPTOR_HANDLE))
+                        real_fn(list, CL_IDX(SetComputeRootDescriptorTable)))(list, p, h);
+            }
+            break;
+        case SM2_RS_CONSTANTS:
+            ((void (STDMETHODCALLTYPE *)(ID3D12GraphicsCommandList *, UINT, UINT, const void *, UINT))
+                    real_fn(list, CL_IDX(SetComputeRoot32BitConstants)))(list, p,
+                    c->rs.param_num[p] < 32 ? c->rs.param_num[p] : 32, c->root.consts[p], 0);
+            break;
+        default:
+            if (val)
+                ((void (STDMETHODCALLTYPE *)(ID3D12GraphicsCommandList *, UINT, D3D12_GPU_VIRTUAL_ADDRESS))
+                        real_fn(list, c->rs.param_type[p] == SM2_RS_CBV ? CL_IDX(SetComputeRootConstantBufferView)
+                        : c->rs.param_type[p] == SM2_RS_SRV ? CL_IDX(SetComputeRootShaderResourceView)
+                        : CL_IDX(SetComputeRootUnorderedAccessView)))(list, p, val);
+            break;
+        }
+    }
 }
 
 /* Adds the view at (root parameter, table slot) -- slot 0xffffffff for a root descriptor. */
@@ -2493,6 +2637,7 @@ static void capture_add_view(struct cap_pending *c, uint32_t p, uint32_t slot, u
         if (find_res_by_va(val, &res, &res_va, &width))
         {
             v->res = res;
+            v->res_va = res_va;
             v->res_width = width;
             v->res_id = (uint64_t)(UINT_PTR)res;
             cap_add_buffer(c, v, val - res_va, v->kind == 3 ? 65536 : (8u << 20), total);
@@ -2535,6 +2680,7 @@ static void capture_add_view(struct cap_pending *c, uint32_t p, uint32_t slot, u
                 if (find_res_by_va(r->va, &res, &res_va, &width))
                 {
                     v->res = res;
+                    v->res_va = res_va;
                     v->res_width = width;
                     v->res_id = (uint64_t)(UINT_PTR)res;
                     cap_add_buffer(c, v, r->va - res_va, r->num, total);
@@ -2545,8 +2691,9 @@ static void capture_add_view(struct cap_pending *c, uint32_t p, uint32_t slot, u
                 unsigned int es = r->stride ? r->stride : (r->flags & 1) ? 4 : sm2_format_size(r->format);
 
                 v->res = r->res;
+                v->res_va = r->va;
                 v->res_width = r->width;
-                if (es)
+                if (es && r->va)
                     cap_add_buffer(c, v, r->first * es, (UINT64)r->num * es, total);
                 v->has_after = r->kind == 2 && v->byte_len;
                 if (v->has_after)
@@ -2568,6 +2715,8 @@ static void capture_dispatch(ID3D12GraphicsCommandList *list, uint64_t hash, UIN
     D3D12_RESOURCE_DESC desc;
     struct cap_pending *c;
     uint64_t total = 0, off;
+    D3D12_GPU_VIRTUAL_ADDRESS dst_va;
+    void *pso;
     unsigned int i;
     LONG ri, rn;
     HRESULT hr;
@@ -2640,27 +2789,46 @@ static void capture_dispatch(ID3D12GraphicsCommandList *list, uint64_t hash, UIN
         log_msg("capture: %016llx: nothing to capture (%u views)", (unsigned long long)hash, c->nviews);
         goto plain;
     }
+    if (!capcopy_init(c->dev))
+        goto plain;
     memset(&heap, 0, sizeof(heap));
-    heap.Type = D3D12_HEAP_TYPE_READBACK;
     memset(&desc, 0, sizeof(desc));
     desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
     desc.Width = total;
     desc.Height = desc.DepthOrArraySize = desc.MipLevels = 1;
     desc.SampleDesc.Count = 1;
     desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-    if (FAILED(hr = c->dev->lpVtbl->CreateCommittedResource(c->dev, &heap, D3D12_HEAP_FLAG_NONE, &desc,
-            D3D12_RESOURCE_STATE_COPY_DEST, NULL, &IID_ID3D12Resource, (void **)&c->rb)))
+    heap.Type = D3D12_HEAP_TYPE_READBACK;
+    hr = c->dev->lpVtbl->CreateCommittedResource(c->dev, &heap, D3D12_HEAP_FLAG_NONE, &desc,
+            D3D12_RESOURCE_STATE_COPY_DEST, NULL, &IID_ID3D12Resource, (void **)&c->rb);
+    if (SUCCEEDED(hr))
     {
-        log_msg("capture: %016llx: readback buffer of %llu bytes failed, hr=%#lx", (unsigned long long)hash,
+        heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+        desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+        hr = c->dev->lpVtbl->CreateCommittedResource(c->dev, &heap, D3D12_HEAP_FLAG_NONE, &desc,
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS, NULL, &IID_ID3D12Resource, (void **)&c->dst);
+    }
+    if (FAILED(hr))
+    {
+        log_msg("capture: %016llx: buffers of %llu bytes failed, hr=%#lx", (unsigned long long)hash,
                 (unsigned long long)total, (unsigned long)hr);
-        c->rb = NULL;
         goto plain;
     }
     c->rb_size = total;
+    dst_va = c->dst->lpVtbl->GetGPUVirtualAddress(c->dst);
+    if (!(pso = list_bound_pso(list)))
+    {
+        log_msg("capture: %016llx: no pipeline bound?", (unsigned long long)hash);
+        goto plain;
+    }
 
+    /* Everything is copied by a compute shader (capcopy.hlsl), ordered against the game's
+     * dispatch by UAV barriers -- the same mechanism the game's own compute passes rely on.
+     * The game's root signature, pipeline and root arguments are put back afterwards. */
     memset(&barrier, 0, sizeof(barrier));
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
     list->lpVtbl->ResourceBarrier(list, 1, &barrier);
+    capcopy_bind(list);
     for (i = 0, off = 0; i < c->nviews; i++)
     {
         struct cap_view *v = &c->v[i];
@@ -2668,12 +2836,14 @@ static void capture_dispatch(ID3D12GraphicsCommandList *list, uint64_t hash, UIN
         if (!v->byte_len)
             continue;
         v->rb_before = off;
-        copy(list, c->rb, off, v->res, v->byte_off, v->byte_len);
+        capcopy_run(list, v->res_va + v->byte_off, v->kind == 2, dst_va, off, v->byte_len);
         off += (v->byte_len + 255) & ~255ull;
     }
     list->lpVtbl->ResourceBarrier(list, 1, &barrier);
+    capcopy_restore(list, c, pso);
     orig(list, x, y, z);
     list->lpVtbl->ResourceBarrier(list, 1, &barrier);
+    capcopy_bind(list);
     for (i = 0; i < c->nviews; i++)
     {
         struct cap_view *v = &c->v[i];
@@ -2681,8 +2851,22 @@ static void capture_dispatch(ID3D12GraphicsCommandList *list, uint64_t hash, UIN
         if (!v->has_after)
             continue;
         v->rb_after = off;
-        copy(list, c->rb, off, v->res, v->byte_off, v->byte_len);
+        capcopy_run(list, v->res_va + v->byte_off, TRUE, dst_va, off, v->byte_len);
         off += (v->byte_len + 255) & ~255ull;
+    }
+    list->lpVtbl->ResourceBarrier(list, 1, &barrier);
+    capcopy_restore(list, c, pso);
+    {
+        D3D12_RESOURCE_BARRIER t;
+
+        memset(&t, 0, sizeof(t));
+        t.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        t.Transition.pResource = c->dst;
+        t.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        t.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        t.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+        list->lpVtbl->ResourceBarrier(list, 1, &t);
+        copy(list, c->rb, 0, c->dst, 0, total);
     }
     c->seq = (UINT)InterlockedIncrement(&seq);
     for (i = 0; i < CAPTURE_SLOTS; i++)
@@ -2732,7 +2916,7 @@ static void capture_write(struct cap_pending *c)
 #define W32(v) do { u = (uint32_t)(v); fwrite(&u, 4, 1, f); } while (0)
 #define W64(v) do { uint64_t q_ = (uint64_t)(v); fwrite(&q_, 8, 1, f); } while (0)
     fwrite(magic, 4, 1, f);
-    W32(1);
+    W32(2);
     W64(c->hash);
     W32(c->x); W32(c->y); W32(c->z);
     W32(c->rs_size);
@@ -2741,7 +2925,7 @@ static void capture_write(struct cap_pending *c)
     for (i = 0; i < ROOT_PARAMS; i++)
     {
         W64(c->root.val[i]);
-        fwrite(c->root.consts[i], 4, 16, f);
+        fwrite(c->root.consts[i], 4, 32, f);
     }
     W32(c->nviews);
     for (i = 0; i < c->nviews; i++)

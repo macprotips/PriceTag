@@ -101,14 +101,14 @@ struct capture
     uint32_t x, y, z, rs_size, nviews;
     const uint8_t *rs_blob;
     uint64_t root_val[ROOT_PARAMS];
-    uint32_t consts[ROOT_PARAMS][16];
+    uint32_t consts[ROOT_PARAMS][32];
     struct view *v;
 };
 
 static int parse_capture(const uint8_t *p, size_t n, struct capture *c)
 {
     const uint8_t *end = p + n;
-    uint32_t i, nparams;
+    uint32_t i, nparams, version, nconst;
 
 #define NEED(k) do { if ((size_t)(end - p) < (size_t)(k)) return -1; } while (0)
 #define R32(dst) do { NEED(4); memcpy(&(dst), p, 4); p += 4; } while (0)
@@ -117,6 +117,10 @@ static int parse_capture(const uint8_t *p, size_t n, struct capture *c)
     NEED(8);
     if (memcmp(p, "SM2C", 4))
         return -1;
+    memcpy(&version, p + 4, 4);
+    if (version < 1 || version > 2)
+        return -1;
+    nconst = version == 1 ? 16 : 32;
     p += 8;
     R64(c->hash);
     R32(c->x); R32(c->y); R32(c->z);
@@ -130,9 +134,9 @@ static int parse_capture(const uint8_t *p, size_t n, struct capture *c)
     for (i = 0; i < nparams; i++)
     {
         R64(c->root_val[i]);
-        NEED(64);
-        memcpy(c->consts[i], p, 64);
-        p += 64;
+        NEED(nconst * 4);
+        memcpy(c->consts[i], p, nconst * 4);
+        p += nconst * 4;
     }
     R32(c->nviews);
     if (c->nviews > 4096 || !(c->v = calloc(c->nviews + 1, sizeof(*c->v))))
@@ -502,7 +506,8 @@ static int replay(const uint8_t *exe, size_t exe_size, const char *path)
         if (v->slot == 0xffffffffu || v->group < 0 || !es || v->param >= ROOT_PARAMS)
             continue;
         h.ptr = cpu0.ptr + (SIZE_T)(table_start[v->param] + v->slot) * inc;
-        off = v->byte_off - groups[v->group].base;
+        /* the view starts at FirstElement (the captured range may begin a few bytes earlier) */
+        off = (v->kind == 1 || v->kind == 2 ? v->first * es : v->byte_off) - groups[v->group].base;
         if (v->kind == 1)
         {
             D3D12_SHADER_RESOURCE_VIEW_DESC sv = {0};
@@ -550,7 +555,7 @@ static int replay(const uint8_t *exe, size_t exe_size, const char *path)
             ID3D12GraphicsCommandList_SetComputeRootDescriptorTable(list, p, g);
         }
         else if (rs.param_type[p] == SM2_RS_CONSTANTS)
-            ID3D12GraphicsCommandList_SetComputeRoot32BitConstants(list, p, rs.param_num[p] < 16 ? rs.param_num[p] : 16,
+            ID3D12GraphicsCommandList_SetComputeRoot32BitConstants(list, p, rs.param_num[p] < 32 ? rs.param_num[p] : 32,
                     c.consts[p], 0);
         else
         {
