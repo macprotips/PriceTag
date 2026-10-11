@@ -16,6 +16,13 @@
 
 That's it. To undo everything, run the file and pick **5**.
 
+## Results so far
+
+| Date | Mac | Test | Result |
+| --- | --- | --- | --- |
+| 2026-10-10 | M3 Max, macOS 27.0.1, CrossOver, game on external drive | #1 barrier fix, `mode = all` (361,019 barriers injected) | **Still T-poses.** A missing barrier inside a command list is ruled out. |
+| next | | #2 DirectStorage off (menu option 6) | pending |
+
 ---
 
 Marvel's Spider-Man 2 (PC, Steam app 2651280) runs on Macs through CrossOver,

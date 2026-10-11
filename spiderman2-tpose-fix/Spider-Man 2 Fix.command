@@ -166,21 +166,26 @@ current_mode() {
 say ""
 say "Found it: $GAME_DIR"
 [ "$KIND" != Other ] && say "Bottle:   $KIND \"$NAME\""
+DS_OFF=0
+[ -f "$GAME_DIR/dstorage.dll.sm2fix-off" ] || [ -f "$GAME_DIR/dstoragecore.dll.sm2fix-off" ] && DS_OFF=1
 MODE_NOW="$(current_mode)"
 if [ -n "$MODE_NOW" ]; then
     say "The fix is installed (mode: $MODE_NOW)."
 else
     say "The fix is not installed yet."
 fi
+[ $DS_OFF -eq 1 ] && say "DirectStorage is turned OFF (test #2)."
 
 say ""
 say "What do you want to do?"
-say "  1) Install the fix (start here)"
+say "  1) Test #1: barrier fix (start here)"
 say "  2) It worked! Switch to the faster version"
 say "  3) Faster version brought the T-pose back: go back to the safe version"
 say "  4) Save my log to the Desktop (to send for help)"
-say "  5) Remove the fix completely"
-say "  6) Quit"
+say "  5) Remove the barrier fix"
+say "  6) Test #2: turn OFF DirectStorage (also removes test #1)"
+say "  7) Turn DirectStorage back ON (undo test #2)"
+say "  8) Quit"
 read -r -p "Type a number and press Return: " action
 say ""
 
@@ -223,6 +228,39 @@ case "$action" in
         ;;
     5)
         bash "$INSTALLER" "${ARGS[@]}" --uninstall
+        ;;
+    6)
+        if [ -n "$MODE_NOW" ]; then
+            bash "$INSTALLER" "${ARGS[@]}" --uninstall >/dev/null 2>&1
+            say "Removed test #1 so this test is clean."
+        fi
+        n=0
+        for f in dstorage.dll dstoragecore.dll; do
+            if [ -f "$GAME_DIR/$f" ]; then
+                mv "$GAME_DIR/$f" "$GAME_DIR/$f.sm2fix-off" && n=$((n + 1))
+            fi
+        done
+        if [ $n -gt 0 ] || [ $DS_OFF -eq 1 ]; then
+            say ""
+            line
+            say "DirectStorage is OFF. The game now unpacks its data on the CPU."
+            say "Loading may be a little slower; that's expected."
+            say "  1. Start Spider-Man 2 and go where characters used to T-pose."
+            say "  2. Tell me: fixed or not?"
+            say "  3. Either way you can undo this any time with option 7."
+            line
+        else
+            say "No DirectStorage files found in the game folder, nothing to turn off."
+        fi
+        ;;
+    7)
+        n=0
+        for f in dstorage.dll dstoragecore.dll; do
+            if [ -f "$GAME_DIR/$f.sm2fix-off" ]; then
+                mv "$GAME_DIR/$f.sm2fix-off" "$GAME_DIR/$f" && n=$((n + 1))
+            fi
+        done
+        if [ $n -gt 0 ]; then say "DirectStorage is back ON."; else say "DirectStorage was already ON."; fi
         ;;
     *)
         say "Nothing changed."
