@@ -11,7 +11,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-BOTTLE="" PREFIX="" GAME_DIR="" WINE="" MODE="hash" UNINSTALL=0 SPOOF="" DUMP_COMPUTE=0 DUMP_GRAPHICS=0 MINMAX=keep PROFILE=0 CPU_COUNT=0 PSO_DELAY=0 TRACE_QUERIES=0 FAKE_TS=0 PROBE_SKIN=0 SKIN_BUDGET=0
+BOTTLE="" PREFIX="" GAME_DIR="" WINE="" MODE="hash" UNINSTALL=0 SPOOF="" DUMP_COMPUTE=0 DUMP_GRAPHICS=0 MINMAX=keep PROFILE=0 CPU_COUNT=0 PSO_DELAY=0 TRACE_QUERIES=0 FAKE_TS=0 PROBE_SKIN=0 SKIN_BUDGET=0 SKIP_SKINNING=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -32,6 +32,7 @@ while [[ $# -gt 0 ]]; do
         --fake-timestamps) FAKE_TS=1; shift ;;
         --probe-skin) PROBE_SKIN=1; shift ;;
         --skin-budget) SKIN_BUDGET="$2"; shift 2 ;;
+        --skip-skinning) SKIP_SKINNING=1; shift ;;
         -h|--help) sed -n 2,12p "$0"; exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 1 ;;
     esac
@@ -109,6 +110,7 @@ sed -e "s/^mode = .*/mode = $MODE/" -e "s/^spoof =.*/spoof = $SPOOF/" \
     -e "s/^cpu_count = .*/cpu_count = $CPU_COUNT/" -e "s/^pso_delay_ms = .*/pso_delay_ms = $PSO_DELAY/" \
     -e "s/^trace_queries = .*/trace_queries = $TRACE_QUERIES/" -e "s/^fake_timestamps = .*/fake_timestamps = $FAKE_TS/" \
     -e "s/^probe_skin = .*/probe_skin = $PROBE_SKIN/" -e "s/^skin_budget = .*/skin_budget = $SKIN_BUDGET/" \
+    -e "s/^skip_skinning = .*/skip_skinning = $SKIP_SKINNING/" \
     "$HERE/shim/sm2fix.ini" > "$GAME_DIR/sm2fix.ini"
 
 if grep -qi 'AppDefaults\\\\Spider-Man2.exe\\\\DllOverrides' "$PREFIX/user.reg" 2>/dev/null \

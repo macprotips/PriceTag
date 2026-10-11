@@ -64,6 +64,7 @@ struct sm2_config
     uint32_t probe_jobsys_rva;  /* job-system state RVA (flag at +0x24) */
     uint32_t probe_sb_rva;      /* stub that creates the SkinningSB buffer (sized by ModelSkinGroupMax) */
     uint32_t probe_dispatch_rva;/* function that fills SkinningSB and dispatches CS_ModelSkinning */
+    int skip_skinning;          /* diagnostic: drop every Dispatch while CS_ModelSkinning is bound */
     unsigned int skin_budget;   /* 0 = untouched, else raise RenderBudgets.ModelSkinGroupMax to at least this */
     int fake_timestamps;        /* replace D3DMetal's GPU timestamps (60 Hz, all zero on M1-M4) with real CPU time */
     unsigned int pso_delay_ms;  /* sleep this long in every pipeline creation (imitates a cold shader cache) */

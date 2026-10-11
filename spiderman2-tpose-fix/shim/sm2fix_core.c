@@ -296,6 +296,11 @@ int sm2_config_set(struct sm2_config *cfg, const char *key, const char *value)
         cfg->probe_dispatch_rva = (uint32_t)strtoul(value, NULL, 16);
         return 0;
     }
+    if (key_equals(key, "skip_skinning"))
+    {
+        cfg->skip_skinning = atoi(value) != 0;
+        return 0;
+    }
     if (key_equals(key, "skin_budget"))
     {
         cfg->skin_budget = (unsigned int)strtoul(value, NULL, 10);

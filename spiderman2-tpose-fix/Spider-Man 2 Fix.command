@@ -178,6 +178,10 @@ current_mode() {
 }
 
 mode_label() {
+    if grep -q '^skip_skinning = 1' "$GAME_DIR/sm2fix.ini" 2>/dev/null; then
+        echo "Test #15 skinning shader switched off"
+        return
+    fi
     if grep -q '^skin_budget = [1-9]' "$GAME_DIR/sm2fix.ini" 2>/dev/null; then
         echo "Test #13 bigger skinning buffer"
         return
@@ -251,7 +255,7 @@ fi
 
 say ""
 say "What do you want to do?"
-say "  1) Test #14: skinning trace (follows the lost animation work)  <-- do this one"
+say "  1) Test #15: switch the skinning shader off (diagnostic)  <-- do this one"
 say "  2) Test #9: Rosetta instruction check (done: Rosetta is fine)"
 say "  3) Save my results to the Desktop (to send for help)"
 say "  4) Remove everything (back to normal)"
@@ -269,14 +273,16 @@ say "  14) Test #8: slow loading"
 say "  15) Test #10: GPU query tracer"
 say "  16) Test #11: real GPU clock"
 say "  17) Test #13: bigger skinning buffer (done: budget was fine)"
+say "  18) Test #14: skinning trace (done: the shader does run)"
 say "  10) Quit"
 read -r -p "Type a number and press Return: " action
 say ""
 
 # Map the new menu numbers onto the handlers below.
 case "$action" in
-    1) action=t14 ;;
+    1) action=t15 ;;
     17) action=t13 ;;
+    18) action=t14 ;;
     16) action=t11 ;;
     15) action=t10 ;;
     2) action=t9 ;;
@@ -308,6 +314,21 @@ case "$action" in
         say "  1. Start the game, load your save, look at Spider-Man and people nearby."
         say "  2. Quit from the in-game menu."
         say "  3. Run this again, pick 3, and send me the log (fixed or not)."
+        line
+        ;;
+    t15)
+        ds_on
+        rm -rf "$GAME_DIR/sm2fix-dumps"
+        bash "$INSTALLER" "${ARGS[@]}" --mode off --profile --probe-skin --skip-skinning || pause_exit 1
+        say ""
+        line
+        say "Test #15 installed. This is NOT a fix: it switches off the game's"
+        say "character-skinning shader, to see whether its output is what you see."
+        say "  1. Start the game, load your save, find Spider-Man and some people."
+        say "  2. Look closely: do T-posed body parts (sleeves, Spider-Man) look the"
+        say "     SAME as before, or do they vanish / stretch / turn into spikes?"
+        say "     A screenshot is perfect."
+        say "  3. Quit from the in-game menu, run this again, pick 3, send the log."
         line
         ;;
     t14)

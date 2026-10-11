@@ -110,6 +110,7 @@ static void load_config(void)
         {"SM2FIX_PROBE_SB_RVA", "probe_sb_rva"},
         {"SM2FIX_PROBE_DISPATCH_RVA", "probe_dispatch_rva"},
         {"SM2FIX_SKIN_BUDGET", "skin_budget"},
+        {"SM2FIX_SKIP_SKINNING", "skip_skinning"},
     };
     WCHAR path[MAX_PATH];
     char value[1024];
@@ -415,10 +416,15 @@ static void log_profile(const char *when, unsigned int top)
     }
     if (!g_exiting)
         ReleaseSRWLockShared(&g_prof_lock);
+    /* Look the skinning shader up before sorting: the sort moves entries into place
+     * after their index has been visited, so checking inside it can miss the entry. */
     for (i = 0; i < n; i++)
     {
         if (copy[i].hash == SM2_SKINNING_HASH)
             skin_d = copy[i].dispatches, skin_i = copy[i].indirect, skin_g = copy[i].groups;
+    }
+    for (i = 0; i < n; i++)
+    {
         for (j = i + 1; j < n; j++)
         {
             if (copy[j].dispatches + copy[j].indirect > copy[i].dispatches + copy[i].indirect)
@@ -606,6 +612,8 @@ static void log_hex(const char *what, const void *data, UINT size)
 
 /* ---------------------------------------------------------- command list hooks */
 
+#define CL_IDX(m) VT_INDEX(ID3D12GraphicsCommandListVtbl, m)
+
 /* What D3D12 sees while the game's skin dispatch function runs (see install_skin_budget):
  * set by hk_skin_dispatch on its own thread, read by the command-list hooks below. */
 static volatile DWORD g_skin_window_tid;
@@ -619,7 +627,122 @@ static BOOL in_skin_window(void)
     return g_skin_window_tid && g_skin_window_tid == GetCurrentThreadId();
 }
 
-#define CL_IDX(m) VT_INDEX(ID3D12GraphicsCommandListVtbl, m)
+/* Root signatures by object, so the one the skinning shader runs with can be logged. */
+#define ROOTSIG_MAX 256
+static struct { void *obj; void *blob; SIZE_T size; } g_rootsig_reg[ROOTSIG_MAX];
+static volatile LONG g_rootsig_reg_n, g_win_root_lines;
+static volatile LONG64 g_skin_skipped;
+
+static void rootsig_remember(void *obj, const void *blob, SIZE_T size)
+{
+    LONG i;
+    void *copy;
+
+    if (!obj || !size || size > 64 * 1024 || !(copy = HeapAlloc(GetProcessHeap(), 0, size)))
+        return;
+    memcpy(copy, blob, size);
+    if ((i = InterlockedIncrement(&g_rootsig_reg_n) - 1) >= ROOTSIG_MAX)
+    {
+        HeapFree(GetProcessHeap(), 0, copy);
+        return;
+    }
+    g_rootsig_reg[i].blob = copy;
+    g_rootsig_reg[i].size = size;
+    g_rootsig_reg[i].obj = obj;
+}
+
+/* Up to 80 lines of root-binding detail for the first skin dispatches with work. */
+static BOOL win_root_log(void)
+{
+    return in_skin_window() && g_win_root_lines < 80 && InterlockedIncrement(&g_win_root_lines) <= 80;
+}
+
+static void log_blob_hex(const char *what, const uint8_t *p, SIZE_T size)
+{
+    char line[32 * 2 + 1];
+    SIZE_T off, i;
+
+    log_msg("%s (%zu bytes):", what, (size_t)size);
+    for (off = 0; off < size && off < 4096; off += 32)
+    {
+        for (i = 0; i < 32 && off + i < size; i++)
+            sprintf(line + i * 2, "%02x", p[off + i]);
+        log_msg("  %04zx %s", (size_t)off, line);
+    }
+}
+
+static void STDMETHODCALLTYPE hk_list_SetComputeRootSignature(ID3D12GraphicsCommandList *list, ID3D12RootSignature *rs)
+{
+    void (STDMETHODCALLTYPE *orig)(ID3D12GraphicsCommandList *, ID3D12RootSignature *)
+            = orig_fn(list, CL_IDX(SetComputeRootSignature));
+    static volatile LONG dumped;
+    LONG i, n;
+
+    orig(list, rs);
+    if (!win_root_log())
+        return;
+    log_msg("skin window: SetComputeRootSignature %p", (void *)rs);
+    n = g_rootsig_reg_n < ROOTSIG_MAX ? g_rootsig_reg_n : ROOTSIG_MAX;
+    for (i = 0; i < n; i++)
+    {
+        if (g_rootsig_reg[i].obj == rs && !InterlockedExchange(&dumped, 1))
+            log_blob_hex("skin window: root signature blob", g_rootsig_reg[i].blob, g_rootsig_reg[i].size);
+    }
+}
+
+static void STDMETHODCALLTYPE hk_list_SetComputeRootDescriptorTable(ID3D12GraphicsCommandList *list, UINT index,
+        D3D12_GPU_DESCRIPTOR_HANDLE base)
+{
+    void (STDMETHODCALLTYPE *orig)(ID3D12GraphicsCommandList *, UINT, D3D12_GPU_DESCRIPTOR_HANDLE)
+            = orig_fn(list, CL_IDX(SetComputeRootDescriptorTable));
+
+    orig(list, index, base);
+    if (win_root_log())
+        log_msg("skin window: root %u = descriptor table %#llx", index, (unsigned long long)base.ptr);
+}
+
+static void STDMETHODCALLTYPE hk_list_SetComputeRoot32BitConstants(ID3D12GraphicsCommandList *list, UINT index,
+        UINT count, const void *data, UINT offset)
+{
+    void (STDMETHODCALLTYPE *orig)(ID3D12GraphicsCommandList *, UINT, UINT, const void *, UINT)
+            = orig_fn(list, CL_IDX(SetComputeRoot32BitConstants));
+
+    orig(list, index, count, data, offset);
+    if (win_root_log())
+    {
+        char what[96];
+
+        snprintf(what, sizeof(what), "skin window: root %u = %u constants at %u", index, count, offset);
+        log_hex(what, data, count * 4);
+    }
+}
+
+static void STDMETHODCALLTYPE hk_list_SetComputeRoot32BitConstant(ID3D12GraphicsCommandList *list, UINT index,
+        UINT value, UINT offset)
+{
+    void (STDMETHODCALLTYPE *orig)(ID3D12GraphicsCommandList *, UINT, UINT, UINT)
+            = orig_fn(list, CL_IDX(SetComputeRoot32BitConstant));
+
+    orig(list, index, value, offset);
+    if (win_root_log())
+        log_msg("skin window: root %u = constant %#x at %u", index, value, offset);
+}
+
+#define ROOT_VIEW_HOOK(name, label) \
+static void STDMETHODCALLTYPE hk_list_##name(ID3D12GraphicsCommandList *list, UINT index, \
+        D3D12_GPU_VIRTUAL_ADDRESS va) \
+{ \
+    void (STDMETHODCALLTYPE *orig)(ID3D12GraphicsCommandList *, UINT, D3D12_GPU_VIRTUAL_ADDRESS) \
+            = orig_fn(list, CL_IDX(name)); \
+\
+    orig(list, index, va); \
+    if (win_root_log()) \
+        log_msg("skin window: root %u = " label " %#llx", index, (unsigned long long)va); \
+}
+ROOT_VIEW_HOOK(SetComputeRootConstantBufferView, "CBV")
+ROOT_VIEW_HOOK(SetComputeRootShaderResourceView, "SRV")
+ROOT_VIEW_HOOK(SetComputeRootUnorderedAccessView, "UAV")
+
 
 static void hook_command_list_object(void *list);
 
@@ -673,27 +796,44 @@ static void STDMETHODCALLTYPE hk_list_SetPipelineState(ID3D12GraphicsCommandList
     }
 }
 
+static BOOL list_bound_hash(void *list, uint64_t *hash)
+{
+    struct list_state *e;
+    void *pso = NULL;
+
+    AcquireSRWLockShared(&g_lock);
+    if ((e = find_list_locked(list, FALSE)))
+        pso = e->pso;
+    ReleaseSRWLockShared(&g_lock);
+    return pso_hash_get(pso, hash);
+}
+
 static void STDMETHODCALLTYPE hk_list_Dispatch(ID3D12GraphicsCommandList *list, UINT x, UINT y, UINT z)
 {
     void (STDMETHODCALLTYPE *orig)(ID3D12GraphicsCommandList *, UINT, UINT, UINT)
             = orig_fn(list, CL_IDX(Dispatch));
+    uint64_t bound = 0;
 
+    if (g_cfg.skip_skinning && list_bound_hash(list, &bound) && bound == SM2_SKINNING_HASH)
+    {
+        LONG64 n = InterlockedIncrement64(&g_skin_skipped);
+
+        if (n == 1 || !(n & (n - 1)))
+            log_msg("skip_skinning: dropped %lld skinning dispatches so far (this one x=%u)", (long long)n, x);
+        return;
+    }
     orig(list, x, y, z);
     InterlockedIncrement64(&g_dispatches);
     if (in_skin_window())
     {
-        struct list_state *e;
         uint64_t hash = 0;
-        void *pso = NULL;
 
         InterlockedIncrement64(&g_win_dispatch);
         g_win_last_x = x;
-        AcquireSRWLockShared(&g_lock);
-        if ((e = find_list_locked(list, FALSE)))
-            pso = e->pso;
-        ReleaseSRWLockShared(&g_lock);
-        if (pso_hash_get(pso, &hash) && hash == SM2_SKINNING_HASH)
+        if (list_bound_hash(list, &hash) && hash == SM2_SKINNING_HASH)
             InterlockedIncrement64(&g_win_dispatch_skin);
+        if (win_root_log())
+            log_msg("skin window: Dispatch(%u, %u, %u) on list %p", x, y, z, (void *)list);
     }
     if (g_cfg.profile)
         profile_dispatch(list, FALSE, (UINT64)x * y * z);
@@ -1035,6 +1175,23 @@ static void hook_command_list_vtable(void *list)
     hook_slot(list, CL_IDX(ClearState), (void *)hk_list_ClearState, "CommandList::ClearState");
     hook_slot(list, CL_IDX(SetPipelineState), (void *)hk_list_SetPipelineState, "CommandList::SetPipelineState");
     hook_slot(list, CL_IDX(Dispatch), (void *)hk_list_Dispatch, "CommandList::Dispatch");
+    if (g_cfg.probe_skin)
+    {
+        hook_slot(list, CL_IDX(SetComputeRootSignature), (void *)hk_list_SetComputeRootSignature,
+                "CommandList::SetComputeRootSignature");
+        hook_slot(list, CL_IDX(SetComputeRootDescriptorTable), (void *)hk_list_SetComputeRootDescriptorTable,
+                "CommandList::SetComputeRootDescriptorTable");
+        hook_slot(list, CL_IDX(SetComputeRoot32BitConstants), (void *)hk_list_SetComputeRoot32BitConstants,
+                "CommandList::SetComputeRoot32BitConstants");
+        hook_slot(list, CL_IDX(SetComputeRoot32BitConstant), (void *)hk_list_SetComputeRoot32BitConstant,
+                "CommandList::SetComputeRoot32BitConstant");
+        hook_slot(list, CL_IDX(SetComputeRootConstantBufferView), (void *)hk_list_SetComputeRootConstantBufferView,
+                "CommandList::SetComputeRootConstantBufferView");
+        hook_slot(list, CL_IDX(SetComputeRootShaderResourceView), (void *)hk_list_SetComputeRootShaderResourceView,
+                "CommandList::SetComputeRootShaderResourceView");
+        hook_slot(list, CL_IDX(SetComputeRootUnorderedAccessView), (void *)hk_list_SetComputeRootUnorderedAccessView,
+                "CommandList::SetComputeRootUnorderedAccessView");
+    }
 }
 
 /* The game may talk to a list through any of its interface versions. Hook every
@@ -1205,6 +1362,8 @@ static HRESULT STDMETHODCALLTYPE hk_dev_CreateRootSignature(ID3D12Device *device
         }
     }
     hr = orig(device, node_mask, (g_cfg.minmax && minmax) ? copy : blob, size, riid, out);
+    if (SUCCEEDED(hr) && g_cfg.probe_skin && out && copy)
+        rootsig_remember(*out, copy, size);
     if (FAILED(hr))
         log_msg("FAILED CreateRootSignature hr=%#lx (%zu bytes)", (unsigned long)hr, (size_t)size);
     if (copy)
@@ -2040,6 +2199,8 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, void *reserved)
         if (g_skin_trampoline)
             fprintf(g_log, "exit: skin launcher calls=%lld with-requests=%lld blocked-by-flag=%lld\n",
                     (long long)g_skin_calls, (long long)g_skin_with_requests, (long long)g_skin_flag_blocked);
+        if (g_cfg.skip_skinning)
+            fprintf(g_log, "exit: skip_skinning dropped %lld skinning dispatches\n", (long long)g_skin_skipped);
         if (g_cfg.profile)
             log_profile("exit", 40);
         fprintf(g_log, "exit: %lld forced barriers, %lld target PSOs\n",
