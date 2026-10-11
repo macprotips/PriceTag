@@ -58,6 +58,7 @@ struct sm2_config
     int minmax;                 /* enum sm2_minmax_rewrite: what to do with min/max samplers */
     int profile;                /* count dispatches per compute shader and log the top ones */
     unsigned int cpu_count;     /* 0 = untouched, else max processors the game is told about */
+    unsigned int pso_delay_ms;  /* sleep this long in every pipeline creation (imitates a cold shader cache) */
 };
 
 /* Feature answers sm2fix can change, to steer the game onto a different code path. */

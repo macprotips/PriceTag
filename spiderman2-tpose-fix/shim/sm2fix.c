@@ -101,6 +101,7 @@ static void load_config(void)
         {"SM2FIX_MINMAX", "minmax"},
         {"SM2FIX_PROFILE", "profile"},
         {"SM2FIX_CPU_COUNT", "cpu_count"},
+        {"SM2FIX_PSO_DELAY_MS", "pso_delay_ms"},
     };
     WCHAR path[MAX_PATH];
     char value[1024];
@@ -466,6 +467,20 @@ static void profile_dispatch(void *list, BOOL indirect, UINT64 groups)
 
 static void dump_shader_ex(const char *stage, const void *code, size_t size, BOOL quiet, LONG limit);
 
+static volatile LONG64 g_pso_created;
+
+/* Imitates a cold shader cache: the one launch that came up fixed was the first after
+ * a settings change, when every pipeline had to be compiled and loading was slow. */
+static void pso_creation_delay(void)
+{
+    LONG64 n = InterlockedIncrement64(&g_pso_created);
+
+    if (g_cfg.pso_delay_ms)
+        Sleep(g_cfg.pso_delay_ms);
+    if (n == 1 || !(n & (n - 1)))
+        log_msg("pipelines created so far: %lld", (long long)n);
+}
+
 /* ------------------------------------------------------------- shader matching */
 
 static void note_compute_shader(void *pso, const void *code, size_t size, const char *how)
@@ -723,7 +738,10 @@ static HRESULT STDMETHODCALLTYPE hk_dev_CreateComputePipelineState(ID3D12Device 
 {
     HRESULT (STDMETHODCALLTYPE *orig)(ID3D12Device *, const D3D12_COMPUTE_PIPELINE_STATE_DESC *, REFIID, void **)
             = orig_fn(device, DEV_IDX(CreateComputePipelineState));
-    HRESULT hr = orig(device, desc, riid, pso);
+    HRESULT hr;
+
+    pso_creation_delay();
+    hr = orig(device, desc, riid, pso);
 
     if (SUCCEEDED(hr) && desc && pso && *pso)
         note_compute_shader(*pso, desc->CS.pShaderBytecode, desc->CS.BytecodeLength, "CreateComputePipelineState");
@@ -741,9 +759,12 @@ static HRESULT STDMETHODCALLTYPE hk_dev_CreatePipelineState(ID3D12Device2 *devic
 {
     HRESULT (STDMETHODCALLTYPE *orig)(ID3D12Device2 *, const D3D12_PIPELINE_STATE_STREAM_DESC *, REFIID, void **)
             = orig_fn(device, DEV_IDX(CreatePipelineState));
-    HRESULT hr = orig(device, desc, riid, pso);
+    HRESULT hr;
     const void *code = NULL;
     size_t size = 0;
+
+    pso_creation_delay();
+    hr = orig(device, desc, riid, pso);
 
     if (SUCCEEDED(hr) && desc && pso && *pso)
     {
@@ -806,7 +827,10 @@ static HRESULT STDMETHODCALLTYPE hk_dev_CreateGraphicsPipelineState(ID3D12Device
 {
     HRESULT (STDMETHODCALLTYPE *orig)(ID3D12Device *, const D3D12_GRAPHICS_PIPELINE_STATE_DESC *, REFIID, void **)
             = orig_fn(device, DEV_IDX(CreateGraphicsPipelineState));
-    HRESULT hr = orig(device, desc, riid, pso);
+    HRESULT hr;
+
+    pso_creation_delay();
+    hr = orig(device, desc, riid, pso);
 
     if (SUCCEEDED(hr) && desc && g_cfg.dump_graphics && desc->VS.BytecodeLength)
         dump_shader_ex("vs", desc->VS.pShaderBytecode, desc->VS.BytecodeLength, TRUE, 20000);

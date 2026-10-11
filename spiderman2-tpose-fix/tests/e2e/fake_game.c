@@ -45,6 +45,7 @@ int main(int argc, char **argv)
     SetEnvironmentVariableA("SM2FIX_SPOOF", "sm65, no_int64,no_fp16");
     SetEnvironmentVariableA("SM2FIX_DUMP_COMPUTE", "1");
     SetEnvironmentVariableA("SM2FIX_PROFILE", "1");
+    SetEnvironmentVariableA("SM2FIX_PSO_DELAY_MS", !strcmp(mode, "max") ? "50" : "0");
     SetEnvironmentVariableA("SM2FIX_CPU_COUNT", !strcmp(mode, "off") ? "0" : "2");
     SetEnvironmentVariableA("SM2FIX_MINMAX", !strcmp(mode, "off") ? "keep" : "linear");
 
@@ -98,7 +99,15 @@ int main(int argc, char **argv)
     memset(&cdesc, 0, sizeof(cdesc));
     cdesc.CS.pShaderBytecode = target_shader;
     cdesc.CS.BytecodeLength = sizeof(target_shader);
-    CHECK(SUCCEEDED(ID3D12Device4_CreateComputePipelineState(device, &cdesc, &IID_ID3D12PipelineState, (void **)&pso_target)));
+    {
+        DWORD t0 = GetTickCount(), dt;
+
+        CHECK(SUCCEEDED(ID3D12Device4_CreateComputePipelineState(device, &cdesc, &IID_ID3D12PipelineState, (void **)&pso_target)));
+        dt = GetTickCount() - t0;
+        /* pso_delay_ms=50 in max mode: creation must take at least ~50 ms, else be quick. */
+        printf("pso creation took %lu ms\n", dt);
+        CHECK(!strcmp(mode, "max") ? dt >= 40 : dt < 40);
+    }
     cdesc.CS.pShaderBytecode = other_shader;
     cdesc.CS.BytecodeLength = sizeof(other_shader);
     CHECK(SUCCEEDED(ID3D12Device4_CreateComputePipelineState(device, &cdesc, &IID_ID3D12PipelineState, (void **)&pso_other)));

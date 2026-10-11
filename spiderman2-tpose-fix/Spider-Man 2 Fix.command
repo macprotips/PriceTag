@@ -164,6 +164,10 @@ current_mode() {
 }
 
 mode_label() {
+    if grep -q '^pso_delay_ms = [1-9]' "$GAME_DIR/sm2fix.ini" 2>/dev/null; then
+        echo "Test #8 slow loading ($(sed -n 's/^pso_delay_ms = //p' "$GAME_DIR/sm2fix.ini") ms)"
+        return
+    fi
     if grep -q '^cpu_count = [1-9]' "$GAME_DIR/sm2fix.ini" 2>/dev/null; then
         echo "Test #7 fewer CPU cores ($(sed -n 's/^cpu_count = //p' "$GAME_DIR/sm2fix.ini"))"
         return
@@ -217,8 +221,8 @@ fi
 
 say ""
 say "What do you want to do?"
-say "  1) Test #7: game sees 8 CPU cores  <-- do this one"
-say "  2) Test #7b: game sees 4 CPU cores (after test #7)"
+say "  1) Test #8: slow loading  <-- do this one"
+say "  2) Test #8b: slower loading (if I ask)"
 say "  3) Save my results to the Desktop (to send for help)"
 say "  4) Remove everything (back to normal)"
 say ""
@@ -230,14 +234,16 @@ say "  8) A test fixed it! Switch to the faster version"
 say "  9) Test #4: hide GPU features"
 say "  11) Test #6: animation tracker"
 say "  12) Test #5: sampler fix"
+say "  13) Test #7: game sees 8 CPU cores"
 say "  10) Quit"
 read -r -p "Type a number and press Return: " action
 say ""
 
 # Map the new menu numbers onto the handlers below.
 case "$action" in
-    1) action=t7 ;;
-    2) action=t7b ;;
+    1) action=t8 ;;
+    2) action=t8b ;;
+    13) action=t7 ;;
     11) action=t6 ;;
     12) action=t5 ;;
     9) action=spoof_b ;;
@@ -251,6 +257,21 @@ case "$action" in
 esac
 
 case "$action" in
+    t8|t8b)
+        ds_on
+        rm -rf "$GAME_DIR/sm2fix-dumps"
+        if [ "$action" = t8 ]; then DELAY=10; else DELAY=40; fi
+        bash "$INSTALLER" "${ARGS[@]}" --mode off --profile --pso-delay "$DELAY" || pause_exit 1
+        say ""
+        line
+        say "Test #8 installed: every time the game builds a graphics program,"
+        say "it now waits ${DELAY} ms, imitating the slow first boot after a settings"
+        say "change (the one time the suit came up fixed). Loading WILL take longer."
+        say "  1. Start the game, load your save, check Spider-Man and NPCs."
+        say "  2. Quit from the menu and START IT A SECOND TIME, check again."
+        say "  3. Run this again, pick 3, send me the log + what you saw each time."
+        line
+        ;;
     t7|t7b)
         ds_on
         rm -rf "$GAME_DIR/sm2fix-dumps"

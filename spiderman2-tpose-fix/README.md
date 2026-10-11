@@ -28,7 +28,8 @@ That's it. To undo everything, run the file and pick **5**.
 | 2026-10-10 | same | #5 `minmax = linear` + vertex shader dump | **Still T-poses.** The game uses **no** MIN/MAX samplers (24 root signatures, 1,713 heap samplers, 0 min/max). Ruled out. |
 | 2026-10-10 | same | #6 `profile = 1` (~3.5 min) | **Skinning shader `3d50acdb…` created but dispatched 0 times**, while 197 other compute shaders ran ~1M times. |
 | 2026-10-10 | same | #6 again, ray tracing ON | Still T-poses and **still 0 skinning dispatches**, even though RT started (DispatchRays command signatures, 802 async-compute submits). One launch in this period came up with Spider-Man's current suit **fixed**. |
-| next | | #7 `cpu_count = 8` (then 4): game sees fewer cores; profiler on; two launches | pending |
+| 2026-10-10 | same | #7 `cpu_count = 8` | Still T-poses, skinning still 0. **Inconclusive:** 41 threads already existed when d3d12.dll loaded, so the game's job system was sized before the shim could act. |
+| next | | #8 `pso_delay_ms = 10` (then 40): imitate the slow, cold-cache first boot after a settings change, which is when the suit came up fixed | pending |
 
 **The CPU side never schedules skinning.** The GPU never gets skinning work,
 even with ray tracing on (which needs posed bodies), and the outcome changes from
@@ -263,6 +264,7 @@ there.
 | `dump_compute` | `0` | `1` saves every compute shader to `sm2fix-dumps\`. |
 | `dump_graphics` | `0` | `1` saves every vertex/mesh shader to `sm2fix-dumps\`. |
 | `profile` | `0` | `1` counts dispatches per compute shader (by hash) and logs the top ones every 20 s and at exit, always including skinning shader `3d50acdb571dce22`. |
+| `pso_delay_ms` | `0` | Sleep this long in every pipeline creation, to imitate a cold shader cache (slow first boot). |
 | `cpu_count` | `0` | Report at most this many processors to the game (import patching + affinity mask). `0` = unchanged. |
 | `minmax` | `keep` | Samplers with MIN/MAX reduction: `keep` (count only), `linear` (drop the reduction), `point` (point-sample). Root-signature blobs are edited on a copy and re-checksummed. |
 | `real_d3d12` | *(empty)* | Path to the real `d3d12.dll`. Empty means `system32\d3d12.dll`. |

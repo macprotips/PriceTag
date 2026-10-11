@@ -228,6 +228,9 @@ static void test_config(void)
     CHECK(sm2_config_set(&cfg, "minmax", "point") == 0 && cfg.minmax == SM2_MINMAX_POINT);
     CHECK(sm2_config_set(&cfg, "minmax", "linear") == 0 && cfg.minmax == SM2_MINMAX_LINEAR);
     CHECK(sm2_config_set(&cfg, "minmax", "keep") == 0 && cfg.minmax == SM2_MINMAX_KEEP);
+    CHECK(sm2_config_set(&cfg, "pso_delay_ms", "5") == 0 && cfg.pso_delay_ms == 5);
+    CHECK(sm2_config_set(&cfg, "pso_delay_ms", "99999") == 0 && cfg.pso_delay_ms == 0);
+    CHECK(sm2_config_set(&cfg, "cpu_count", "8") == 0 && cfg.cpu_count == 8);
 }
 
 int main(void)

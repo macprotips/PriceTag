@@ -267,6 +267,12 @@ int sm2_config_set(struct sm2_config *cfg, const char *key, const char *value)
         }
         return 0;
     }
+    if (key_equals(key, "pso_delay_ms"))
+    {
+        int n = atoi(value);
+        cfg->pso_delay_ms = n > 0 && n <= 1000 ? (unsigned int)n : 0;
+        return 0;
+    }
     if (key_equals(key, "cpu_count"))
     {
         int n = atoi(value);
