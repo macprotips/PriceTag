@@ -94,8 +94,13 @@ cp "$DLL" "$GAME_DIR/d3d12.dll"
 sed -e "s/^mode = .*/mode = $MODE/" -e "s/^spoof =.*/spoof = $SPOOF/" \
     -e "s/^dump_compute = .*/dump_compute = $DUMP_COMPUTE/" "$HERE/shim/sm2fix.ini" > "$GAME_DIR/sm2fix.ini"
 
-if wine_reg add "$REG_KEY" /v d3d12 /t REG_SZ /d "native,builtin" /f >/dev/null 2>&1; then
+if grep -qi 'AppDefaults\\\\Spider-Man2.exe\\\\DllOverrides' "$PREFIX/user.reg" 2>/dev/null \
+        && grep -qi '"d3d12"="native,builtin"' "$PREFIX/user.reg" 2>/dev/null; then
+    echo "DLL override already set."
+elif wine_reg add "$REG_KEY" /v d3d12 /t REG_SZ /d "native,builtin" /f >/dev/null 2>&1; then
     echo "Set per-game DLL override d3d12=native,builtin."
+elif [[ -f "$GAME_DIR/sm2fix.log" ]] && grep -q "D3D12CreateDevice ok" "$GAME_DIR/sm2fix.log"; then
+    echo "(DLL override not set, but a previous run shows the game loads sm2fix anyway: fine.)"
 else
     cat <<EOF
 Could not set the DLL override automatically. Do it once by hand:
