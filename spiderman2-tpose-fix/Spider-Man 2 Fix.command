@@ -259,8 +259,8 @@ fi
 
 say ""
 say "What do you want to do?"
-say "  1) Test #16: GPU check of the skinning shader (doesn't start the game)  <-- do this one"
-say "  2) Test #18: log what the skinning shader reads in the game"
+say "  1) Test #18: play the game and log what the skinning shader reads  <-- do this one"
+say "  2) Test #16: GPU check (done: the shader works on your Mac)"
 say "  3) Save my results to the Desktop (to send for help)"
 say "  4) Remove everything (back to normal)"
 say ""
@@ -287,13 +287,13 @@ say ""
 
 # Map the new menu numbers onto the handlers below.
 case "$action" in
-    1) action=t16 ;;
+    1) action=t18 ;;
     19) action=t15 ;;
     17) action=t13 ;;
     18) action=t14 ;;
     16) action=t11 ;;
     15) action=t10 ;;
-    2) action=t18 ;;
+    2) action=t16 ;;
     21) action=t17 ;;
     20) action=t9 ;;
     14) action=t8 ;;
