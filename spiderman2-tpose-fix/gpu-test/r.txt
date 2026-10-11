@@ -1,0 +1,3 @@
+Spider-Man 2 skinning shader GPU check
+shader: 72120 bytes from Z:\tmp\claude-0\s.dxil (hash 3d50acdb571dce22)
+FAILED CreateComputePipelineState hr=0x80004005

@@ -255,7 +255,7 @@ fi
 
 say ""
 say "What do you want to do?"
-say "  1) Test #15: switch the skinning shader off (diagnostic)  <-- do this one"
+say "  1) Test #16: GPU check of the skinning shader (doesn't start the game)  <-- do this one"
 say "  2) Test #9: Rosetta instruction check (done: Rosetta is fine)"
 say "  3) Save my results to the Desktop (to send for help)"
 say "  4) Remove everything (back to normal)"
@@ -274,13 +274,15 @@ say "  15) Test #10: GPU query tracer"
 say "  16) Test #11: real GPU clock"
 say "  17) Test #13: bigger skinning buffer (done: budget was fine)"
 say "  18) Test #14: skinning trace (done: the shader does run)"
+say "  19) Test #15: skinning shader off (done: its output is what you see)"
 say "  10) Quit"
 read -r -p "Type a number and press Return: " action
 say ""
 
 # Map the new menu numbers onto the handlers below.
 case "$action" in
-    1) action=t15 ;;
+    1) action=t16 ;;
+    19) action=t15 ;;
     17) action=t13 ;;
     18) action=t14 ;;
     16) action=t11 ;;
@@ -300,7 +302,56 @@ case "$action" in
     *) action=quit ;;
 esac
 
+pick_wine() {
+    if [ "$KIND" = CrossOver ] && [ -x "$CX_WINE" ]; then
+        RUN=("$CX_WINE" --bottle "$NAME")
+    elif [ "$KIND" = Whisky ] && [ -x "$WHISKY_WINE" ]; then
+        export WINEPREFIX="$PREFIX"
+        RUN=("$WHISKY_WINE")
+    else
+        say "I couldn't find CrossOver automatically."
+        say "Drag the CrossOver app (from Finder) onto this window, then press Return:"
+        read -r -p "> " APP
+        APP="$(printf '%s' "$APP" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
+            -e "s/^'\(.*\)'\$/\1/" -e 's/\\\(.\)/\1/g')"
+        APP="${APP%/}"
+        CX_WINE="$(find "$APP/Contents" -maxdepth 6 -path '*/bin/wine' -type f 2>/dev/null | head -n 1)"
+        if [ -z "$CX_WINE" ]; then
+            say "No wine found inside '$APP'. Send me a screenshot of this window."
+            pause_exit 1
+        fi
+        RUN=("$CX_WINE" --bottle "$NAME")
+    fi
+}
+
 case "$action" in
+    t16)
+        TDIR="$HERE/gpu-test"
+        pick_wine
+        say "Using: $CX_WINE"
+        say "Running the skinning shader GPU check. It takes under a minute and"
+        say "doesn't change anything. Please wait..."
+        say ""
+        EXE_WIN="Z:$(printf '%s' "$GAME_DIR/Spider-Man2.exe" | tr '/' '\\\\')"
+        rm -f "$TDIR/skin-report.txt"
+        (cd "$TDIR" && WINEDEBUG=-all "${RUN[@]}" skin_gpu_test.exe "$EXE_WIN" golden-skin.bin skin-report.txt)
+        if [ -f "$TDIR/skin-report.txt" ]; then
+            OUT="$HOME/Desktop/skin-report-$(date +%Y%m%d-%H%M).txt"
+            {
+                echo "mac: $(sysctl -n machdep.cpu.brand_string 2>/dev/null) / macOS $(sw_vers -productVersion 2>/dev/null)"
+                echo "bottle: $KIND / $NAME"
+                cat "$TDIR/skin-report.txt"
+            } > "$OUT"
+            say ""
+            tail -n 3 "$TDIR/skin-report.txt"
+            say ""
+            say "Saved: $OUT"
+            say "Send me that file."
+            open -R "$OUT" 2>/dev/null
+        else
+            say "The test didn't produce a report. Send me a screenshot of this window."
+        fi
+        ;;
     t13)
         ds_on
         rm -rf "$GAME_DIR/sm2fix-dumps"
@@ -376,25 +427,7 @@ case "$action" in
         ;;
     t9)
         TDIR="$HERE/rosetta-test"
-        if [ "$KIND" = CrossOver ] && [ -x "$CX_WINE" ]; then
-            RUN=("$CX_WINE" --bottle "$NAME")
-        elif [ "$KIND" = Whisky ] && [ -x "$WHISKY_WINE" ]; then
-            export WINEPREFIX="$PREFIX"
-            RUN=("$WHISKY_WINE")
-        else
-            say "I couldn't find CrossOver automatically."
-            say "Drag the CrossOver app (from Finder) onto this window, then press Return:"
-            read -r -p "> " APP
-            APP="$(printf '%s' "$APP" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
-                -e "s/^'\(.*\)'\$/\1/" -e 's/\\\(.\)/\1/g')"
-            APP="${APP%/}"
-            CX_WINE="$(find "$APP/Contents" -maxdepth 6 -path '*/bin/wine' -type f 2>/dev/null | head -n 1)"
-            if [ -z "$CX_WINE" ]; then
-                say "No wine found inside '$APP'. Send me a screenshot of this window."
-                pause_exit 1
-            fi
-            RUN=("$CX_WINE" --bottle "$NAME")
-        fi
+        pick_wine
         say "Using: $CX_WINE"
         say "Running the Rosetta instruction check. It takes 1-3 minutes and"
         say "doesn't touch the game. Please wait..."

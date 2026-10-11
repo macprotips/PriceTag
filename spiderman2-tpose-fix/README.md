@@ -35,7 +35,8 @@ That's it. To undo everything, run the file and pick **4**.
 | 2026-10-11 | same | #12 `probe_skin = 1` | The CPU skin-job launcher never has requests (+0x30 = 0, flag 0), so that path is idle. But the skinning manager's **queued-item count (+0x50) is 1,100–5,600 every frame**: work is queued and never reaches the GPU (skinning shader still 0 dispatches). A screenshot showed an NPC with T-posed jacket sleeves but animated arms, and Spider-Man upside down in bind pose: only meshes skinned by `CS_ModelSkinning` are stuck. |
 | 2026-10-11 | same | #13 `skin_budget = 65536` | **Budget is fine.** `ModelSkinGroupMax` was already 22,528 (all 28 `RenderBudgets` values look sane); raised to 65,536 anyway. The skin dispatch function ran ~2,150 times, ~820 with up to ~5,000 queued items, never over capacity, and the skinning shader still got **0 D3D12 dispatches**. The work is lost between the engine's own dispatch call (render context vtable +0x148) and D3D12. |
 | 2026-10-11 | same | #14 `probe_skin = 1` (window trace) | **Correction: the skinning shader does run.** Inside the game's skin dispatch function the shim saw `SetPipelineState(CS_ModelSkinning)` + `Dispatch` 1,599 times (up to ~6,300 groups). The "0 skinning dispatches" in every earlier profile was a **bug in the shim's profiler** (it looked the skinning entry up while sorting, so it missed it whenever the sort moved it); fixed. So CS_ModelSkinning runs on M1–M4, and the meshes it skins still show the bind pose. Its decompiled code is ~9,300 lines with 144 dynamically indexed local arrays, a classic trigger for GPU-compiler bugs. Engine shader slot 224 is created (handle `0x7e7b2390`). |
-| next | | #15 `skip_skinning = 1`: drop only the skinning dispatches. Same T-pose → its output isn't what's drawn (writes lost/ignored); parts vanish or break → its output is used and is wrong (shader translation or bone inputs). Also logs the root signature and bindings it runs with | pending |
+| 2026-10-11 | same | #15 `skip_skinning = 1` | **The skinning shader's output is what's drawn.** With its dispatches dropped, the T-posed parts turned into shards and spikes (the woman's body vanished, Spider-Man's head floated; screenshots). So on M1–M4 the shader runs, its output is used, and that output is the bind pose. Root bindings: a 24-constant root parameter + 5 descriptor tables. |
+| next | | #16 GPU check (`gpu-test/`): run the game's own `CS_ModelSkinning` (read from the user's `Spider-Man2.exe`) on synthetic inputs through D3DMetal, and compare every output vertex with a reference (dxil-spirv + Mesa lavapipe, the same translation path the game uses on Linux, where it animates fine) | pending |
 
 **Static analysis of the skinning scheduler.** Code cross-references from the
 `ModelSkinJobFunc` and `Skinning Fence` strings lead to the per-frame skin-job
@@ -66,6 +67,18 @@ buffer), then calls the game's own create function. It also hooks the dispatch
 function and logs, every 3 s, the queued count against the buffer capacity. The shim
 reads every address from the stub's own instruction displacements, and patches
 nothing unless the opcodes match.
+
+**Why the output is the bind pose (theory under test in #16).** For every 32-vertex
+block the shader reads a header (influences per vertex, bone base). One-influence
+vertices take their bone index from a plain byte read. Vertices with 2–16 influences
+unpack delta-encoded bone indices and 8-bit weights through small local arrays that
+are indexed at runtime (`a[0] = word; a[1..3] = 0; … a[i] >> shift`), which DXC emits
+as `alloca`s. If those dynamic array reads come back as 0, every influence lands on the
+block's base bone, usually the root. The mesh then follows the character rigidly in its
+bind pose: a T-pose that stays attached and turns upside down with Spider-Man.
+Vertex-shader-skinned parts use the same bone palette and animate correctly, so the
+bone data is fine. `gpu-test/skin_gpu_test.exe` reports wrong vertices broken down by
+influence count, which will show whether that's the trigger.
 
 **Why the clock matters.** Apple GPUs before M5 can't sample timestamps at arbitrary
 points in a command stream, so D3DMetal appears to stub D3D12 timestamps out on
