@@ -33,7 +33,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-CX_WINE="/Applications/CrossOver.app/Contents/SharedSupport/CrossOver/bin/wine"
+CX_WINE="$(bash "$HERE/scripts/find-crossover-wine.sh" 2>/dev/null)"
 
 if [[ -n "$BOTTLE" ]]; then
     PREFIX="$HOME/Library/Application Support/CrossOver/Bottles/$BOTTLE"
@@ -61,7 +61,7 @@ echo "Game folder: $GAME_DIR"
 REG_KEY='HKCU\Software\Wine\AppDefaults\Spider-Man2.exe\DllOverrides'
 wine_reg() {
     [[ -d "$PREFIX/drive_c" ]] || return 1
-    if [[ -n "$BOTTLE" && "$WINE" == "$CX_WINE" ]]; then
+    if [[ -n "$BOTTLE" && -n "$WINE" && "$WINE" == "$CX_WINE" ]]; then
         "$WINE" --bottle "$BOTTLE" reg "$@"
     elif [[ -n "$WINE" ]]; then
         WINEPREFIX="$PREFIX" "$WINE" reg "$@"

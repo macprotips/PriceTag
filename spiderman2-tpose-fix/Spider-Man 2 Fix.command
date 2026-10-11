@@ -5,7 +5,7 @@
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 INSTALLER="$HERE/scripts/install-macos.sh"
-CX_WINE="${SM2FIX_CX_WINE:-/Applications/CrossOver.app/Contents/SharedSupport/CrossOver/bin/wine}"
+CX_WINE="$(bash "$(dirname "$0")/scripts/find-crossover-wine.sh" 2>/dev/null)"
 WHISKY_WINE="$HOME/Library/Application Support/com.isaacmarovitz.Whisky/Libraries/Wine/bin/wine64"
 
 say()  { printf '%s\n' "$*"; }
@@ -265,9 +265,20 @@ case "$action" in
             export WINEPREFIX="$PREFIX"
             RUN=("$WHISKY_WINE")
         else
-            say "Couldn't find CrossOver's wine to run the test."
-            pause_exit 1
+            say "I couldn't find CrossOver automatically."
+            say "Drag the CrossOver app (from Finder) onto this window, then press Return:"
+            read -r -p "> " APP
+            APP="$(printf '%s' "$APP" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
+                -e "s/^'\(.*\)'\$/\1/" -e 's/\\\(.\)/\1/g')"
+            APP="${APP%/}"
+            CX_WINE="$(find "$APP/Contents" -maxdepth 6 -path '*/bin/wine' -type f 2>/dev/null | head -n 1)"
+            if [ -z "$CX_WINE" ]; then
+                say "No wine found inside '$APP'. Send me a screenshot of this window."
+                pause_exit 1
+            fi
+            RUN=("$CX_WINE" --bottle "$NAME")
         fi
+        say "Using: $CX_WINE"
         say "Running the Rosetta instruction check. It takes 1-3 minutes and"
         say "doesn't touch the game. Please wait..."
         say ""
