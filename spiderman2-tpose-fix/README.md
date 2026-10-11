@@ -31,7 +31,16 @@ That's it. To undo everything, run the file and pick **5**.
 | 2026-10-10 | same | #7 `cpu_count = 8` | Still T-poses, skinning still 0. **Inconclusive:** 41 threads already existed when d3d12.dll loaded, so the game's job system was sized before the shim could act. |
 | 2026-10-10 | same | #8 `pso_delay_ms = 10` (4,096+ pipelines delayed, ~40 s slower load) | **Still T-poses**, skinning still 0. Slow loading isn't the trigger. |
 | 2026-10-10 | same | #9 Rosetta instruction check | **Rosetta is conformant.** All FMA/F16C/AVX/AVX2/SSE4/BMI tests match Intel bit-for-bit in all MXCSR modes. `rcpps`/`rsqrtps` match Intel's exact values (within spec). All atomics, split-line `lock xadd`, `cmpxchg16b` and TSO litmus tests pass. Only `dpps` differs, and only in *which* NaN encoding it returns when inputs are NaN (Intel's default-NaN vs propagated payload): harmless, and AMD differs from Intel there too. CPU translation is ruled out. |
-| next | | #10 `trace_queries = 1`: log query heaps, Begin/EndQuery counts, `GetTimestampFrequency`/`GetClockCalibration`, and the values read back from resolved timestamp/occlusion/pipeline-stat queries every 15 s | pending |
+| 2026-10-10 | same | #10 `trace_queries = 1` | **Found a broken GPU clock.** D3DMetal answers `GetTimestampFrequency` with **60 Hz**, and **every resolved timestamp is 0**, across ~15,000 timestamp queries in a few minutes (1M-entry timestamp and occlusion query heaps). Occlusion results look normal (small non-zero sample counts). Skinning still 0 dispatches. |
+| next | | #11 `fake_timestamps = 1`: the shim reports the QPC frequency, records QPC time at each `EndQuery(TIMESTAMP)`, writes those values into the game's CPU-visible resolve buffer (skipping D3DMetal's zero-writing resolve), and answers `GetClockCalibration` | pending |
+
+**Why the clock matters.** Apple GPUs before M5 can't sample timestamps at arbitrary
+points in a command stream, so D3DMetal appears to stub D3D12 timestamps out on
+Apple7–9 (60 Hz, zeros) and implement them on Apple10. The engine issues thousands
+of timestamp queries ("RenderFrameTime Timestamps", `gpuTimeBegin`/`gpuTimeEnd`).
+If any of the timing it derives feeds animation (blend-in from the bind pose, the
+`AnimUpdateLOD` decisions or `RenderBudgets`), a zero GPU time would freeze
+characters at their starting (bind) pose, which is the T-pose.
 
 **Current theory.** Since CPU translation is ruled out, what differs between
 M1–M4 and M5 is the GPU, and how D3DMetal emulates D3D12 features on each family.
@@ -309,6 +318,7 @@ there.
 | `dump_compute` | `0` | `1` saves every compute shader to `sm2fix-dumps\`. |
 | `dump_graphics` | `0` | `1` saves every vertex/mesh shader to `sm2fix-dumps\`. |
 | `profile` | `0` | `1` counts dispatches per compute shader (by hash) and logs the top ones every 20 s and at exit, always including skinning shader `3d50acdb571dce22`. |
+| `fake_timestamps` | `0` | `1` answers timestamp queries in the shim: QPC frequency, QPC time recorded at each `EndQuery(TIMESTAMP)`, written into the game's mapped resolve buffer; also `GetClockCalibration`. |
 | `trace_queries` | `0` | `1` logs query heaps, query counts, timestamp frequency and calibration, and periodically decodes the values the game reads back (timestamp deltas in µs, occlusion counts, pipeline statistics). |
 | `pso_delay_ms` | `0` | Sleep this long in every pipeline creation, to imitate a cold shader cache (slow first boot). |
 | `cpu_count` | `0` | Report at most this many processors to the game (import patching + affinity mask). `0` = unchanged. |

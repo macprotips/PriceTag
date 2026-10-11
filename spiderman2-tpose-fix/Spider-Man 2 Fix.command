@@ -164,6 +164,10 @@ current_mode() {
 }
 
 mode_label() {
+    if grep -q '^fake_timestamps = 1' "$GAME_DIR/sm2fix.ini" 2>/dev/null; then
+        echo "Test #11 real GPU clock (timestamp fix)"
+        return
+    fi
     if grep -q '^trace_queries = 1' "$GAME_DIR/sm2fix.ini" 2>/dev/null; then
         echo "Test #10 GPU query tracer"
         return
@@ -225,7 +229,7 @@ fi
 
 say ""
 say "What do you want to do?"
-say "  1) Test #10: GPU query tracer  <-- do this one"
+say "  1) Test #11: real GPU clock (timestamp fix)  <-- do this one"
 say "  2) Test #9: Rosetta instruction check (done: Rosetta is fine)"
 say "  3) Save my results to the Desktop (to send for help)"
 say "  4) Remove everything (back to normal)"
@@ -240,13 +244,15 @@ say "  11) Test #6: animation tracker"
 say "  12) Test #5: sampler fix"
 say "  13) Test #7: game sees 8 CPU cores"
 say "  14) Test #8: slow loading"
+say "  15) Test #10: GPU query tracer"
 say "  10) Quit"
 read -r -p "Type a number and press Return: " action
 say ""
 
 # Map the new menu numbers onto the handlers below.
 case "$action" in
-    1) action=t10 ;;
+    1) action=t11 ;;
+    15) action=t10 ;;
     2) action=t9 ;;
     14) action=t8 ;;
     13) action=t7 ;;
@@ -263,6 +269,21 @@ case "$action" in
 esac
 
 case "$action" in
+    t11)
+        ds_on
+        rm -rf "$GAME_DIR/sm2fix-dumps"
+        bash "$INSTALLER" "${ARGS[@]}" --mode off --profile --trace-queries --fake-timestamps || pause_exit 1
+        say ""
+        line
+        say "Test #11 installed. On your Mac, Apple's D3DMetal tells the game the GPU"
+        say "clock runs at 60 Hz and every GPU timestamp is 0. This test gives the"
+        say "game a real clock instead."
+        say "  1. Start the game, load your save. Look at Spider-Man and the people"
+        say "     around you: still T-posing? Switch suits once too."
+        say "  2. Quit from the in-game menu."
+        say "  3. Run this again, pick 3, and send me the log + what you saw."
+        line
+        ;;
     t10)
         ds_on
         rm -rf "$GAME_DIR/sm2fix-dumps"

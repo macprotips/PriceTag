@@ -46,6 +46,8 @@ int main(int argc, char **argv)
     SetEnvironmentVariableA("SM2FIX_DUMP_COMPUTE", "1");
     SetEnvironmentVariableA("SM2FIX_PROFILE", "1");
     SetEnvironmentVariableA("SM2FIX_TRACE_QUERIES", "1");
+    /* all/max runs: mock behaves like D3DMetal (60 Hz, zero timestamps) and the shim fakes */
+    SetEnvironmentVariableA("SM2FIX_FAKE_TIMESTAMPS", (!strcmp(mode, "all") || !strcmp(mode, "max")) ? "1" : "0");
     SetEnvironmentVariableA("SM2FIX_PSO_DELAY_MS", !strcmp(mode, "max") ? "50" : "0");
     SetEnvironmentVariableA("SM2FIX_CPU_COUNT", !strcmp(mode, "off") ? "0" : "2");
     SetEnvironmentVariableA("SM2FIX_MINMAX", !strcmp(mode, "off") ? "keep" : "linear");
@@ -202,6 +204,39 @@ int main(int argc, char **argv)
         qdesc.Type = D3D12_COMMAND_LIST_TYPE_COMPUTE;
         CHECK(SUCCEEDED(ID3D12Device4_CreateCommandQueue(device, &qdesc, &IID_ID3D12CommandQueue, (void **)&queue)));
         /* Query tracing: timestamps resolved into a readback buffer get decoded in the log. */
+        if (!strcmp(mode, "all") || !strcmp(mode, "max"))
+        {
+            void (*d3dmetal_like)(int) = (void *)GetProcAddress(mock, "mock_set_d3dmetal_like");
+            void *(*readback)(void) = (void *)GetProcAddress(mock, "mock_get_readback_resource");
+            D3D12_QUERY_HEAP_DESC qh = {D3D12_QUERY_HEAP_TYPE_TIMESTAMP, 16, 0};
+            ID3D12QueryHeap *heap = NULL;
+            UINT64 freq = 0, *vals, gpu = 0, cpu = 0;
+            LARGE_INTEGER qf;
+            void *mapped = NULL;
+
+            d3dmetal_like(1);
+            QueryPerformanceFrequency(&qf);
+            CHECK(SUCCEEDED(ID3D12Device4_CreateQueryHeap(device, &qh, &IID_ID3D12QueryHeap, (void **)&heap)));
+            ID3D12CommandQueue_GetTimestampFrequency(queue, &freq);
+            ID3D12CommandQueue_GetClockCalibration(queue, &gpu, &cpu);
+            ID3D12GraphicsCommandList_EndQuery(list, heap, D3D12_QUERY_TYPE_TIMESTAMP, 3);
+            Sleep(20);
+            ID3D12GraphicsCommandList_EndQuery(list, heap, D3D12_QUERY_TYPE_TIMESTAMP, 4);
+            ID3D12GraphicsCommandList_ResolveQueryData(list, heap, D3D12_QUERY_TYPE_TIMESTAMP, 3, 2,
+                    (ID3D12Resource *)readback(), 0);
+            ((ID3D12Resource *)readback())->lpVtbl->Map((ID3D12Resource *)readback(), 0, NULL, &mapped);
+            vals = mapped;
+            printf("fake timestamps: freq=%llu (QPC %lld) t3=%llu t4=%llu delta=%.1f ms calib gpu=%llu cpu=%llu\n",
+                    (unsigned long long)freq, (long long)qf.QuadPart, (unsigned long long)vals[0],
+                    (unsigned long long)vals[1], (double)(vals[1] - vals[0]) * 1000.0 / (double)freq,
+                    (unsigned long long)gpu, (unsigned long long)cpu);
+            CHECK(freq == (UINT64)qf.QuadPart);
+            CHECK(vals[0] != 0 && vals[1] > vals[0]);
+            CHECK((double)(vals[1] - vals[0]) * 1000.0 / (double)freq >= 15.0);
+            CHECK(gpu != 0 && cpu != 0);
+            d3dmetal_like(0);
+        }
+        else
         {
             void *(*readback)(void) = (void *)GetProcAddress(mock, "mock_get_readback_resource");
             UINT64 freq = 0;

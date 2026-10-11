@@ -18,6 +18,7 @@ void mock_get_sampler_info(UINT *heap_filter, UINT *rootsig_filter, int *checksu
     *checksum_ok = g_last_rootsig_checksum_ok;
 }
 
+static int g_d3dmetal_like;
 static LONG g_uav_barriers, g_other_barriers, g_dispatches, g_signals, g_executes, g_indirect;
 
 void mock_get_queue_counts(LONG *signals, LONG *executes, LONG *indirect)
@@ -114,8 +115,24 @@ void *mock_get_readback_resource(void) { return &g_resource; }
 
 static void STDMETHODCALLTYPE list_EndQuery(ID3D12GraphicsCommandList *iface, ID3D12QueryHeap *h, D3D12_QUERY_TYPE t, UINT i) {}
 static void STDMETHODCALLTYPE list_ResolveQueryData(ID3D12GraphicsCommandList *iface, ID3D12QueryHeap *h, D3D12_QUERY_TYPE t,
-        UINT start, UINT count, ID3D12Resource *dest, UINT64 off) {}
-static HRESULT STDMETHODCALLTYPE queue_GetTimestampFrequency(ID3D12CommandQueue *iface, UINT64 *f) { *f = 1000000; return S_OK; }
+        UINT start, UINT count, ID3D12Resource *dest, UINT64 off)
+{
+    if (g_d3dmetal_like && t == D3D12_QUERY_TYPE_TIMESTAMP)
+        memset((uint8_t *)g_readback + off, 0, count * sizeof(UINT64));
+}
+/* Like D3DMetal on M1-M4 when g_d3dmetal_like is set: 60 Hz clock, resolves write zeros. */
+void mock_set_d3dmetal_like(int on) { g_d3dmetal_like = on; }
+static HRESULT STDMETHODCALLTYPE queue_GetClockCalibration(ID3D12CommandQueue *iface, UINT64 *gpu, UINT64 *cpu)
+{
+    *gpu = 0; /* D3DMetal-like: no usable GPU clock */
+    *cpu = 0;
+    return S_OK;
+}
+static HRESULT STDMETHODCALLTYPE queue_GetTimestampFrequency(ID3D12CommandQueue *iface, UINT64 *f)
+{
+    *f = g_d3dmetal_like ? 60 : 1000000;
+    return S_OK;
+}
 
 static ID3D12GraphicsCommandListVtbl list_vtbl;
 
@@ -246,6 +263,12 @@ static void STDMETHODCALLTYPE dev_CreateSampler(ID3D12Device4 *iface, const D3D1
 {
     g_last_sampler_filter = desc->Filter;
 }
+static HRESULT STDMETHODCALLTYPE dev_CreateQueryHeap(ID3D12Device4 *iface, const D3D12_QUERY_HEAP_DESC *desc,
+        REFIID riid, void **out)
+{
+    *out = new_object();
+    return S_OK;
+}
 static HRESULT STDMETHODCALLTYPE dev_CreateCommandQueue(ID3D12Device4 *iface, const D3D12_COMMAND_QUEUE_DESC *desc,
         REFIID riid, void **out)
 {
@@ -297,6 +320,7 @@ HRESULT WINAPI mock_D3D12CreateDevice(IUnknown *adapter, D3D_FEATURE_LEVEL level
         dev_vtbl->CreateCommandQueue = dev_CreateCommandQueue;
         dev_vtbl->CreateFence = dev_CreateFence;
         dev_vtbl->CreateSampler = dev_CreateSampler;
+        dev_vtbl->CreateQueryHeap = dev_CreateQueryHeap;
         VirtualProtect(dev_vtbl, 4096, PAGE_READONLY, &old);
 
         list_vtbl.QueryInterface = list_QI;
@@ -328,6 +352,7 @@ HRESULT WINAPI mock_D3D12CreateDevice(IUnknown *adapter, D3D_FEATURE_LEVEL level
         queue_vtbl.Signal = queue_Signal;
         queue_vtbl.Wait = queue_Wait;
         queue_vtbl.GetTimestampFrequency = queue_GetTimestampFrequency;
+        queue_vtbl.GetClockCalibration = queue_GetClockCalibration;
     }
     g_device.vtbl = dev_vtbl;
     g_device.refs = 1;

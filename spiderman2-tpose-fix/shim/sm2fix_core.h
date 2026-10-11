@@ -59,6 +59,7 @@ struct sm2_config
     int profile;                /* count dispatches per compute shader and log the top ones */
     unsigned int cpu_count;     /* 0 = untouched, else max processors the game is told about */
     int trace_queries;          /* log GPU queries (timestamps, occlusion) and the values read back */
+    int fake_timestamps;        /* replace D3DMetal's GPU timestamps (60 Hz, all zero on M1-M4) with real CPU time */
     unsigned int pso_delay_ms;  /* sleep this long in every pipeline creation (imitates a cold shader cache) */
 };
 

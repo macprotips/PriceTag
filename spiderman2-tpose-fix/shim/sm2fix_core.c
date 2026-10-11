@@ -267,6 +267,11 @@ int sm2_config_set(struct sm2_config *cfg, const char *key, const char *value)
         }
         return 0;
     }
+    if (key_equals(key, "fake_timestamps"))
+    {
+        cfg->fake_timestamps = atoi(value) != 0;
+        return 0;
+    }
     if (key_equals(key, "trace_queries"))
     {
         cfg->trace_queries = atoi(value) != 0;

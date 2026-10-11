@@ -103,6 +103,7 @@ static void load_config(void)
         {"SM2FIX_CPU_COUNT", "cpu_count"},
         {"SM2FIX_PSO_DELAY_MS", "pso_delay_ms"},
         {"SM2FIX_TRACE_QUERIES", "trace_queries"},
+        {"SM2FIX_FAKE_TIMESTAMPS", "fake_timestamps"},
     };
     WCHAR path[MAX_PATH];
     char value[1024];
@@ -176,7 +177,8 @@ static void hook_slot(void *obj, unsigned int index, void *hook, const char *nam
             return;
         }
     }
-    if (g_hook_count == ARRAYSIZE(g_hooks) || vtbl[index] == hook)
+    /* Never hook an empty slot: there would be no original to call. */
+    if (g_hook_count == ARRAYSIZE(g_hooks) || vtbl[index] == hook || !vtbl[index])
     {
         ReleaseSRWLockExclusive(&g_lock);
         return;
@@ -722,6 +724,106 @@ static const char *query_type_name(D3D12_QUERY_TYPE t)
     return (unsigned int)t < 8 ? names[t] : "other";
 }
 
+/* ------------------------------------------------------ timestamp emulation */
+
+/* On M1-M4, D3DMetal reports a 60 Hz timestamp frequency and resolves every timestamp
+ * query to 0. With fake_timestamps, the shim answers instead: QueryPerformanceCounter
+ * frequency, and the CPU time at which each EndQuery(TIMESTAMP) was recorded, written
+ * straight into the game's (CPU-visible) resolve buffer. */
+struct ts_heap { ID3D12QueryHeap *heap; volatile UINT64 *values; UINT count; };
+struct ts_dest { ID3D12Resource *res; uint8_t *mapped; };
+static struct ts_heap g_ts_heaps[16];
+static struct ts_dest g_ts_dests[64];
+static volatile LONG64 g_ts_faked_resolves, g_ts_fallback_resolves;
+
+static UINT64 qpc_now(void)
+{
+    LARGE_INTEGER t;
+    QueryPerformanceCounter(&t);
+    return (UINT64)t.QuadPart;
+}
+
+static UINT64 qpc_freq(void)
+{
+    LARGE_INTEGER f;
+    QueryPerformanceFrequency(&f);
+    return (UINT64)f.QuadPart;
+}
+
+static void ts_register_heap(ID3D12QueryHeap *heap, UINT count)
+{
+    volatile UINT64 *values = VirtualAlloc(NULL, (SIZE_T)count * sizeof(UINT64), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    unsigned int i;
+
+    if (!values)
+    {
+        log_msg("fake_timestamps: could not allocate %u slots", count);
+        return;
+    }
+    AcquireSRWLockExclusive(&g_prof_lock);
+    for (i = 0; i < ARRAYSIZE(g_ts_heaps); i++)
+    {
+        if (!g_ts_heaps[i].heap)
+        {
+            g_ts_heaps[i].heap = heap;
+            g_ts_heaps[i].values = values;
+            g_ts_heaps[i].count = count;
+            values = NULL;
+            break;
+        }
+    }
+    ReleaseSRWLockExclusive(&g_prof_lock);
+    if (values)
+        VirtualFree((void *)values, 0, MEM_RELEASE);
+    else
+        log_msg("fake_timestamps: emulating timestamp heap %p (%u slots)", (void *)heap, count);
+}
+
+static struct ts_heap *ts_find_heap(ID3D12QueryHeap *heap)
+{
+    unsigned int i;
+
+    for (i = 0; i < ARRAYSIZE(g_ts_heaps); i++)
+    {
+        if (g_ts_heaps[i].heap == heap)
+            return &g_ts_heaps[i];
+    }
+    return NULL;
+}
+
+/* CPU pointer for a resolve destination (mapped once and kept), or NULL. */
+static uint8_t *ts_map_dest(ID3D12Resource *res)
+{
+    uint8_t *ptr = NULL;
+    unsigned int i;
+
+    AcquireSRWLockExclusive(&g_prof_lock);
+    for (i = 0; i < ARRAYSIZE(g_ts_dests); i++)
+    {
+        if (g_ts_dests[i].res == res)
+        {
+            ptr = g_ts_dests[i].mapped;
+            break;
+        }
+        if (!g_ts_dests[i].res)
+        {
+            void *p = NULL;
+
+            res->lpVtbl->AddRef(res);
+            if (SUCCEEDED(res->lpVtbl->Map(res, 0, NULL, &p)) && p)
+            {
+                g_ts_dests[i].res = res;
+                g_ts_dests[i].mapped = ptr = p;
+            }
+            else
+                res->lpVtbl->Release(res);
+            break;
+        }
+    }
+    ReleaseSRWLockExclusive(&g_prof_lock);
+    return ptr;
+}
+
 static void STDMETHODCALLTYPE hk_list_BeginQuery(ID3D12GraphicsCommandList *list, ID3D12QueryHeap *heap,
         D3D12_QUERY_TYPE type, UINT index)
 {
@@ -737,6 +839,14 @@ static void STDMETHODCALLTYPE hk_list_EndQuery(ID3D12GraphicsCommandList *list, 
 {
     void (STDMETHODCALLTYPE *orig)(ID3D12GraphicsCommandList *, ID3D12QueryHeap *, D3D12_QUERY_TYPE, UINT)
             = orig_fn(list, CL_IDX(EndQuery));
+
+    if (g_cfg.fake_timestamps && type == D3D12_QUERY_TYPE_TIMESTAMP)
+    {
+        struct ts_heap *h = ts_find_heap(heap);
+
+        if (h && index < h->count)
+            h->values[index] = qpc_now();
+    }
     orig(list, heap, type, index);
     if ((unsigned int)type < 8)
         InterlockedIncrement64(&g_query_end[type]);
@@ -748,11 +858,32 @@ static void STDMETHODCALLTYPE hk_list_ResolveQueryData(ID3D12GraphicsCommandList
     void (STDMETHODCALLTYPE *orig)(ID3D12GraphicsCommandList *, ID3D12QueryHeap *, D3D12_QUERY_TYPE, UINT, UINT,
             ID3D12Resource *, UINT64) = orig_fn(list, CL_IDX(ResolveQueryData));
     unsigned int i;
-    BOOL known = FALSE;
+    BOOL known = FALSE, faked = FALSE;
 
-    orig(list, heap, type, start, count, dest, offset);
+    if (g_cfg.fake_timestamps && type == D3D12_QUERY_TYPE_TIMESTAMP && dest)
+    {
+        struct ts_heap *h = ts_find_heap(heap);
+        uint8_t *mapped;
+
+        if (h && (UINT64)start + count <= h->count && (mapped = ts_map_dest(dest)))
+        {
+            /* Write our values now and skip the GPU resolve, which would overwrite them
+             * with D3DMetal's zeros. */
+            memcpy(mapped + offset, (const void *)(h->values + start), (size_t)count * sizeof(UINT64));
+            faked = TRUE;
+            if (InterlockedIncrement64(&g_ts_faked_resolves) == 1)
+                log_msg("fake_timestamps: first resolve answered by the shim (%u values)", count);
+        }
+        else if (InterlockedIncrement64(&g_ts_fallback_resolves) <= 8)
+            log_msg("fake_timestamps: couldn't emulate resolve (heap %p known=%d, dest %p): passing through",
+                    (void *)heap, h != NULL, (void *)dest);
+    }
+    if (!faked)
+        orig(list, heap, type, start, count, dest, offset);
     if ((unsigned int)type < 8)
         InterlockedIncrement64(&g_query_resolve[type]);
+    if (!g_cfg.trace_queries)
+        return;
     if (!dest || !count)
         return;
 
@@ -846,7 +977,7 @@ static void maybe_dump_queries(void)
 
 static void hook_command_list_vtable(void *list)
 {
-    if (g_cfg.trace_queries)
+    if (g_cfg.trace_queries || g_cfg.fake_timestamps)
     {
         hook_slot(list, CL_IDX(BeginQuery), (void *)hk_list_BeginQuery, "CommandList::BeginQuery");
         hook_slot(list, CL_IDX(EndQuery), (void *)hk_list_EndQuery, "CommandList::EndQuery");
@@ -1214,8 +1345,17 @@ static HRESULT STDMETHODCALLTYPE hk_queue_GetTimestampFrequency(ID3D12CommandQue
 {
     static volatile LONG logged;
     HRESULT (STDMETHODCALLTYPE *orig)(ID3D12CommandQueue *, UINT64 *) = orig_fn(queue, Q_IDX(GetTimestampFrequency));
-    HRESULT hr = orig(queue, freq);
+    HRESULT hr = orig ? orig(queue, freq) : E_NOTIMPL;
 
+    if (g_cfg.fake_timestamps && freq)
+    {
+        if (InterlockedIncrement(&logged) <= 2)
+            log_msg("GetTimestampFrequency: D3DMetal says %llu Hz, answering %llu Hz",
+                    SUCCEEDED(hr) ? (unsigned long long)*freq : 0ull, (unsigned long long)qpc_freq());
+        *freq = qpc_freq();
+        g_ts_freq = *freq;
+        return S_OK;
+    }
     if (SUCCEEDED(hr) && freq)
     {
         g_ts_freq = *freq;
@@ -1229,8 +1369,18 @@ static HRESULT STDMETHODCALLTYPE hk_queue_GetClockCalibration(ID3D12CommandQueue
 {
     static volatile LONG logged;
     HRESULT (STDMETHODCALLTYPE *orig)(ID3D12CommandQueue *, UINT64 *, UINT64 *) = orig_fn(queue, Q_IDX(GetClockCalibration));
-    HRESULT hr = orig(queue, gpu, cpu);
+    HRESULT hr = orig ? orig(queue, gpu, cpu) : E_NOTIMPL;
 
+    if (g_cfg.fake_timestamps)
+    {
+        UINT64 now = qpc_now();
+
+        if (gpu)
+            *gpu = now;
+        if (cpu)
+            *cpu = now;
+        hr = S_OK;
+    }
     if (InterlockedIncrement(&logged) <= 4)
         log_msg("GetClockCalibration hr=%#lx gpu=%llu cpu=%llu", (unsigned long)hr,
                 gpu ? (unsigned long long)*gpu : 0ull, cpu ? (unsigned long long)*cpu : 0ull);
@@ -1271,7 +1421,7 @@ static HRESULT STDMETHODCALLTYPE hk_dev_CreateCommandQueue(ID3D12Device *device,
     hook_slot(*out, Q_IDX(ExecuteCommandLists), (void *)hk_queue_ExecuteCommandLists, "Queue::ExecuteCommandLists");
     hook_slot(*out, Q_IDX(Signal), (void *)hk_queue_Signal, "Queue::Signal");
     hook_slot(*out, Q_IDX(Wait), (void *)hk_queue_Wait, "Queue::Wait");
-    if (g_cfg.trace_queries)
+    if (g_cfg.trace_queries || g_cfg.fake_timestamps)
     {
         hook_slot(*out, Q_IDX(GetTimestampFrequency), (void *)hk_queue_GetTimestampFrequency,
                 "Queue::GetTimestampFrequency");
@@ -1308,6 +1458,8 @@ static HRESULT STDMETHODCALLTYPE hk_dev_CreateQueryHeap(ID3D12Device *device, co
             = orig_fn(device, DEV_IDX(CreateQueryHeap));
     HRESULT hr = orig(device, desc, riid, out);
 
+    if (g_cfg.fake_timestamps && SUCCEEDED(hr) && desc && out && *out && desc->Type == D3D12_QUERY_HEAP_TYPE_TIMESTAMP)
+        ts_register_heap(*out, desc->Count);
     if (desc)
         log_msg("CreateQueryHeap type=%s count=%u hr=%#lx", (unsigned int)desc->Type < 6 ? types[desc->Type] : "?",
                 desc->Count, (unsigned long)hr);
@@ -1344,7 +1496,7 @@ static void hook_device_object(void *obj)
         hook_slot(dev, DEV_IDX(CreateRootSignature), (void *)hk_dev_CreateRootSignature, "Device::CreateRootSignature");
         hook_slot(dev, DEV_IDX(CheckFeatureSupport), (void *)hk_dev_CheckFeatureSupport, "Device::CheckFeatureSupport");
         hook_slot(dev, DEV_IDX(CreateSampler), (void *)hk_dev_CreateSampler, "Device::CreateSampler");
-        if (g_cfg.trace_queries)
+        if (g_cfg.trace_queries || g_cfg.fake_timestamps)
             hook_slot(dev, DEV_IDX(CreateQueryHeap), (void *)hk_dev_CreateQueryHeap, "Device::CreateQueryHeap");
         hook_slot(dev, DEV_IDX(CreateCommandSignature), (void *)hk_dev_CreateCommandSignature,
                 "Device::CreateCommandSignature");
@@ -1379,7 +1531,7 @@ static BOOL CALLBACK init_once(INIT_ONCE *once, void *param, void **context)
     log_msg("sm2fix loaded: mode=%s log_shaders=%d hashes=%u spoof=%#x dump_compute=%d dump_graphics=%d minmax=%d",
             mode_names[g_cfg.mode], g_cfg.log_shaders, g_cfg.hash_count, g_cfg.spoof, g_cfg.dump_compute,
             g_cfg.dump_graphics, g_cfg.minmax);
-    log_msg("profile=%d trace_queries=%d", g_cfg.profile, g_cfg.trace_queries);
+    log_msg("profile=%d trace_queries=%d fake_timestamps=%d", g_cfg.profile, g_cfg.trace_queries, g_cfg.fake_timestamps);
     for (i = 0; i < g_cfg.hash_count; i++)
         log_msg("  target hash %016llx", (unsigned long long)g_cfg.hashes[i]);
 
@@ -1523,6 +1675,8 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, void *reserved)
                 (long long)g_barriers, (long long)g_target_psos);
         fprintf(g_log, "exit: root signatures=%lld with min/max static samplers=%lld; heap samplers=%lld min/max=%lld\n",
                 (long long)g_rootsigs, (long long)g_minmax_static, (long long)g_samplers_heap, (long long)g_minmax_heap);
+        fprintf(g_log, "exit: timestamp resolves faked=%lld passed-through=%lld\n",
+                (long long)g_ts_faked_resolves, (long long)g_ts_fallback_resolves);
         fprintf(g_log, "exit: dispatches=%lld execute_indirect=%lld pso_failures=%lld\n",
                 (long long)g_dispatches, (long long)g_indirect, (long long)g_pso_failures);
         fprintf(g_log, "exit: submits direct=%lld compute=%lld copy=%lld; fence signals=%lld waits=%lld;"

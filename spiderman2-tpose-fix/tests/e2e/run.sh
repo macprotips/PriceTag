@@ -20,7 +20,7 @@ for mode in hash all max off; do
     rm -rf sm2fix-dumps
     wine fake_game.exe "$mode" || status=1
     cp sm2fix.log "sm2fix-$mode.log"
-    if ! grep -q "timestamp x3 .*t0=1000 deltas(us): 600.0 1000.0" sm2fix.log; then
+    if [[ $mode != all && $mode != max ]] && ! grep -q "timestamp x3 .*t0=1000 deltas(us): 600.0 1000.0" sm2fix.log; then
         echo "FAIL: query tracing ($mode)"; grep -i "quer\|timestamp" sm2fix.log; status=1
     fi
     # Profiler: the target shader was bound for 4 dispatches (SetPipelineState, Reset,
