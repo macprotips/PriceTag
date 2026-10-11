@@ -756,10 +756,22 @@ case "$action" in
             } > "$OUT"
             say "Saved: $OUT"
             if [ -d "$GAME_DIR/sm2fix-capture" ] && [ -n "$(ls "$GAME_DIR/sm2fix-capture" 2>/dev/null)" ]; then
-                ZIP="$HOME/Desktop/sm2fix-capture-$STAMP.zip"
-                (cd "$GAME_DIR" && zip -qr "$ZIP" sm2fix-capture)
-                say "Saved: $ZIP"
-                say "Send me BOTH files."
+                # Uploads have a size limit: pack the recordings into ~20 MB zips.
+                ZDIR="$HOME/Desktop/sm2fix-capture-$STAMP"
+                mkdir -p "$ZDIR"
+                PART=1 SIZE=0 BATCH=()
+                for F in "$GAME_DIR"/sm2fix-capture/*; do
+                    FS=$(wc -c < "$F" | tr -d " ")
+                    if [ ${#BATCH[@]} -gt 0 ] && [ $((SIZE + FS)) -gt 20000000 ]; then
+                        (cd "$GAME_DIR/sm2fix-capture" && zip -q "$ZDIR/part$PART.zip" "${BATCH[@]}")
+                        PART=$((PART + 1)) SIZE=0 BATCH=()
+                    fi
+                    BATCH+=("$(basename "$F")")
+                    SIZE=$((SIZE + FS))
+                done
+                [ ${#BATCH[@]} -gt 0 ] && (cd "$GAME_DIR/sm2fix-capture" && zip -q "$ZDIR/part$PART.zip" "${BATCH[@]}")
+                say "Saved: $ZDIR ($PART zip file(s))"
+                say "Send me the log AND every zip in that folder."
             fi
             if [ -d "$GAME_DIR/sm2fix-dumps" ] && [ -n "$(ls "$GAME_DIR/sm2fix-dumps" 2>/dev/null)" ]; then
                 ZIP="$HOME/Desktop/sm2fix-shaders-$STAMP.zip"
