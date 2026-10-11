@@ -1,5 +1,23 @@
 # Spider-Man 2 T-pose fix for Apple Silicon (M1–M4)
 
+## Quick start (no technical knowledge needed)
+
+1. On this repo's GitHub page, switch to the branch `claude/elegant-dijkstra-9yhhvx`.
+   Click the green **Code** button, then **Download ZIP**. Double-click the ZIP to unzip it.
+2. Quit Spider-Man 2.
+3. Open the `spiderman2-tpose-fix` folder. **Right-click** `Spider-Man 2 Fix.command`
+   and choose **Open**, then **Open** again. You only need to right-click the first
+   time, because macOS blocks downloaded scripts until you approve them.
+4. A Terminal window opens and finds the game for you. Type **1** and press Return.
+5. Play the game. Is the T-pose gone?
+   - **Yes:** run the file again and pick **2** for better performance.
+   - **No:** run the file again and pick **4**. That saves a log to your Desktop.
+     Send it to me.
+
+That's it. To undo everything, run the file and pick **5**.
+
+---
+
 Marvel's Spider-Man 2 (PC, Steam app 2651280) runs on Macs through CrossOver,
 Whisky or Apple's Game Porting Toolkit (GPTK). All of these use Apple's
 **D3DMetal** to turn DirectX 12 into Metal. On M1–M4 Macs, characters often
