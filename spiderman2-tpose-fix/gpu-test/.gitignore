@@ -2,3 +2,4 @@ build/
 *.pdb
 skin-report.txt
 r.txt
+wine-output.txt
