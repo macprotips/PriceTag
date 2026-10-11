@@ -32,7 +32,9 @@ if [[ -n "$BOTTLE" ]]; then
     PREFIX="$HOME/Library/Application Support/CrossOver/Bottles/$BOTTLE"
     [[ -z "$WINE" && -x "$CX_WINE" ]] && WINE="$CX_WINE"
 fi
-if [[ -z "$PREFIX" || ! -d "$PREFIX/drive_c" ]]; then
+# A game in an external Steam library only needs --game-dir; the bottle is then just
+# where the DLL override goes (we print manual steps if we don't know it).
+if [[ ( -z "$PREFIX" || ! -d "$PREFIX/drive_c" ) && -z "$GAME_DIR" ]]; then
     echo "Can't find a bottle at '$PREFIX'. Pass --bottle NAME (CrossOver) or --prefix PATH." >&2
     exit 1
 fi
@@ -51,6 +53,7 @@ echo "Game folder: $GAME_DIR"
 # before the translation layer's. Scoped to Spider-Man2.exe only.
 REG_KEY='HKCU\Software\Wine\AppDefaults\Spider-Man2.exe\DllOverrides'
 wine_reg() {
+    [[ -d "$PREFIX/drive_c" ]] || return 1
     if [[ -n "$BOTTLE" && "$WINE" == "$CX_WINE" ]]; then
         "$WINE" --bottle "$BOTTLE" reg "$@"
     elif [[ -n "$WINE" ]]; then
@@ -78,6 +81,11 @@ fi
 if [[ -f "$GAME_DIR/d3d12.dll" ]] && ! grep -q "sm2fix" "$GAME_DIR/d3d12.dll" 2>/dev/null; then
     echo "Backing up the game's existing d3d12.dll"
     mv "$GAME_DIR/d3d12.dll" "$GAME_DIR/d3d12.dll.sm2fix-backup"
+fi
+if [[ ! -w "$GAME_DIR" ]]; then
+    echo "Can't write to $GAME_DIR." >&2
+    echo "If the game is on an external drive formatted as NTFS, macOS can only read it." >&2
+    exit 1
 fi
 cp "$DLL" "$GAME_DIR/d3d12.dll"
 sed "s/^mode = .*/mode = $MODE/" "$HERE/shim/sm2fix.ini" > "$GAME_DIR/sm2fix.ini"
