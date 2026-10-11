@@ -29,7 +29,42 @@ That's it. To undo everything, run the file and pick **5**.
 | 2026-10-10 | same | #6 `profile = 1` (~3.5 min) | **Skinning shader `3d50acdb…` created but dispatched 0 times**, while 197 other compute shaders ran ~1M times. |
 | 2026-10-10 | same | #6 again, ray tracing ON | Still T-poses and **still 0 skinning dispatches**, even though RT started (DispatchRays command signatures, 802 async-compute submits). One launch in this period came up with Spider-Man's current suit **fixed**. |
 | 2026-10-10 | same | #7 `cpu_count = 8` | Still T-poses, skinning still 0. **Inconclusive:** 41 threads already existed when d3d12.dll loaded, so the game's job system was sized before the shim could act. |
-| next | | #8 `pso_delay_ms = 10` (then 40): imitate the slow, cold-cache first boot after a settings change, which is when the suit came up fixed | pending |
+| 2026-10-10 | same | #8 `pso_delay_ms = 10` (4,096+ pipelines delayed, ~40 s slower load) | **Still T-poses**, skinning still 0. Slow loading isn't the trigger. |
+| next | | #9 Rosetta instruction check (`rosetta-test/`), run outside the game | pending |
+
+**Static analysis of `Spider-Man2.exe`** (the user's copy, not committed). It isn't
+packed (normal section entropy) and it statically imports `amd_ags_x64.dll`.
+D3DMetal presents the GPU as "AMD Compatibility Mode", so AMD-specific paths are
+in play. Engine strings show:
+
+* Skinning can run on the GPU (`ComputeShaders/CS_ModelSkinning`, the
+  `3d50acdb…` shader) or on the CPU (`ForceCpuSkinning`: "If set, the model will
+  always use CPU skinning", plus "cpu skinning jobs"). `ForceCpuSkinning` is a
+  per-model asset property, not a runtime switch.
+* `AutoFreezeSkinning`: "Automatically freeze skinning when no animations are
+  active (does nothing if already in bind)". `BindAfterAnimEnd`: "Force back to bind
+  pose after animation end". So the engine intentionally stops skinning and shows the
+  **bind pose** when it believes no animation is active, which matches 0 skinning
+  dispatches plus a T-pose.
+* RDTSC appears in 8 functions: profiler timestamps, plus one TSC calibration that
+  averages 100 RDTSC/QPC ratios. So Apple's 24 MHz counter under Rosetta is
+  calibrated correctly. Not the cause.
+* Instruction census (capstone over all 527,161 `.pdata` functions, 17.3 M
+  instructions, 605 mnemonics): 1.47 M VEX instructions, mostly scalar AVX
+  (`vmovss`, `vmulss`, `vaddss`). Also ~2,100 FMA (mostly `vfmadd231ps/ss`), 81
+  `vcvtph2ps` + 49 `vcvtps2ph` (F16C), **1,536 legacy `rsqrtps` + 692 `rcpps`** + 168
+  AVX estimate forms, 102 `popcnt`, 15 `tzcnt`, 13 `crc32`, and no gathers.
+
+**Test #9, a Rosetta conformance test** (`rosetta-test/`). It runs 222 instruction
+tests (all FMA/F16C/estimate forms the game uses, with exact encodings via inline
+asm where the compiler would pick another form, plus AVX/AVX2/SSE4/BMI). Each runs
+under 3 MXCSR environments (default, FTZ+DAZ, round-down) × 3 input kinds (normal,
+special values, raw bits) × 4,000 inputs. It also checks estimate precision against
+the x86 bound (≤ 1.5×2⁻¹²), atomicity (`lock xadd` aligned/misaligned/split across
+a cache line, `lock cmpxchg16b`), and TSO message-passing litmus tests (plain stores
+and `movnti`+`sfence`). The same `rosetta_test.exe` generated `golden.txt` on a real
+Intel Xeon (Wine), self-checks with 0 differences, and a corrupted-golden negative
+control is caught down to the exact case.
 
 **The CPU side never schedules skinning.** The GPU never gets skinning work,
 even with ray tracing on (which needs posed bodies), and the outcome changes from

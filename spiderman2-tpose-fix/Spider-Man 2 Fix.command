@@ -5,7 +5,7 @@
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 INSTALLER="$HERE/scripts/install-macos.sh"
-CX_WINE="/Applications/CrossOver.app/Contents/SharedSupport/CrossOver/bin/wine"
+CX_WINE="${SM2FIX_CX_WINE:-/Applications/CrossOver.app/Contents/SharedSupport/CrossOver/bin/wine}"
 WHISKY_WINE="$HOME/Library/Application Support/com.isaacmarovitz.Whisky/Libraries/Wine/bin/wine64"
 
 say()  { printf '%s\n' "$*"; }
@@ -221,8 +221,8 @@ fi
 
 say ""
 say "What do you want to do?"
-say "  1) Test #8: slow loading  <-- do this one"
-say "  2) Test #8b: slower loading (if I ask)"
+say "  1) Test #9: Rosetta instruction check (2 min, game stays closed)  <-- do this one"
+say "  2) Test #8: slow loading"
 say "  3) Save my results to the Desktop (to send for help)"
 say "  4) Remove everything (back to normal)"
 say ""
@@ -241,8 +241,8 @@ say ""
 
 # Map the new menu numbers onto the handlers below.
 case "$action" in
-    1) action=t8 ;;
-    2) action=t8b ;;
+    1) action=t9 ;;
+    2) action=t8 ;;
     13) action=t7 ;;
     11) action=t6 ;;
     12) action=t5 ;;
@@ -257,6 +257,36 @@ case "$action" in
 esac
 
 case "$action" in
+    t9)
+        TDIR="$HERE/rosetta-test"
+        if [ "$KIND" = CrossOver ] && [ -x "$CX_WINE" ]; then
+            RUN=("$CX_WINE" --bottle "$NAME")
+        elif [ "$KIND" = Whisky ] && [ -x "$WHISKY_WINE" ]; then
+            export WINEPREFIX="$PREFIX"
+            RUN=("$WHISKY_WINE")
+        else
+            say "Couldn't find CrossOver's wine to run the test."
+            pause_exit 1
+        fi
+        say "Running the Rosetta instruction check. It takes 1-3 minutes and"
+        say "doesn't touch the game. Please wait..."
+        say ""
+        (cd "$TDIR" && WINEDEBUG=-all "${RUN[@]}" rosetta_test.exe check golden.txt rosetta-report.txt)
+        if [ -f "$TDIR/rosetta-report.txt" ]; then
+            OUT="$HOME/Desktop/rosetta-report-$(date +%Y%m%d-%H%M).txt"
+            {
+                echo "mac: $(sysctl -n machdep.cpu.brand_string 2>/dev/null) / macOS $(sw_vers -productVersion 2>/dev/null)"
+                echo "bottle: $KIND / $NAME"
+                cat "$TDIR/rosetta-report.txt"
+            } > "$OUT"
+            say ""
+            say "Saved: $OUT"
+            say "Send me that file."
+            open -R "$OUT" 2>/dev/null
+        else
+            say "The test didn't produce a report. Send me a screenshot of this window."
+        fi
+        ;;
     t8|t8b)
         ds_on
         rm -rf "$GAME_DIR/sm2fix-dumps"
