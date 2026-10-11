@@ -1661,7 +1661,9 @@ static HRESULT STDMETHODCALLTYPE hk_dev_CreateRootSignature(ID3D12Device *device
     HRESULT hr;
 
     InterlockedIncrement64(&g_rootsigs);
-    if (blob && size && readable(blob, size) && (copy = HeapAlloc(GetProcessHeap(), 0, size)))
+    /* No readable() check: on a Mac the blob comes from D3DMetal's serializer in native
+     * macOS memory, which Wine's VirtualQuery doesn't know about. The API guarantees it. */
+    if (blob && size && size <= 1024 * 1024 && (copy = HeapAlloc(GetProcessHeap(), 0, size)))
     {
         memcpy(copy, blob, size);
         if (!sm2_rootsig_scan_samplers(copy, size, (enum sm2_minmax_rewrite)g_cfg.minmax, &minmax, &total, &first)
@@ -2341,6 +2343,7 @@ static volatile LONG g_cap_nbind[8];
 static volatile LONG g_cap_fail[8];
 static volatile LONG g_cap_count[8];
 static volatile DWORD g_cap_last[8], g_cap_t0;
+static volatile LONG g_cap_started;
 static volatile LONG g_cap_written;
 
 static void *real_fn(void *obj, unsigned int index)
@@ -2382,13 +2385,13 @@ static BOOL capture_wanted(uint64_t hash)
             break;
     if (i >= g_cfg.capture_hash_count || i >= 8)
         return FALSE;
-    if (!g_cap_t0)
+    if (!InterlockedCompareExchange(&g_cap_started, 1, 0))
     {
-        InterlockedCompareExchange((volatile LONG *)&g_cap_t0, (LONG)(now | 1), 0);
+        g_cap_t0 = now;
         log_msg("capture: first dispatch of a capture shader (%016llx); capturing in %u ms", (unsigned long long)hash,
                 g_cfg.capture_after_ms);
     }
-    if (now - g_cap_t0 < g_cfg.capture_after_ms)
+    if (!g_cap_t0 || (LONG)(now - g_cap_t0) < (LONG)g_cfg.capture_after_ms)
         return FALSE;
     n = g_cap_count[i];
     if ((unsigned int)n >= g_cfg.capture || (n && now - g_cap_last[i] < 3000))
