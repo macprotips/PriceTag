@@ -44,6 +44,7 @@ int main(int argc, char **argv)
     SetEnvironmentVariableA("SM2FIX_LOG_SHADERS", "1");
     SetEnvironmentVariableA("SM2FIX_SPOOF", "sm65, no_int64,no_fp16");
     SetEnvironmentVariableA("SM2FIX_DUMP_COMPUTE", "1");
+    SetEnvironmentVariableA("SM2FIX_PROFILE", "1");
     SetEnvironmentVariableA("SM2FIX_MINMAX", !strcmp(mode, "off") ? "keep" : "linear");
 
     shim = LoadLibraryA(".\\d3d12.dll");

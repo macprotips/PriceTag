@@ -20,6 +20,13 @@ for mode in hash all max off; do
     rm -rf sm2fix-dumps
     wine fake_game.exe "$mode" || status=1
     cp sm2fix.log "sm2fix-$mode.log"
+    # Profiler: the target shader was bound for 4 dispatches (SetPipelineState, Reset,
+    # stream PSO, bundle) and 1 ExecuteIndirect; the other shader for 1 dispatch.
+    target=$(grep -o 'target hash [0-9a-f]*' sm2fix.log | head -1 | cut -d' ' -f3)
+    if ! grep -q "profile (exit): 2 compute shaders used" sm2fix.log \
+            || ! grep -q "  $target dispatches=4 indirect=1" sm2fix.log; then
+        echo "FAIL: profiler output ($mode)"; grep profile -A3 sm2fix.log; status=1
+    fi
 done
 echo "--- sm2fix.log (max run) ---"
 cat sm2fix-max.log

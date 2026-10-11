@@ -267,6 +267,11 @@ int sm2_config_set(struct sm2_config *cfg, const char *key, const char *value)
         }
         return 0;
     }
+    if (key_equals(key, "profile"))
+    {
+        cfg->profile = atoi(value) != 0;
+        return 0;
+    }
     if (key_equals(key, "dump_graphics"))
     {
         cfg->dump_graphics = atoi(value) != 0;

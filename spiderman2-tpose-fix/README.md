@@ -25,7 +25,29 @@ That's it. To undo everything, run the file and pick **5**.
 | 2026-10-10 | same | #3 deep test (`mode = max`): GPU idle after each of 35,306 submissions, barriers after 227,086 dispatches + 30,465 `ExecuteIndirect` | **Still T-poses.** Rules out every GPU sync/race theory. **0 failed pipelines.** The game never submits to its compute queue. |
 | 2026-10-10 | same | #4 `spoof = sm65,...` | Game refuses to start: *"Shader Model 6.6 support not detected … Current GPU: AMD Compatibility Mode"*. SM 6.6 is a hard requirement. |
 | 2026-10-10 | same | #4b `spoof = no_int64,no_fp16`, all 525 compute shaders dumped | **Still T-poses.** Shader analysis: **no compute shader uses 64-bit ints or native fp16** (only TypedUAVLoadAdditionalFormats ×52, WaveOps ×8, descriptor-heap indexing ×4). The vkd3d target `324071d329f05ccc` is in the dump; it's a 3D-texture copy, unrelated to animation. |
-| next | | #5 `minmax = linear` (rewrite MIN/MAX-reduction samplers, an Apple10-only Metal feature) + dump vertex shaders | pending |
+| 2026-10-10 | same | #5 `minmax = linear` + vertex shader dump | **Still T-poses.** The game uses **no** MIN/MAX samplers (24 root signatures, 1,713 heap samplers, 0 min/max). Ruled out. |
+| next | | #6 `profile = 1`: count dispatches per compute shader, especially the skinning shader | pending |
+
+**Who T-poses (user report):** Spider-Man himself and most other characters.
+Switching suits *sometimes* fixes Spider-Man, but at random.
+
+**Skinning found.** Of 330 vertex shaders, 301 are vertex-pulling
+(`SV_VertexID` + `SV_InstanceID` only) and none have blend-weight inputs. The one
+with the most bone-like math draws hair strands. Body skinning is the compute
+shader **`3d50acdb571dce22`** (727 KB decompiled). Each workgroup reads an
+8-dword job descriptor, applies up to 8 bone influences per vertex with 3×4
+matrices, and writes posed vertices (int16 positions, 10:10:10:2 normals) to a
+buffer that rendering reads.
+
+**Current lead: an initialization race on the CPU side.** A shader miscompile
+would fail the same way every time. The random suit-switch fix instead points to
+character setup losing a race, for example the animation/skinning binding being
+created before its data is ready, and staying broken until the character is
+rebuilt. Rosetta-translated code (the game *requires* AVX2 and F16C, both
+translated by Rosetta) running slower on M1–M4 would make the game lose that race
+far more often. Test #6 checks whether the skinning shader runs at all: rarely or
+never means the CPU side decided not to skin; constantly means the inputs (bone
+matrices) are wrong.
 
 **Shader analysis so far.** The 525 compute shaders were decompiled with
 [dxil-spirv](https://github.com/HansKristian-Work/dxil-spirv) (`--glsl`). Every DXBC
@@ -225,6 +247,7 @@ there.
 | `spoof` | *(empty)* | Feature answers to hide from the game: `sm65` (report SM 6.5), `no_int64`, `no_fp16`, `uma` (claim unified memory), `no_rt`. |
 | `dump_compute` | `0` | `1` saves every compute shader to `sm2fix-dumps\`. |
 | `dump_graphics` | `0` | `1` saves every vertex/mesh shader to `sm2fix-dumps\`. |
+| `profile` | `0` | `1` counts dispatches per compute shader (by hash) and logs the top ones every 20 s and at exit, always including skinning shader `3d50acdb571dce22`. |
 | `minmax` | `keep` | Samplers with MIN/MAX reduction: `keep` (count only), `linear` (drop the reduction), `point` (point-sample). Root-signature blobs are edited on a copy and re-checksummed. |
 | `real_d3d12` | *(empty)* | Path to the real `d3d12.dll`. Empty means `system32\d3d12.dll`. |
 

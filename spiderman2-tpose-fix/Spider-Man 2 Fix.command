@@ -164,6 +164,10 @@ current_mode() {
 }
 
 mode_label() {
+    if grep -q '^profile = 1' "$GAME_DIR/sm2fix.ini" 2>/dev/null; then
+        echo "Test #6 animation tracker"
+        return
+    fi
     if grep -q '^minmax = \(linear\|point\)' "$GAME_DIR/sm2fix.ini" 2>/dev/null; then
         echo "Test #5 sampler fix ($(sed -n 's/^minmax = //p' "$GAME_DIR/sm2fix.ini"))"
         return
@@ -209,8 +213,8 @@ fi
 
 say ""
 say "What do you want to do?"
-say "  1) Test #5: sampler fix  <-- do this one"
-say "  2) Test #5b: sampler fix, point version (only if I ask)"
+say "  1) Test #6: animation tracker  <-- do this one"
+say "  2) Test #5: sampler fix"
 say "  3) Save my results to the Desktop (to send for help)"
 say "  4) Remove everything (back to normal)"
 say ""
@@ -226,8 +230,8 @@ say ""
 
 # Map the new menu numbers onto the handlers below.
 case "$action" in
-    1) action=t5 ;;
-    2) action=t5b ;;
+    1) action=t6 ;;
+    2) action=t5 ;;
     9) action=spoof_b ;;
     3) action=2 ;;
     4) action=3 ;;
@@ -239,6 +243,22 @@ case "$action" in
 esac
 
 case "$action" in
+    t6)
+        ds_on
+        rm -rf "$GAME_DIR/sm2fix-dumps"
+        bash "$INSTALLER" "${ARGS[@]}" --mode off --profile || pause_exit 1
+        say ""
+        line
+        say "Test #6 installed. It counts how often the game runs its"
+        say "character-animation (skinning) program while you play."
+        say "Speed should be normal."
+        say "  1. Start Spider-Man 2 and play 3-5 minutes. Include a moment"
+        say "     where you switch suits, and note the time if Spider-Man"
+        say "     starts animating properly."
+        say "  2. Quit the game normally (from the menu)."
+        say "  3. Run this again, pick 3, and send me the log it saves."
+        line
+        ;;
     t5|t5b)
         ds_on
         rm -rf "$GAME_DIR/sm2fix-dumps"

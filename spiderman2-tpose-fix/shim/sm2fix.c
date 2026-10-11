@@ -43,6 +43,8 @@ static HMODULE g_self, g_real;
 static FILE *g_log;
 static SRWLOCK g_lock = SRWLOCK_INIT;
 static INIT_ONCE g_init_once = INIT_ONCE_STATIC_INIT;
+/* Set at DLL_PROCESS_DETACH: other threads may have died holding a lock, so take none. */
+static BOOL g_exiting;
 static volatile LONG64 g_barriers, g_target_psos, g_dispatches, g_indirect, g_submits[4], g_waits,
         g_wait_timeouts, g_pso_failures, g_fence_signals, g_fence_waits, g_minmax_static, g_minmax_heap,
         g_samplers_heap, g_rootsigs;
@@ -55,14 +57,16 @@ static void log_msg(const char *fmt, ...)
 
     if (!g_log)
         return;
-    AcquireSRWLockExclusive(&g_lock);
+    if (!g_exiting)
+        AcquireSRWLockExclusive(&g_lock);
     va_start(args, fmt);
     fprintf(g_log, "[%lu] ", GetTickCount());
     vfprintf(g_log, fmt, args);
     fputc('\n', g_log);
     fflush(g_log);
     va_end(args);
-    ReleaseSRWLockExclusive(&g_lock);
+    if (!g_exiting)
+        ReleaseSRWLockExclusive(&g_lock);
 }
 
 static void path_next_to_self(WCHAR *out, size_t out_len, const WCHAR *file)
@@ -94,6 +98,7 @@ static void load_config(void)
         {"SM2FIX_DUMP_COMPUTE", "dump_compute"},
         {"SM2FIX_DUMP_GRAPHICS", "dump_graphics"},
         {"SM2FIX_MINMAX", "minmax"},
+        {"SM2FIX_PROFILE", "profile"},
     };
     WCHAR path[MAX_PATH];
     char value[1024];
@@ -235,6 +240,7 @@ struct list_state
     void *list;
     D3D12_COMMAND_LIST_TYPE type;
     BOOL target_bound;
+    void *pso;                  /* currently bound pipeline (profiling) */
 };
 
 static struct list_state g_lists[LIST_TABLE_SIZE];
@@ -286,8 +292,11 @@ static void list_bind_pso(void *list, void *pso)
     struct list_state *e;
 
     AcquireSRWLockExclusive(&g_lock);
-    if ((e = find_list_locked(list, target)))
+    if ((e = find_list_locked(list, target || g_cfg.profile)))
+    {
         e->target_bound = target;
+        e->pso = pso;
+    }
     ReleaseSRWLockExclusive(&g_lock);
 }
 
@@ -316,6 +325,143 @@ static void list_forget(void *list)
     ReleaseSRWLockExclusive(&g_lock);
 }
 
+/* -------------------------------------------------------------- profiling */
+
+/* The body-skinning compute shader found by decompiling the game's shaders: reads up to
+ * 8 bone influences per vertex and writes posed, quantized vertices to a buffer. */
+#define SM2_SKINNING_HASH 0x3d50acdb571dce22ull
+#define PSO_MAP_SIZE 8192
+#define PROF_SIZE 2048
+
+struct pso_hash { void *pso; uint64_t hash; };
+struct prof_entry { uint64_t hash; LONG64 dispatches, indirect, groups; };
+
+static struct pso_hash g_pso_hashes[PSO_MAP_SIZE];
+static struct prof_entry g_prof[PROF_SIZE];
+static SRWLOCK g_prof_lock = SRWLOCK_INIT;
+static volatile LONG g_prof_last_tick;
+
+static void pso_hash_set(void *pso, uint64_t hash)
+{
+    size_t h = ((size_t)pso >> 4) * 0x9e3779b97f4a7c15ull;
+    unsigned int i;
+
+    AcquireSRWLockExclusive(&g_prof_lock);
+    for (i = 0; i < PSO_MAP_SIZE; i++)
+    {
+        struct pso_hash *e = &g_pso_hashes[(h + i) % PSO_MAP_SIZE];
+
+        if (!e->pso || e->pso == pso)
+        {
+            e->pso = pso;
+            e->hash = hash;
+            break;
+        }
+    }
+    ReleaseSRWLockExclusive(&g_prof_lock);
+}
+
+static BOOL pso_hash_get(void *pso, uint64_t *hash)
+{
+    size_t h = ((size_t)pso >> 4) * 0x9e3779b97f4a7c15ull;
+    BOOL found = FALSE;
+    unsigned int i;
+
+    if (!pso)
+        return FALSE;
+    AcquireSRWLockShared(&g_prof_lock);
+    for (i = 0; i < PSO_MAP_SIZE; i++)
+    {
+        struct pso_hash *e = &g_pso_hashes[(h + i) % PSO_MAP_SIZE];
+
+        if (e->pso == pso)
+        {
+            *hash = e->hash;
+            found = TRUE;
+            break;
+        }
+        if (!e->pso)
+            break;
+    }
+    ReleaseSRWLockShared(&g_prof_lock);
+    return found;
+}
+
+static void log_profile(const char *when, unsigned int top)
+{
+    static struct prof_entry copy[PROF_SIZE];
+    struct prof_entry tmp;
+    unsigned int i, j, n = 0;
+    LONG64 skin_d = 0, skin_i = 0, skin_g = 0;
+
+    if (!g_exiting)
+        AcquireSRWLockShared(&g_prof_lock);
+    for (i = 0; i < PROF_SIZE; i++)
+    {
+        if (g_prof[i].hash)
+            copy[n++] = g_prof[i];
+    }
+    if (!g_exiting)
+        ReleaseSRWLockShared(&g_prof_lock);
+    for (i = 0; i < n; i++)
+    {
+        if (copy[i].hash == SM2_SKINNING_HASH)
+            skin_d = copy[i].dispatches, skin_i = copy[i].indirect, skin_g = copy[i].groups;
+        for (j = i + 1; j < n; j++)
+        {
+            if (copy[j].dispatches + copy[j].indirect > copy[i].dispatches + copy[i].indirect)
+                tmp = copy[i], copy[i] = copy[j], copy[j] = tmp;
+        }
+    }
+    log_msg("profile (%s): %u compute shaders used; SKINNING shader 3d50acdb571dce22: dispatches=%lld"
+            " indirect=%lld groups=%lld", when, n, (long long)skin_d, (long long)skin_i, (long long)skin_g);
+    for (i = 0; i < n && i < top; i++)
+        log_msg("  %016llx dispatches=%lld indirect=%lld groups=%lld", (unsigned long long)copy[i].hash,
+                (long long)copy[i].dispatches, (long long)copy[i].indirect, (long long)copy[i].groups);
+}
+
+static void profile_dispatch(void *list, BOOL indirect, UINT64 groups)
+{
+    size_t h;
+    struct list_state *e;
+    uint64_t hash;
+    void *pso = NULL;
+    unsigned int i;
+    LONG now, last;
+
+    AcquireSRWLockShared(&g_lock);
+    if ((e = find_list_locked(list, FALSE)))
+        pso = e->pso;
+    ReleaseSRWLockShared(&g_lock);
+    if (!pso_hash_get(pso, &hash))
+        return;
+
+    h = (size_t)(hash * 0x9e3779b97f4a7c15ull);
+    AcquireSRWLockExclusive(&g_prof_lock);
+    for (i = 0; i < PROF_SIZE; i++)
+    {
+        struct prof_entry *p = &g_prof[(h + i) % PROF_SIZE];
+
+        if (!p->hash || p->hash == hash)
+        {
+            p->hash = hash;
+            if (indirect)
+                p->indirect++;
+            else
+                p->dispatches++;
+            p->groups += groups;
+            break;
+        }
+    }
+    ReleaseSRWLockExclusive(&g_prof_lock);
+
+    /* Every 20 seconds, snapshot the counters so the log shows activity over time. */
+    now = (LONG)GetTickCount();
+    last = g_prof_last_tick;
+    if (now - last > 20000 && InterlockedCompareExchange(&g_prof_last_tick, now, last) == last)
+        log_profile("periodic", 8);
+}
+
 static void dump_shader_ex(const char *stage, const void *code, size_t size, BOOL quiet, LONG limit);
 
 /* ------------------------------------------------------------- shader matching */
@@ -327,6 +473,10 @@ static void note_compute_shader(void *pso, const void *code, size_t size, const 
     if (!pso || !code || !size)
         return;
     hash = sm2_shader_hash(code, size);
+    if (g_cfg.profile)
+        pso_hash_set(pso, hash);
+    if (hash == SM2_SKINNING_HASH)
+        log_msg("skinning shader created via %s -> pso %p", how, pso);
     if (g_cfg.dump_compute)
         dump_shader_ex("cs", code, size, TRUE, 20000);
     if (g_cfg.log_shaders)
@@ -481,6 +631,8 @@ static void STDMETHODCALLTYPE hk_list_Dispatch(ID3D12GraphicsCommandList *list, 
 
     orig(list, x, y, z);
     InterlockedIncrement64(&g_dispatches);
+    if (g_cfg.profile)
+        profile_dispatch(list, FALSE, (UINT64)x * y * z);
 
     if (g_cfg.mode != SM2_MODE_OFF && list_needs_barrier(list))
     {
@@ -510,6 +662,8 @@ static void STDMETHODCALLTYPE hk_list_ExecuteIndirect(ID3D12GraphicsCommandList 
 
     orig(list, signature, max_count, args, args_offset, count_buffer, count_offset);
     InterlockedIncrement64(&g_indirect);
+    if (g_cfg.profile)
+        profile_dispatch(list, TRUE, max_count);
 
     /* Indirect dispatches skip Dispatch(), so cover them too in the diagnostic modes. */
     if (g_cfg.mode >= SM2_MODE_ALL && list_needs_barrier(list))
@@ -995,6 +1149,7 @@ static BOOL CALLBACK init_once(INIT_ONCE *once, void *param, void **context)
     log_msg("sm2fix loaded: mode=%s log_shaders=%d hashes=%u spoof=%#x dump_compute=%d dump_graphics=%d minmax=%d",
             mode_names[g_cfg.mode], g_cfg.log_shaders, g_cfg.hash_count, g_cfg.spoof, g_cfg.dump_compute,
             g_cfg.dump_graphics, g_cfg.minmax);
+    log_msg("profile=%d", g_cfg.profile);
     for (i = 0; i < g_cfg.hash_count; i++)
         log_msg("  target hash %016llx", (unsigned long long)g_cfg.hashes[i]);
 
@@ -1118,6 +1273,9 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, void *reserved)
     }
     else if (reason == DLL_PROCESS_DETACH && g_log)
     {
+        g_exiting = TRUE;
+        if (g_cfg.profile)
+            log_profile("exit", 40);
         fprintf(g_log, "exit: %lld forced barriers, %lld target PSOs\n",
                 (long long)g_barriers, (long long)g_target_psos);
         fprintf(g_log, "exit: root signatures=%lld with min/max static samplers=%lld; heap samplers=%lld min/max=%lld\n",
