@@ -181,6 +181,7 @@ void sm2_config_defaults(struct sm2_config *cfg)
     cfg->hashes[0] = SM2_DEFAULT_HASH;
     cfg->probe_skin_rva = 0x2b42560;
     cfg->probe_jobsys_rva = 0xc2ca170;
+    cfg->skinning_hash = SM2_DEFAULT_SKINNING_HASH;
     cfg->probe_sb_rva = 0x2b087c0;
     cfg->probe_dispatch_rva = 0x2b08f00;
 }
@@ -294,6 +295,16 @@ int sm2_config_set(struct sm2_config *cfg, const char *key, const char *value)
     if (key_equals(key, "probe_dispatch_rva"))
     {
         cfg->probe_dispatch_rva = (uint32_t)strtoul(value, NULL, 16);
+        return 0;
+    }
+    if (key_equals(key, "skinning_hash"))
+    {
+        cfg->skinning_hash = strtoull(value, NULL, 16);
+        return 0;
+    }
+    if (key_equals(key, "replace_skinning"))
+    {
+        cfg->replace_skinning = atoi(value) != 0;
         return 0;
     }
     if (key_equals(key, "skip_skinning"))

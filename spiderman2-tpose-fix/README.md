@@ -36,7 +36,8 @@ That's it. To undo everything, run the file and pick **4**.
 | 2026-10-11 | same | #13 `skin_budget = 65536` | **Budget is fine.** `ModelSkinGroupMax` was already 22,528 (all 28 `RenderBudgets` values look sane); raised to 65,536 anyway. The skin dispatch function ran ~2,150 times, ~820 with up to ~5,000 queued items, never over capacity, and the skinning shader still got **0 D3D12 dispatches**. The work is lost between the engine's own dispatch call (render context vtable +0x148) and D3D12. |
 | 2026-10-11 | same | #14 `probe_skin = 1` (window trace) | **Correction: the skinning shader does run.** Inside the game's skin dispatch function the shim saw `SetPipelineState(CS_ModelSkinning)` + `Dispatch` 1,599 times (up to ~6,300 groups). The "0 skinning dispatches" in every earlier profile was a **bug in the shim's profiler** (it looked the skinning entry up while sorting, so it missed it whenever the sort moved it); fixed. So CS_ModelSkinning runs on M1–M4, and the meshes it skins still show the bind pose. Its decompiled code is ~9,300 lines with 144 dynamically indexed local arrays, a classic trigger for GPU-compiler bugs. Engine shader slot 224 is created (handle `0x7e7b2390`). |
 | 2026-10-11 | same | #15 `skip_skinning = 1` | **The skinning shader's output is what's drawn.** With its dispatches dropped, the T-posed parts turned into shards and spikes (the woman's body vanished, Spider-Man's head floated; screenshots). So on M1–M4 the shader runs, its output is used, and that output is the bind pose. Root bindings: a 24-constant root parameter + 5 descriptor tables. |
-| next | | #16 GPU check (`gpu-test/`): run the game's own `CS_ModelSkinning` (read from the user's `Spider-Man2.exe`) on synthetic inputs through D3DMetal, and compare every output vertex with a reference (dxil-spirv + Mesa lavapipe, the same translation path the game uses on Linux, where it animates fine). Verified here end to end: under Wine + vkd3d-proton + lavapipe the D3D12 harness matches the reference on all 37,189 vertices, reading the shader straight from `Spider-Man2.exe` | pending (Mac run) |
+| next | | #16 GPU check (`gpu-test/`): run the game's own `CS_ModelSkinning` (read from the user's `Spider-Man2.exe`) on synthetic inputs through D3DMetal and compare every output vertex with a reference (dxil-spirv + Mesa lavapipe, the path the game takes on Linux, where it animates fine). Also runs the corrected shader (`shader-fix/`). Verified here end to end under Wine + vkd3d-proton + lavapipe: both shaders match the reference on all 37,189 vertices. First Mac attempt: Wine's Mac display driver crashed in the bottle's `explorer.exe` before the test ran (CrossOver Preview on macOS 27); the check now runs with `winemac.drv` disabled and prefers the running/regular CrossOver | pending |
+| next | | #17 `replace_skinning = 1`: the shim swaps `CS_ModelSkinning` for `shader-fix/sm2fix-skinning.dxil` when the game creates it | pending |
 
 **Static analysis of the skinning scheduler.** Code cross-references from the
 `ModelSkinJobFunc` and `Skinning Fence` strings lead to the per-frame skin-job
@@ -79,6 +80,16 @@ bind pose: a T-pose that stays attached and turns upside down with Spider-Man.
 Vertex-shader-skinned parts use the same bone palette and animate correctly, so the
 bone data is fine. `gpu-test/skin_gpu_test.exe` reports wrong vertices broken down by
 influence count, which will show whether that's the trigger.
+
+**The corrected shader (`shader-fix/`).** The game's DXIL has 144 `alloca` arrays, each
+written at constant indexes and read once (or twice) at a runtime index in the same
+block. `unalloca.py` rewrites every such read as a chain of `select`s over the stored
+values and deletes the arrays; `name_values.py` renames values so DXC's assembler
+accepts the module; `dxa` re-assembles and signs it and `dxv` validates it
+(`make-fix.sh` does all of it, reproducibly). On the reference path the result is
+bit-identical to the original on every test vertex. The shim only swaps it in for the
+exact original shader (by hash) and falls back to the original if pipeline creation
+fails.
 
 **Why the clock matters.** Apple GPUs before M5 can't sample timestamps at arbitrary
 points in a command stream, so D3DMetal appears to stub D3D12 timestamps out on
@@ -364,6 +375,7 @@ there.
 | `dump_compute` | `0` | `1` saves every compute shader to `sm2fix-dumps\`. |
 | `dump_graphics` | `0` | `1` saves every vertex/mesh shader to `sm2fix-dumps\`. |
 | `profile` | `0` | `1` counts dispatches per compute shader (by hash) and logs the top ones every 20 s and at exit, always including skinning shader `3d50acdb571dce22`. |
+| `replace_skinning` | `0` | `1` swaps `CS_ModelSkinning` for `sm2fix-skinning.dxil` next to the shim (the installer copies it from `shader-fix/`). |
 | `skip_skinning` | `0` | Diagnostic: `1` drops every `Dispatch` made while `CS_ModelSkinning` is bound. |
 | `skin_budget` | `0` | Raise `RenderBudgets.ModelSkinGroupMax` (the `SkinningSB` capacity, which caps `CS_ModelSkinning` work per frame) to at least this many entries before the game creates the buffer. Also logs the budgets and skin-dispatch calls vs. capacity. `probe_sb_rva`/`probe_dispatch_rva` override the stub and dispatch-function RVAs. |
 | `probe_skin` | `0` | `1` hooks the game's skin-job launcher (only if its bytes match the analysed build) and logs requests, the job-system gate flag and manager state. `probe_skin_rva`/`probe_jobsys_rva` override the addresses. |

@@ -22,7 +22,7 @@ for variant in no-crossover crossover; do
         A="$H/Applications/CrossOver.app/Contents/SharedSupport/CrossOver/bin"
         mkdir -p "$A"
         # Fake wine: records its arguments; for the GPU check it writes a report like the real test.
-        printf '#!/bin/bash\nprintf "%%s\\n" "$@" > "%s/wine-args"\ncase "$*" in *skin_gpu_test.exe*) echo "RESULT: fake" > skin-report.txt ;; esac\nexit 0\n' "$H" > "$A/wine"
+        printf '#!/bin/bash\nprintf "%%s\\n" "$@" "OVERRIDES=$WINEDLLOVERRIDES" > "%s/wine-args"\ncase "$*" in *skin_gpu_test.exe*) echo "RESULT: fake" > skin-report.txt ;; esac\nexit 0\n' "$H" > "$A/wine"
         chmod +x "$A/wine"
     fi
     run() { printf '%s\n\n' "$1" | HOME="$H" TERM=dumb SM2FIX_VOLUMES=/nonexistent bash "$CMD" > "$TMP/out" 2>&1; }
@@ -30,6 +30,8 @@ for variant in no-crossover crossover; do
     out() { grep -q "$1" "$TMP/out"; }
 
     echo "== $variant"
+    run 2;  check "2 test#17 corrected shader"     eval 'ini replace_skinning 1 && ini skip_skinning 0 && [ -f "$G/sm2fix-skinning.dxil" ] && [ -f "$G/d3d12.dll" ]'
+    run 4;  check "4 remove takes the shader too"  eval '[ ! -f "$G/sm2fix-skinning.dxil" ] && [ ! -f "$G/d3d12.dll" ]'
     run 19; check "19 test#15 skip skinning"       eval 'ini skip_skinning 1 && ini probe_skin 1 && ini profile 1 && [ -f "$G/d3d12.dll" ]'
     run 18; check "18 test#14 skin trace"          eval 'ini probe_skin 1 && ini skin_budget 0 && ini skip_skinning 0'
     run 17; check "17 test#13 skin budget"         eval 'ini skin_budget 65536 && ini probe_skin 1'
@@ -52,7 +54,7 @@ for variant in no-crossover crossover; do
         run 19; check "override set via CrossOver wine" eval 'out "Set per-game DLL override"'
         rm -f "$H"/Desktop/skin-report-*.txt
         run 1; check "1 test#16 GPU check runs in the bottle" eval 'ls "$H"/Desktop/skin-report-*.txt >/dev/null 2>&1 \
-            && grep -qx -- "--bottle" "$H/wine-args" && grep -qx "skin_gpu_test.exe" "$H/wine-args" \
+            && grep -qx -- "--bottle" "$H/wine-args" && grep -qx "skin_gpu_test.exe" "$H/wine-args" && grep -q "sm2fix-skinning.dxil$" "$H/wine-args" && grep -qx "OVERRIDES=winemac.drv=d" "$H/wine-args" \
             && grep -q "^Z:.*\\\\Marvel'"'"'s Spider-Man 2\\\\Spider-Man2.exe$" "$H/wine-args"'
     else
         run 19; check "manual override hint without CrossOver" eval 'out "Do it once by hand"'

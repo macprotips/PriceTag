@@ -413,6 +413,8 @@ int main(int argc, char **argv)
         else
             out("run 1 and run 2 %s\n", memcmp(first, got, (size_t)SKIN_OUT_VERTS * 16) ? "DIFFER (non-deterministic)" : "are identical");
     }
+    out("RESULT: %s\n", all_ok ? "the game's skinning shader matches the reference on this GPU"
+                               : "the game's skinning shader gives WRONG results on this GPU");
     /* Candidate replacements. */
     for (i = 4; i < argc; i++)
     {
@@ -426,10 +428,10 @@ int main(int argc, char **argv)
             continue;
         }
         if ((got = run_shader(alt, n, &in)))
-            compare(argv[i], got, ref, &in);
+            out("RESULT (%s): %s\n", argv[i], compare(argv[i], got, ref, &in) ? "matches the reference" : "WRONG");
+        else
+            out("RESULT (%s): could not run\n", argv[i]);
     }
-    out("RESULT: %s\n", all_ok ? "the game's skinning shader matches the reference on this GPU"
-                               : "the game's skinning shader gives WRONG results on this GPU");
     if (report)
         fclose(report);
     return 0;

@@ -16,8 +16,12 @@ wine_in_app() { # app bundle path
     return 1
 }
 
-# 1) the usual places, any app whose name starts with CrossOver
-for app in /Applications/CrossOver*.app "$HOME"/Applications/CrossOver*.app /Applications/*/CrossOver*.app; do
+# 0) the CrossOver that's running now (the one the user plays with)
+app="$(ps -axo comm= 2>/dev/null | sed -n 's#^\(.*/CrossOver[^/]*\.app\)/.*#\1#p' | head -n 1)"
+[ -n "$app" ] && wine_in_app "$app" && exit 0
+# 1) the regular CrossOver.app first, then other builds (Preview, betas)
+for app in /Applications/CrossOver.app "$HOME"/Applications/CrossOver.app \
+        /Applications/CrossOver*.app "$HOME"/Applications/CrossOver*.app /Applications/*/CrossOver*.app; do
     [ -d "$app" ] && wine_in_app "$app" && exit 0
 done
 # 2) Spotlight, by bundle id
@@ -26,7 +30,4 @@ if command -v mdfind >/dev/null 2>&1; then
         wine_in_app "$app" && exit 0
     done | head -n 1 | grep . && exit 0
 fi
-# 3) a running CrossOver
-app="$(ps -axo comm= 2>/dev/null | sed -n 's#^\(.*/CrossOver[^/]*\.app\)/.*#\1#p' | head -n 1)"
-[ -n "$app" ] && wine_in_app "$app" && exit 0
 exit 1

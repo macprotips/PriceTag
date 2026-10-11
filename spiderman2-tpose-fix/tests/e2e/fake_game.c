@@ -16,6 +16,7 @@ static int failures;
 
 static const char target_shader[] = "pretend-this-is-the-DXIL-of-the-racy-shader";
 static const char other_shader[] = "some-unrelated-compute-shader";
+static const char skin_shader[] = "stand-in-for-CS_ModelSkinning";
 
 /* Stand-in for the game's skin-job launcher: same first 15 bytes (three register saves),
  * then mgr[0x34] = mgr[0x30] + 1 so the test can see the original code still ran. */
@@ -91,6 +92,9 @@ int main(int argc, char **argv)
         SetEnvironmentVariableA("SM2FIX_SKIN_BUDGET", !strcmp(mode, "hash") ? "65536" : "0");
         g_fake_jobsys[9] = 7; /* the gate flag at +0x24 */
     }
+    snprintf(hash, sizeof(hash), "%016llx", (unsigned long long)sm2_shader_hash(skin_shader, sizeof(skin_shader)));
+    SetEnvironmentVariableA("SM2FIX_SKINNING_HASH", hash);
+    SetEnvironmentVariableA("SM2FIX_REPLACE_SKINNING", !strcmp(mode, "hash") ? "1" : "0");
     SetEnvironmentVariableA("SM2FIX_TRACE_QUERIES", "1");
     /* all/max runs: mock behaves like D3DMetal (60 Hz, zero timestamps) and the shim fakes */
     SetEnvironmentVariableA("SM2FIX_FAKE_TIMESTAMPS", (!strcmp(mode, "all") || !strcmp(mode, "max")) ? "1" : "0");
@@ -192,6 +196,21 @@ int main(int argc, char **argv)
     cdesc.CS.pShaderBytecode = other_shader;
     cdesc.CS.BytecodeLength = sizeof(other_shader);
     CHECK(SUCCEEDED(ID3D12Device4_CreateComputePipelineState(device, &cdesc, &IID_ID3D12PipelineState, (void **)&pso_other)));
+
+    /* replace_skinning (hash mode): the driver must get sm2fix-skinning.dxil instead of
+     * the skinning shader; otherwise the original. run.sh writes that file. */
+    {
+        unsigned long long (*last_cs_hash)(void) = (void *)GetProcAddress(mock, "mock_get_last_cs_hash");
+        ID3D12PipelineState *pso_skin = NULL;
+        static const char replacement[] = "DXBC-pretend-replacement-skinning-shader-0123456789";
+
+        cdesc.CS.pShaderBytecode = skin_shader;
+        cdesc.CS.BytecodeLength = sizeof(skin_shader);
+        CHECK(SUCCEEDED(ID3D12Device4_CreateComputePipelineState(device, &cdesc, &IID_ID3D12PipelineState, (void **)&pso_skin)));
+        printf("skinning PSO: driver got shader %016llx\n", last_cs_hash());
+        CHECK(last_cs_hash() == (!strcmp(mode, "hash") ? sm2_shader_hash(replacement, sizeof(replacement) - 1)
+                                                        : sm2_shader_hash(skin_shader, sizeof(skin_shader))));
+    }
 
     memset(&stream, 0, sizeof(stream));
     stream.root.type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE;

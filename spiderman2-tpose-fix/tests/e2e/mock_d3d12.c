@@ -205,9 +205,24 @@ static HRESULT STDMETHODCALLTYPE dev_QI(ID3D12Device4 *iface, REFIID riid, void 
 }
 static ULONG STDMETHODCALLTYPE dev_AddRef(ID3D12Device4 *iface) { return InterlockedIncrement(&((struct device *)iface)->refs); }
 static ULONG STDMETHODCALLTYPE dev_Release(ID3D12Device4 *iface) { return InterlockedDecrement(&((struct device *)iface)->refs); }
+static unsigned long long g_last_cs_hash;
+
+/* Hash of the last compute shader the driver was given (to see replacements). */
+unsigned long long mock_get_last_cs_hash(void)
+{
+    return g_last_cs_hash;
+}
+
 static HRESULT STDMETHODCALLTYPE dev_CreateComputePipelineState(ID3D12Device4 *iface,
         const D3D12_COMPUTE_PIPELINE_STATE_DESC *desc, REFIID riid, void **out)
 {
+    const unsigned char *p = desc->CS.pShaderBytecode;
+    unsigned long long h = 0xcbf29ce484222325ull;
+    SIZE_T i;
+
+    for (i = 0; i < desc->CS.BytecodeLength; i++)
+        h = (h * 0x100000001b3ull) ^ p[i];
+    g_last_cs_hash = h;
     *out = new_object();
     return S_OK;
 }

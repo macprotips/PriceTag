@@ -11,7 +11,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-BOTTLE="" PREFIX="" GAME_DIR="" WINE="" MODE="hash" UNINSTALL=0 SPOOF="" DUMP_COMPUTE=0 DUMP_GRAPHICS=0 MINMAX=keep PROFILE=0 CPU_COUNT=0 PSO_DELAY=0 TRACE_QUERIES=0 FAKE_TS=0 PROBE_SKIN=0 SKIN_BUDGET=0 SKIP_SKINNING=0
+BOTTLE="" PREFIX="" GAME_DIR="" WINE="" MODE="hash" UNINSTALL=0 SPOOF="" DUMP_COMPUTE=0 DUMP_GRAPHICS=0 MINMAX=keep PROFILE=0 CPU_COUNT=0 PSO_DELAY=0 TRACE_QUERIES=0 FAKE_TS=0 PROBE_SKIN=0 SKIN_BUDGET=0 SKIP_SKINNING=0 REPLACE_SKINNING=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -33,6 +33,7 @@ while [[ $# -gt 0 ]]; do
         --probe-skin) PROBE_SKIN=1; shift ;;
         --skin-budget) SKIN_BUDGET="$2"; shift 2 ;;
         --skip-skinning) SKIP_SKINNING=1; shift ;;
+        --replace-skinning) REPLACE_SKINNING=1; shift ;;
         -h|--help) sed -n 2,12p "$0"; exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 1 ;;
     esac
@@ -76,7 +77,7 @@ wine_reg() {
 }
 
 if [[ $UNINSTALL -eq 1 ]]; then
-    rm -f "$GAME_DIR/d3d12.dll" "$GAME_DIR/sm2fix.ini" "$GAME_DIR/sm2fix.log"
+    rm -f "$GAME_DIR/d3d12.dll" "$GAME_DIR/sm2fix.ini" "$GAME_DIR/sm2fix.log" "$GAME_DIR/sm2fix-skinning.dxil"
     rm -rf "$GAME_DIR/sm2fix-dumps"
     [[ -f "$GAME_DIR/d3d12.dll.sm2fix-backup" ]] && mv "$GAME_DIR/d3d12.dll.sm2fix-backup" "$GAME_DIR/d3d12.dll"
     wine_reg delete "$REG_KEY" /v d3d12 /f >/dev/null 2>&1 || true
@@ -104,6 +105,11 @@ PREV_LOADED=0
 grep -q "D3D12CreateDevice ok" "$GAME_DIR/sm2fix.log" 2>/dev/null && PREV_LOADED=1
 cp "$DLL" "$GAME_DIR/d3d12.dll"
 rm -f "$GAME_DIR/sm2fix.log"   # each test starts with a fresh log
+if [[ $REPLACE_SKINNING -eq 1 ]]; then
+    cp "$HERE/shader-fix/sm2fix-skinning.dxil" "$GAME_DIR/sm2fix-skinning.dxil"
+else
+    rm -f "$GAME_DIR/sm2fix-skinning.dxil"
+fi
 sed -e "s/^mode = .*/mode = $MODE/" -e "s/^spoof =.*/spoof = $SPOOF/" \
     -e "s/^dump_compute = .*/dump_compute = $DUMP_COMPUTE/" -e "s/^dump_graphics = .*/dump_graphics = $DUMP_GRAPHICS/" \
     -e "s/^minmax = .*/minmax = $MINMAX/" -e "s/^profile = .*/profile = $PROFILE/" \
@@ -111,6 +117,7 @@ sed -e "s/^mode = .*/mode = $MODE/" -e "s/^spoof =.*/spoof = $SPOOF/" \
     -e "s/^trace_queries = .*/trace_queries = $TRACE_QUERIES/" -e "s/^fake_timestamps = .*/fake_timestamps = $FAKE_TS/" \
     -e "s/^probe_skin = .*/probe_skin = $PROBE_SKIN/" -e "s/^skin_budget = .*/skin_budget = $SKIN_BUDGET/" \
     -e "s/^skip_skinning = .*/skip_skinning = $SKIP_SKINNING/" \
+    -e "s/^replace_skinning = .*/replace_skinning = $REPLACE_SKINNING/" \
     "$HERE/shim/sm2fix.ini" > "$GAME_DIR/sm2fix.ini"
 
 if grep -qi 'AppDefaults\\\\Spider-Man2.exe\\\\DllOverrides' "$PREFIX/user.reg" 2>/dev/null \

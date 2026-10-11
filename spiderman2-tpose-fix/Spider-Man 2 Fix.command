@@ -178,6 +178,10 @@ current_mode() {
 }
 
 mode_label() {
+    if grep -q '^replace_skinning = 1' "$GAME_DIR/sm2fix.ini" 2>/dev/null; then
+        echo "Test #17 corrected skinning shader"
+        return
+    fi
     if grep -q '^skip_skinning = 1' "$GAME_DIR/sm2fix.ini" 2>/dev/null; then
         echo "Test #15 skinning shader switched off"
         return
@@ -256,7 +260,7 @@ fi
 say ""
 say "What do you want to do?"
 say "  1) Test #16: GPU check of the skinning shader (doesn't start the game)  <-- do this one"
-say "  2) Test #9: Rosetta instruction check (done: Rosetta is fine)"
+say "  2) Test #17: corrected skinning shader in the game (possible FIX)"
 say "  3) Save my results to the Desktop (to send for help)"
 say "  4) Remove everything (back to normal)"
 say ""
@@ -275,6 +279,7 @@ say "  16) Test #11: real GPU clock"
 say "  17) Test #13: bigger skinning buffer (done: budget was fine)"
 say "  18) Test #14: skinning trace (done: the shader does run)"
 say "  19) Test #15: skinning shader off (done: its output is what you see)"
+say "  20) Test #9: Rosetta instruction check (done: Rosetta is fine)"
 say "  10) Quit"
 read -r -p "Type a number and press Return: " action
 say ""
@@ -287,7 +292,8 @@ case "$action" in
     18) action=t14 ;;
     16) action=t11 ;;
     15) action=t10 ;;
-    2) action=t9 ;;
+    2) action=t17 ;;
+    20) action=t9 ;;
     14) action=t8 ;;
     13) action=t7 ;;
     11) action=t6 ;;
@@ -334,8 +340,15 @@ case "$action" in
         say ""
         EXE_WIN="Z:$(printf '%s' "$GAME_DIR/Spider-Man2.exe" | tr '/' '\\\\')"
         rm -f "$TDIR/skin-report.txt"
-        (cd "$TDIR" && WINEDEBUG=-all "${RUN[@]}" skin_gpu_test.exe "$EXE_WIN" golden-skin.bin skin-report.txt)
-        if [ -f "$TDIR/skin-report.txt" ]; then
+        # No window is needed: first try with Wine's Mac display driver off (it can crash
+        # on new macOS versions), then normally. Wine's own messages go to a log file.
+        for TRY in "winemac.drv=d" ""; do
+            (cd "$TDIR" && WINEDEBUG=-all WINEDLLOVERRIDES="$TRY" "${RUN[@]}" skin_gpu_test.exe "$EXE_WIN" \
+                golden-skin.bin skin-report.txt ..\\shader-fix\\sm2fix-skinning.dxil) > "$TDIR/wine-output.txt" 2>&1
+            grep -q "^RESULT" "$TDIR/skin-report.txt" 2>/dev/null && break
+            [ -n "$TRY" ] && say "First attempt didn't finish, trying again with the normal Wine setup..."
+        done
+        if grep -q "^RESULT" "$TDIR/skin-report.txt" 2>/dev/null; then
             OUT="$HOME/Desktop/skin-report-$(date +%Y%m%d-%H%M).txt"
             {
                 echo "mac: $(sysctl -n machdep.cpu.brand_string 2>/dev/null) / macOS $(sw_vers -productVersion 2>/dev/null)"
@@ -343,13 +356,17 @@ case "$action" in
                 cat "$TDIR/skin-report.txt"
             } > "$OUT"
             say ""
-            tail -n 3 "$TDIR/skin-report.txt"
+            grep "^RESULT" "$TDIR/skin-report.txt"
             say ""
             say "Saved: $OUT"
             say "Send me that file."
             open -R "$OUT" 2>/dev/null
         else
-            say "The test didn't produce a report. Send me a screenshot of this window."
+            OUT="$HOME/Desktop/skin-report-FAILED-$(date +%Y%m%d-%H%M).txt"
+            { echo "wine: $CX_WINE"; cat "$TDIR/skin-report.txt" 2>/dev/null; echo "--- wine output (last 60 lines)"; \
+              tail -n 60 "$TDIR/wine-output.txt" 2>/dev/null; } > "$OUT"
+            say "The test didn't finish. Saved what happened to: $OUT"
+            say "Send me that file."
         fi
         ;;
     t13)
@@ -365,6 +382,21 @@ case "$action" in
         say "  1. Start the game, load your save, look at Spider-Man and people nearby."
         say "  2. Quit from the in-game menu."
         say "  3. Run this again, pick 3, and send me the log (fixed or not)."
+        line
+        ;;
+    t17)
+        ds_on
+        rm -rf "$GAME_DIR/sm2fix-dumps"
+        bash "$INSTALLER" "${ARGS[@]}" --mode off --profile --probe-skin --replace-skinning || pause_exit 1
+        say ""
+        line
+        say "Test #17 installed. The game's character-skinning shader is swapped for a"
+        say "rewritten copy that computes exactly the same thing (checked bit for bit on"
+        say "a reference GPU) but without the code pattern Apple's M1-M4 compiler seems"
+        say "to get wrong."
+        say "  1. Start the game, load your save, look at Spider-Man and people nearby."
+        say "  2. Quit from the in-game menu, run this again, pick 3, send the log"
+        say "     (and a screenshot), fixed or not."
         line
         ;;
     t15)

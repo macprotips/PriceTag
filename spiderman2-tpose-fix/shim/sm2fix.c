@@ -111,6 +111,8 @@ static void load_config(void)
         {"SM2FIX_PROBE_DISPATCH_RVA", "probe_dispatch_rva"},
         {"SM2FIX_SKIN_BUDGET", "skin_budget"},
         {"SM2FIX_SKIP_SKINNING", "skip_skinning"},
+        {"SM2FIX_REPLACE_SKINNING", "replace_skinning"},
+        {"SM2FIX_SKINNING_HASH", "skinning_hash"},
     };
     WCHAR path[MAX_PATH];
     char value[1024];
@@ -342,7 +344,7 @@ static void list_forget(void *list)
 
 /* The body-skinning compute shader found by decompiling the game's shaders: reads up to
  * 8 bone influences per vertex and writes posed, quantized vertices to a buffer. */
-#define SM2_SKINNING_HASH 0x3d50acdb571dce22ull
+#define SM2_SKINNING_HASH (g_cfg.skinning_hash)
 #define PSO_MAP_SIZE 8192
 #define PROF_SIZE 2048
 
@@ -1223,15 +1225,67 @@ static void hook_command_list_object(void *obj)
 
 #define DEV_IDX(m) VT_INDEX(ID3D12Device4Vtbl, m)
 
+/* The replacement for CS_ModelSkinning (replace_skinning): sm2fix-skinning.dxil next to
+ * the shim, loaded once. Only used when the game hands over the exact original shader. */
+static const void *replacement_skinning(size_t *size)
+{
+    static INIT_ONCE once = INIT_ONCE_STATIC_INIT;
+    static void *data;
+    static size_t len;
+    BOOL pending;
+
+    if (InitOnceBeginInitialize(&once, 0, &pending, NULL) && pending)
+    {
+        WCHAR path[MAX_PATH];
+        FILE *f;
+        long n;
+
+        path_next_to_self(path, MAX_PATH, L"sm2fix-skinning.dxil");
+        if ((f = _wfopen(path, L"rb")))
+        {
+            fseek(f, 0, SEEK_END);
+            n = ftell(f);
+            fseek(f, 0, SEEK_SET);
+            if (n > 32 && (data = HeapAlloc(GetProcessHeap(), 0, n)) && fread(data, 1, n, f) == (size_t)n
+                    && !memcmp(data, "DXBC", 4))
+                len = n;
+            fclose(f);
+        }
+        log_msg("replace_skinning: %s sm2fix-skinning.dxil (%zu bytes, hash %016llx)", len ? "loaded" : "could NOT load",
+                len, len ? (unsigned long long)sm2_shader_hash(data, len) : 0ull);
+        InitOnceComplete(&once, 0, NULL);
+    }
+    *size = len;
+    return len ? data : NULL;
+}
+
 static HRESULT STDMETHODCALLTYPE hk_dev_CreateComputePipelineState(ID3D12Device *device,
         const D3D12_COMPUTE_PIPELINE_STATE_DESC *desc, REFIID riid, void **pso)
 {
     HRESULT (STDMETHODCALLTYPE *orig)(ID3D12Device *, const D3D12_COMPUTE_PIPELINE_STATE_DESC *, REFIID, void **)
             = orig_fn(device, DEV_IDX(CreateComputePipelineState));
+    D3D12_COMPUTE_PIPELINE_STATE_DESC swapped;
+    const void *alt;
+    size_t alt_size;
     HRESULT hr;
 
     pso_creation_delay();
-    hr = orig(device, desc, riid, pso);
+    if (g_cfg.replace_skinning && desc && desc->CS.pShaderBytecode
+            && readable(desc->CS.pShaderBytecode, desc->CS.BytecodeLength)
+            && sm2_shader_hash(desc->CS.pShaderBytecode, desc->CS.BytecodeLength) == SM2_SKINNING_HASH
+            && (alt = replacement_skinning(&alt_size)))
+    {
+        swapped = *desc;
+        swapped.CS.pShaderBytecode = alt;
+        swapped.CS.BytecodeLength = alt_size;
+        hr = orig(device, &swapped, riid, pso);
+        log_msg("replace_skinning: created the replacement skinning pipeline: hr=%#lx pso=%p", (unsigned long)hr,
+                SUCCEEDED(hr) && pso ? *pso : NULL);
+        if (FAILED(hr))
+            hr = orig(device, desc, riid, pso);   /* fall back to the game's own shader */
+    }
+    else
+        hr = orig(device, desc, riid, pso);
 
     if (SUCCEEDED(hr) && desc && pso && *pso)
         note_compute_shader(*pso, desc->CS.pShaderBytecode, desc->CS.BytecodeLength, "CreateComputePipelineState");
@@ -1262,7 +1316,11 @@ static HRESULT STDMETHODCALLTYPE hk_dev_CreatePipelineState(ID3D12Device2 *devic
                 desc->SizeInBytes, &code, &size);
 
         if (r == SM2_STREAM_COMPUTE)
+        {
             note_compute_shader(*pso, code, size, "CreatePipelineState");
+            if (g_cfg.replace_skinning && sm2_shader_hash(code, size) == SM2_SKINNING_HASH)
+                log_msg("replace_skinning: skinning shader came through CreatePipelineState, NOT replaced");
+        }
         else if (r == SM2_STREAM_GRAPHICS && g_cfg.dump_graphics)
             sm2_stream_for_each_shader(desc->pPipelineStateSubobjectStream, desc->SizeInBytes,
                     dump_stream_vertex_shader, NULL);

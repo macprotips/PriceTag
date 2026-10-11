@@ -14,6 +14,8 @@ uint64_t sm2_shader_hash(const void *code, size_t size);
 /* The compute shader vkd3d-proton forces a post-dispatch barrier on for
  * Spider-Man2.exe (vkd3d-proton commit cc9d6cc7, "Add missing barrier in Spider Man 2"). */
 #define SM2_DEFAULT_HASH 0x324071d329f05cccull
+/* The game's object-space skinning compute shader, CS_ModelSkinning. */
+#define SM2_DEFAULT_SKINNING_HASH 0x3d50acdb571dce22ull
 
 enum sm2_stream_result
 {
@@ -64,6 +66,8 @@ struct sm2_config
     uint32_t probe_jobsys_rva;  /* job-system state RVA (flag at +0x24) */
     uint32_t probe_sb_rva;      /* stub that creates the SkinningSB buffer (sized by ModelSkinGroupMax) */
     uint32_t probe_dispatch_rva;/* function that fills SkinningSB and dispatches CS_ModelSkinning */
+    uint64_t skinning_hash;     /* CS_ModelSkinning's hash (overridable for tests) */
+    int replace_skinning;       /* swap CS_ModelSkinning for sm2fix-skinning.dxil (array-free rewrite) */
     int skip_skinning;          /* diagnostic: drop every Dispatch while CS_ModelSkinning is bound */
     unsigned int skin_budget;   /* 0 = untouched, else raise RenderBudgets.ModelSkinGroupMax to at least this */
     int fake_timestamps;        /* replace D3DMetal's GPU timestamps (60 Hz, all zero on M1-M4) with real CPU time */

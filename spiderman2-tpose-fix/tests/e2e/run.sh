@@ -15,6 +15,7 @@ export WINEPREFIX="${WINEPREFIX:-$PWD/build/wineprefix}" WINEDEBUG=-all
 # Make sure the native shim beats Wine's builtin d3d12 when loaded from the app dir.
 export WINEDLLOVERRIDES="d3d12=n,b"
 cd "$OUT"
+printf '%s' "DXBC-pretend-replacement-skinning-shader-0123456789" > sm2fix-skinning.dxil
 status=0
 for mode in hash all max off; do
     rm -rf sm2fix-dumps
@@ -32,6 +33,9 @@ for mode in hash all max off; do
     if [[ $mode == all || $mode == max ]] && ! { grep -q "SkinningSB created: ok=1 capacity=16 entries" sm2fix.log \
             && grep -q "skin dispatch (first calls): calls=1 with-work=1 over-capacity=0 | entries queued=5 SkinningSB capacity=16" sm2fix.log; }; then
         echo "FAIL: skin budget probe ($mode)"; grep -i "skin" sm2fix.log; status=1
+    fi
+    if [[ $mode == hash ]] && ! grep -q "replace_skinning: created the replacement skinning pipeline: hr=0" sm2fix.log; then
+        echo "FAIL: replace_skinning ($mode)"; grep -i "replace" sm2fix.log; status=1
     fi
     if [[ $mode == off ]] && awk '/new launch/{buf=""} {buf=buf $0 "\n"} END{printf "%s", buf}' sm2fix.log | grep -q "SkinningSB\|skin dispatch"; then
         echo "FAIL: skin hooks active in off mode"; status=1
