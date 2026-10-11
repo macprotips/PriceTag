@@ -43,6 +43,9 @@ for mode in hash all max off; do
     if [[ $mode != off ]] && ! grep -q "skin palettes (as the dispatch is recorded): 5 queued items, 1 skipped (no palette), 2 palettes ANIMATED, 2 IDENTITY" sm2fix.log; then
         echo "FAIL: palette analysis ($mode)"; grep -i "palette" sm2fix.log; status=1
     fi
+    if [[ $mode != off ]] && ! grep -q "skin palettes: record flag bits (+4) among IDENTITY: .*(unreadable 2) | among ANIMATED: .*(unreadable 2)" sm2fix.log; then
+        echo "FAIL: palette flag breakdown ($mode)"; grep -i "palette" sm2fix.log; status=1
+    fi
     if [[ $mode != off ]] && ! grep -q "skin window:     data: [0-9a-f]\{8\} " sm2fix.log; then
         echo "FAIL: upload-buffer data dump ($mode)"; grep -i "skin window" sm2fix.log; status=1
     fi

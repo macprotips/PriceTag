@@ -2478,7 +2478,12 @@ static void log_skin_context(void)
 static const uint8_t *g_queue_base_ptr;     /* &queue array pointer */
 static const int32_t *g_queue_sel, *g_queue_alt;
 
-struct palette_stats { unsigned int items, skipped, identity, zero, other, out_of_range; };
+struct palette_stats
+{
+    unsigned int items, skipped, identity, zero, other, out_of_range;
+    unsigned int flag_identity[8], flag_animated[8];    /* by bit of the record's flag byte (+4) */
+    unsigned int noflag_identity, noflag_animated;      /* record unreadable */
+};
 
 static int bone_is_identity(const float *m)
 {
@@ -2552,6 +2557,20 @@ static void analyse_palettes(const char *when, int32_t n, int32_t *bases, unsign
             st.zero++;
         else
             st.other++;
+        if (!zero)
+        {
+            const uint8_t *rec = *(const uint8_t *const *)(queue + (size_t)i * 24 + 0x10);
+            int bit;
+
+            if (rec && readable(rec + 4, 1))
+            {
+                for (bit = 0; bit < 8; bit++)
+                    if (rec[4] & (1 << bit))
+                        (ident ? st.flag_identity : st.flag_animated)[bit]++;
+            }
+            else
+                (ident ? st.noflag_identity++ : st.noflag_animated++);
+        }
         if (sample && ((ident && shown_id < 2) || (!ident && !zero && shown_anim < 2)))
         {
             log_msg("skin palettes:   item %d base %d record %p %s: bone0 %.4f %.4f %.4f | %.4f %.4f %.4f | %.4f %.4f %.4f | t %.3f %.3f %.3f",
@@ -2567,6 +2586,19 @@ static void analyse_palettes(const char *when, int32_t n, int32_t *bases, unsign
     log_msg("skin palettes (%s): %u queued items, %u skipped (no palette), %u palettes ANIMATED, %u IDENTITY"
             " (bind pose), %u all-zero, %u out of range", when, st.items, st.skipped, st.other, st.identity, st.zero,
             st.out_of_range);
+    log_msg("skin palettes: record flag bits (+4) among IDENTITY: b0=%u b1=%u b2=%u b3=%u b4=%u b5=%u b6=%u b7=%u"
+            " (unreadable %u) | among ANIMATED: b0=%u b1=%u b2=%u b3=%u b4=%u b5=%u b6=%u b7=%u (unreadable %u)",
+            st.flag_identity[0], st.flag_identity[1], st.flag_identity[2], st.flag_identity[3], st.flag_identity[4],
+            st.flag_identity[5], st.flag_identity[6], st.flag_identity[7], st.noflag_identity,
+            st.flag_animated[0], st.flag_animated[1], st.flag_animated[2], st.flag_animated[3], st.flag_animated[4],
+            st.flag_animated[5], st.flag_animated[6], st.flag_animated[7], st.noflag_animated);
+    {
+        const uint32_t *m = (const uint32_t *)(g_game_base + SKIN_MANAGER_RVA);
+
+        if (readable(m, 0x80))
+            log_msg("skin palettes: manager CPU-job requests +30=%u capacity +34=%u | +4c=%u +54=%u +70=%u +74=%u",
+                    m[12], m[13], m[19], m[21], m[28], m[29]);
+    }
 }
 
 /* The same palettes one frame later: did the CPU fill them after the dispatch was recorded? */
