@@ -55,6 +55,13 @@ for mode in hash all max off; do
     if [[ $mode != off ]] && ! grep -q "force_anim: scanned .*AnimUpdateLODPrius=1 AnimControllerComponentPrius=1 SimpleAnimComponentPrius=[0-9]*, 3 changed now" sm2fix.log; then
         echo "FAIL: force_anim ($mode)"; grep -i "force_anim" sm2fix.log; status=1
     fi
+    if [[ $mode == hash ]] && ! { grep -q "ziva: the game's CPU check says level 0 -> it uses Ziva's Reference code" sm2fix.log \
+            && grep -q "ziva_cpu: game had picked AVX2, switched it to Reference" sm2fix.log && grep -q "cpu: leaf7 ebx=" sm2fix.log; }; then
+        echo "FAIL: ziva_cpu ($mode)"; grep -i "ziva\|cpu:" sm2fix.log; status=1
+    fi
+    if [[ $mode == all ]] && ! grep -q "ziva: Ziva RT now runs its AVX2 CPU code" sm2fix.log; then
+        echo "FAIL: ziva auto ($mode)"; grep -i "ziva" sm2fix.log; status=1
+    fi
     if [[ $mode != off ]] && ! grep -q "readbacks: \[0\] 4096 bytes, 1 copies (buffer) from src .* (1048576, heap 2): 0.8% non-zero" sm2fix.log; then
         echo "FAIL: readback monitor ($mode)"; grep -i "readback" sm2fix.log; status=1
     fi

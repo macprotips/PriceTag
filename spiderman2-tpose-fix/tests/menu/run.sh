@@ -30,7 +30,10 @@ for variant in no-crossover crossover; do
     out() { grep -q "$1" "$TMP/out"; }
 
     echo "== $variant"
-    run 25; check "25 test#21 writer trap"         eval 'ini trap_writer 1 && ini probe_skin 1 && ini force_anim 0'
+    run 1;  check "1 test#23 ziva reference"       eval 'ini ziva_cpu reference && ini mode off && ini probe_skin 0 && [ -f "$G/d3d12.dll" ]'
+    run 27; check "27 test#23b ziva sse41"         eval 'ini ziva_cpu sse41 && ini mode off'
+    run 28; check "28 test#23c ziva avx2"          eval 'ini ziva_cpu avx2 && ini mode off'
+    run 25; check "25 test#21 writer trap"         eval 'ini trap_writer 1 && ini probe_skin 1 && ini force_anim 0 && ini ziva_cpu auto'
     run 24; check "24 test#20 readback watch"      eval 'ini probe_skin 1 && ini trap_writer 0 && ini force_anim 0'
     run 23; check "23 test#19 force anim"          eval 'ini force_anim 1 && ini probe_skin 1 && ini skip_skinning 0'
     run 22; check "22 test#18 inputs trace"        eval 'ini probe_skin 1 && ini replace_skinning 0 && ini skip_skinning 0 && ini profile 1'
@@ -61,7 +64,7 @@ for variant in no-crossover crossover; do
             && grep -qx -- "--bottle" "$H/wine-args" && grep -qx "skin_gpu_test.exe" "$H/wine-args" && grep -q "sm2fix-skinning.dxil$" "$H/wine-args" && grep -qx "OVERRIDES=winemac.drv=d" "$H/wine-args" \
             && grep -q "^Z:.*\\\\Marvel'"'"'s Spider-Man 2\\\\Spider-Man2.exe$" "$H/wine-args"'
         rm -f "$H"/Desktop/format-report-*.txt
-        run 1; check "1 test#22 format check runs in the bottle" eval 'ls "$H"/Desktop/format-report-*.txt >/dev/null 2>&1 \
+        run 26; check "26 test#22 format check runs in the bottle" eval 'ls "$H"/Desktop/format-report-*.txt >/dev/null 2>&1 \
             && grep -qx -- "--bottle" "$H/wine-args" && grep -qx "format_test.exe" "$H/wine-args" && grep -qx "formats" "$H/wine-args" && grep -qx "OVERRIDES=winemac.drv=d" "$H/wine-args"'
     else
         run 19; check "manual override hint without CrossOver" eval 'out "Do it once by hand"'

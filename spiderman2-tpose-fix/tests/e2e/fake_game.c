@@ -70,7 +70,7 @@ uint64_t skin_sb_stub_test(void);
 void skin_dispatch_test(void);
 
 /* Fake RTTI + vtables for the three animation config classes force_anim looks for. */
-struct fake_td { void *vt; void *spare; char name[48]; };
+struct fake_td { void *vt; void *spare; char name[96]; };
 struct fake_col { uint32_t sig, off, cd, td_rva, cd_rva, self_rva; };
 static struct fake_td fake_tds[3] = {
     { NULL, NULL, ".?AVAnimUpdateLODPrius@@" },
@@ -79,6 +79,21 @@ static struct fake_td fake_tds[3] = {
 };
 static struct fake_col fake_cols[3];
 static void *fake_vtables[3][4];    /* [0] = COL pointer, the "vtable" starts at [1] */
+
+/* Fake Ziva RT: the CPU level check (same first bytes as the game's), the three
+ * implementation vtables with RTTI, and the global object holding the chosen one. */
+__asm__(".text\n.globl fake_ziva_level\nfake_ziva_level:\n"
+        "  .byte 0x40, 0x53\n  .byte 0x48, 0x83, 0xec, 0x10\n  .byte 0x33, 0xc9\n  movl $1, %eax\n  cpuid\n"
+        "  xorl %eax, %eax\n  addq $0x10, %rsp\n  popq %rbx\n  ret\n");
+int fake_ziva_level(void);
+static struct fake_td ziva_tds[3] = {
+    { NULL, NULL, ".?AUReferenceImpl@?A0xaf88766b@ZivaRT@@" },
+    { NULL, NULL, "" },
+    { NULL, NULL, "" },
+};
+static struct fake_col ziva_cols[3];
+static void *ziva_vtables[3][4];
+static void *volatile fake_ziva_obj;
 
 /* Fake skinning manager for trap_writer: +0x58 palette copy list, +0x60 count. */
 static uint8_t fake_mgr[0x100];
@@ -154,6 +169,25 @@ int main(int argc, char **argv)
         snprintf(rvas, sizeof(rvas), "%x", (unsigned)(fake_mgr - base));
         SetEnvironmentVariableA("SM2FIX_MANAGER_RVA", rvas);
         SetEnvironmentVariableA("SM2FIX_TRAP_WRITER", !strcmp(mode, "off") ? "0" : "1");
+
+        strcpy(ziva_tds[1].name, ".?AU?$SIMDImpl@USSE4_1Impl@?A0xaf88766b@ZivaRT@@@?A0xaf88766b@ZivaRT@@");
+        strcpy(ziva_tds[2].name, ".?AU?$SIMDImpl@UAVX2Impl@?A0xaf88766b@ZivaRT@@@?A0xaf88766b@ZivaRT@@");
+        for (k = 0; k < 3; k++)
+        {
+            ziva_cols[k].sig = 1;
+            ziva_cols[k].td_rva = (uint32_t)((uint8_t *)&ziva_tds[k] - base);
+            ziva_vtables[k][0] = &ziva_cols[k];
+        }
+        fake_ziva_obj = &ziva_vtables[2][1];    /* the game picked AVX2 */
+        {
+            char z[128];
+
+            snprintf(z, sizeof(z), "%x,%x,%x,%x,%x", (unsigned)((uint8_t *)fake_ziva_level - base),
+                    (unsigned)((uint8_t *)&fake_ziva_obj - base), (unsigned)((uint8_t *)&ziva_vtables[0][1] - base),
+                    (unsigned)((uint8_t *)&ziva_vtables[1][1] - base), (unsigned)((uint8_t *)&ziva_vtables[2][1] - base));
+            SetEnvironmentVariableA("SM2FIX_ZIVA_RVAS", z);
+            SetEnvironmentVariableA("SM2FIX_ZIVA_CPU", !strcmp(mode, "hash") ? "reference" : "auto");
+        }
     }
     SetEnvironmentVariableA("SM2FIX_TRACE_QUERIES", "1");
     /* all/max runs: mock behaves like D3DMetal (60 Hz, zero timestamps) and the shim fakes */
@@ -197,6 +231,14 @@ int main(int argc, char **argv)
                     && *(float *)(ctrl + 0x60) == 0.0f && *(float *)(simple + 0x20) == 0.0f && *(float *)(simple + 0x24) == 0.0f);
         else
             CHECK(*(float *)(lod + 0xc) == 20.0f && ctrl[0x68] == 0);
+    }
+    {
+        int tries;
+
+        for (tries = 0; tries < 40 && !strcmp(mode, "hash") && fake_ziva_obj != &ziva_vtables[0][1]; tries++)
+            Sleep(50);
+        printf("ziva: object vtable is %s\n", fake_ziva_obj == &ziva_vtables[0][1] ? "Reference" : "AVX2");
+        CHECK(fake_ziva_obj == (!strcmp(mode, "hash") ? (void *)&ziva_vtables[0][1] : (void *)&ziva_vtables[2][1]));
     }
 
     /* Skin probe: the hooked function must still do its job, and the hook must count it. */

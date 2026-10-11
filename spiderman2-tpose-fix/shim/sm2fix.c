@@ -21,6 +21,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdarg.h>
+#include <intrin.h>
 
 #include "sm2fix_core.h"
 #include "sm2fix_dxbc.h"
@@ -120,6 +121,8 @@ static void load_config(void)
         {"SM2FIX_MANAGER_RVA", "manager_rva"},
         {"SM2FIX_FORCE_ANIM_DELAY_MS", "force_anim_delay_ms"},
         {"SM2FIX_ANIM_VTBL_RVAS", "anim_vtbl_rvas"},
+        {"SM2FIX_ZIVA_CPU", "ziva_cpu"},
+        {"SM2FIX_ZIVA_RVAS", "ziva_rvas"},
     };
     WCHAR path[MAX_PATH];
     char value[1024];
@@ -3317,6 +3320,123 @@ static void install_force_anim(void)
         log_msg("force_anim: watching for %d animation config classes", ok);
 }
 
+/* ---------------------------------------------------------- Ziva RT CPU path */
+
+/* Ziva RT (the ML face and cloth deformer) has three CPU implementations: AVX2, SSE4.1 and
+ * a plain reference one. The game picks one at startup from CPUID (function at
+ * ziva_level_rva: 2 = AVX+AVX2, else the SSE4.1 bit) and stores it as the vtable of a
+ * global object. Under Rosetta, what CPUID advertises (and how well those instructions are
+ * translated) differs between Apple chips. This logs what the game sees and picks, and with
+ * ziva_cpu set keeps the chosen implementation in place. */
+static const char *const ziva_names[3] = { "Reference", "SSE4.1", "AVX2" };
+static const char *const ziva_rtti[3] =
+{
+    ".?AUReferenceImpl@?A0xaf88766b@ZivaRT@@",
+    ".?AU?$SIMDImpl@USSE4_1Impl@?A0xaf88766b@ZivaRT@@@?A0xaf88766b@ZivaRT@@",
+    ".?AU?$SIMDImpl@UAVX2Impl@?A0xaf88766b@ZivaRT@@@?A0xaf88766b@ZivaRT@@",
+};
+static const uint8_t ziva_level_bytes[] = { 0x40, 0x53, 0x48, 0x83, 0xec, 0x10, 0x33, 0xc9, 0xb8, 0x01, 0x00, 0x00, 0x00, 0x0f, 0xa2 };
+static uint8_t *g_ziva_vtbl[3];
+static uint8_t **g_ziva_obj;
+
+static int ziva_which(const uint8_t *vt)
+{
+    int i;
+
+    for (i = 0; i < 3; i++)
+        if (vt && vt == g_ziva_vtbl[i])
+            return i;
+    return -1;
+}
+
+static DWORD WINAPI ziva_thread(void *arg)
+{
+    int want = g_cfg.ziva_cpu - 1, last = -2;
+    unsigned int round = 0;
+    LONG switches = 0;
+
+    for (;; round++)
+    {
+        uint8_t *vt;
+        int cur;
+
+        if (g_exiting)
+            return 0;
+        vt = *(uint8_t *volatile *)g_ziva_obj;
+        cur = ziva_which(vt);
+        if (want >= 0 && cur >= 0 && cur != want)
+        {
+            *(uint8_t *volatile *)g_ziva_obj = g_ziva_vtbl[want];
+            if (++switches <= 3)
+                log_msg("ziva_cpu: game had picked %s, switched it to %s", ziva_names[cur], ziva_names[want]);
+            cur = want;
+        }
+        if (cur != last)
+        {
+            log_msg("ziva: Ziva RT now runs its %s CPU code%s", cur >= 0 ? ziva_names[cur] : "(not set yet)",
+                    vt && cur < 0 ? " (unknown vtable!)" : "");
+            last = cur;
+        }
+        Sleep(round < 1200 ? 50 : 1000);
+    }
+}
+
+static void install_ziva(void)
+{
+    int regs[4], max_leaf, (*level_fn)(void);
+    unsigned int lo = 0, hi = 0;
+    uint8_t *level = g_game_base + g_cfg.ziva_level_rva;
+    int i, ok = 1;
+
+    __cpuid(regs, 0);
+    max_leaf = regs[0];
+    __cpuid(regs, 1);
+    log_msg("cpu: leaf1 ecx=%08x edx=%08x (SSE4.1=%d SSE4.2=%d AVX=%d FMA=%d F16C=%d OSXSAVE=%d MOVBE=%d POPCNT=%d)",
+            regs[2], regs[3], regs[2] >> 19 & 1, regs[2] >> 20 & 1, regs[2] >> 28 & 1, regs[2] >> 12 & 1,
+            regs[2] >> 29 & 1, regs[2] >> 27 & 1, regs[2] >> 22 & 1, regs[2] >> 23 & 1);
+    if (regs[2] >> 27 & 1)
+    {
+        __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
+        log_msg("cpu: XCR0=%08x%08x (SSE state=%u, AVX state=%u, AVX-512 state=%u)", hi, lo, lo >> 1 & 1, lo >> 2 & 1,
+                (lo >> 5 & 7) == 7);
+    }
+    if (max_leaf >= 7)
+    {
+        __cpuidex(regs, 7, 0);
+        log_msg("cpu: leaf7 ebx=%08x ecx=%08x edx=%08x (AVX2=%d BMI1=%d BMI2=%d AVX-512F=%d)", regs[1], regs[2], regs[3],
+                regs[1] >> 5 & 1, regs[1] >> 3 & 1, regs[1] >> 8 & 1, regs[1] >> 16 & 1);
+        __cpuidex(regs, 7, 1);
+        log_msg("cpu: leaf7.1 eax=%08x (AVX-VNNI=%d AVX-IFMA=%d)", regs[0], regs[0] >> 4 & 1, regs[0] >> 23 & 1);
+    }
+    __cpuid(regs, 0x80000001);
+    log_msg("cpu: ext leaf ecx=%08x (LZCNT=%d)", regs[2], regs[2] >> 5 & 1);
+
+    if (!readable(level, sizeof(ziva_level_bytes)) || memcmp(level, ziva_level_bytes, sizeof(ziva_level_bytes)))
+    {
+        log_msg("ziva: CPU level function doesn't match this game build, not touching Ziva");
+        return;
+    }
+    level_fn = (int (*)(void))(void *)level;
+    i = level_fn();
+    log_msg("ziva: the game's CPU check says level %d -> it uses Ziva's %s code", i,
+            i == 2 ? "AVX2" : i == 1 ? "SSE4.1" : "Reference");
+    for (i = 0; i < 3; i++)
+    {
+        g_ziva_vtbl[i] = g_game_base + g_cfg.ziva_vtbl_rva[i];
+        if (!vtable_has_rtti(g_ziva_vtbl[i], ziva_rtti[i]))
+        {
+            log_msg("ziva: %s vtable not at the expected place (other game build?)", ziva_names[i]);
+            ok = 0;
+        }
+    }
+    g_ziva_obj = (uint8_t **)(g_game_base + g_cfg.ziva_impl_rva);
+    if (!ok || !readable(g_ziva_obj, 8))
+        return;
+    if (g_cfg.ziva_cpu)
+        log_msg("ziva_cpu: forcing Ziva's %s code", ziva_names[g_cfg.ziva_cpu - 1]);
+    CreateThread(NULL, 0, ziva_thread, NULL, 0, NULL);
+}
+
 BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, void *reserved)
 {
     if (reason == DLL_PROCESS_ATTACH)
@@ -3345,6 +3465,7 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, void *reserved)
             install_force_anim();
         if (g_cfg.trap_writer)
             install_writer_trap();
+        install_ziva();
     }
     else if (reason == DLL_PROCESS_DETACH && g_log)
     {

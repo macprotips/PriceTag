@@ -267,7 +267,7 @@ fi
 
 say ""
 say "What do you want to do?"
-say "  1) Test #22: GPU data-format check (1 minute, no game)  <-- do this one"
+say "  1) Test #23: Ziva face/cloth code, plain version  <-- do this one"
 say "  2) Test #16: GPU check (done: the shader works on your Mac)"
 say "  3) Save my results to the Desktop (to send for help)"
 say "  4) Remove everything (back to normal)"
@@ -293,13 +293,19 @@ say "  22) Test #18: skinning inputs trace (done: some bone sets are never writt
 say "  23) Test #19: always animate (done: didn't help)"
 say "  24) Test #20: GPU readback watch (done: readbacks are fine)"
 say "  25) Test #21: catch the code that animates characters (done: only caught memory clears)"
+say "  26) Test #22: GPU data-format check (done: all 40 formats fine)"
+say "  27) Test #23b: Ziva face/cloth code, SSE4.1 version"
+say "  28) Test #23c: Ziva face/cloth code, AVX2 version"
 say "  10) Quit"
 read -r -p "Type a number and press Return: " action
 say ""
 
 # Map the new menu numbers onto the handlers below.
 case "$action" in
-    1) action=t22 ;;
+    1) action=t23 ;;
+    26) action=t22 ;;
+    27) action=t23b ;;
+    28) action=t23c ;;
     25) action=t21 ;;
     24) action=t20 ;;
     23) action=t19 ;;
@@ -349,6 +355,22 @@ pick_wine() {
 }
 
 case "$action" in
+    t23|t23b|t23c)
+        case "$action" in t23) ZV=reference; ZN="plain (reference)" ;; t23b) ZV=sse41; ZN="SSE4.1" ;; *) ZV=avx2; ZN="AVX2" ;; esac
+        ds_on
+        rm -rf "$GAME_DIR/sm2fix-dumps"
+        bash "$INSTALLER" "${ARGS[@]}" --mode off --ziva-cpu "$ZV" || pause_exit 1
+        say ""
+        line
+        say "Test #23 installed ($ZN version). Faces and clothes are moved by Ziva RT,"
+        say "which has three CPU versions; the game picks one from what your CPU (via"
+        say "Rosetta) says it supports. This makes it use the $ZN version instead."
+        say "  1. Start the game. Look at the main menu (Peter/Miles' heads) and then"
+        say "     people in the world. Is the T-pose / missing heads gone?"
+        say "  2. Quit from the in-game menu, run this again, pick 3, send the log"
+        say "     (and a screenshot if you can)."
+        line
+        ;;
     t22)
         TDIR="$HERE/gpu-test"
         pick_wine

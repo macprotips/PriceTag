@@ -11,7 +11,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-BOTTLE="" PREFIX="" GAME_DIR="" WINE="" MODE="hash" UNINSTALL=0 SPOOF="" DUMP_COMPUTE=0 DUMP_GRAPHICS=0 MINMAX=keep PROFILE=0 CPU_COUNT=0 PSO_DELAY=0 TRACE_QUERIES=0 FAKE_TS=0 PROBE_SKIN=0 SKIN_BUDGET=0 SKIP_SKINNING=0 REPLACE_SKINNING=0 FORCE_ANIM=0 TRAP_WRITER=0
+BOTTLE="" PREFIX="" GAME_DIR="" WINE="" MODE="hash" UNINSTALL=0 SPOOF="" DUMP_COMPUTE=0 DUMP_GRAPHICS=0 MINMAX=keep PROFILE=0 CPU_COUNT=0 PSO_DELAY=0 TRACE_QUERIES=0 FAKE_TS=0 PROBE_SKIN=0 SKIN_BUDGET=0 SKIP_SKINNING=0 REPLACE_SKINNING=0 FORCE_ANIM=0 TRAP_WRITER=0 ZIVA_CPU=auto
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -36,6 +36,7 @@ while [[ $# -gt 0 ]]; do
         --replace-skinning) REPLACE_SKINNING=1; shift ;;
         --force-anim) FORCE_ANIM=1; shift ;;
         --trap-writer) TRAP_WRITER=1; shift ;;
+        --ziva-cpu) ZIVA_CPU="$2"; shift 2 ;;
         -h|--help) sed -n 2,12p "$0"; exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 1 ;;
     esac
@@ -121,6 +122,7 @@ sed -e "s/^mode = .*/mode = $MODE/" -e "s/^spoof =.*/spoof = $SPOOF/" \
     -e "s/^skip_skinning = .*/skip_skinning = $SKIP_SKINNING/" \
     -e "s/^replace_skinning = .*/replace_skinning = $REPLACE_SKINNING/" \
     -e "s/^force_anim = .*/force_anim = $FORCE_ANIM/" -e "s/^trap_writer = .*/trap_writer = $TRAP_WRITER/" \
+    -e "s/^ziva_cpu = .*/ziva_cpu = $ZIVA_CPU/" \
     "$HERE/shim/sm2fix.ini" > "$GAME_DIR/sm2fix.ini"
 
 if grep -qi 'AppDefaults\\\\Spider-Man2.exe\\\\DllOverrides' "$PREFIX/user.reg" 2>/dev/null \

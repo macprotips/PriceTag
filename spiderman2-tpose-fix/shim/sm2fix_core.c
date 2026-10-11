@@ -190,6 +190,11 @@ void sm2_config_defaults(struct sm2_config *cfg)
     cfg->anim_vtbl_rva[2] = 0x84f72f8;
     cfg->probe_sb_rva = 0x2b087c0;
     cfg->probe_dispatch_rva = 0x2b08f00;
+    cfg->ziva_level_rva = 0x295e6a0;
+    cfg->ziva_impl_rva = 0xbca9df0;
+    cfg->ziva_vtbl_rva[0] = 0x5d34d50;
+    cfg->ziva_vtbl_rva[1] = 0x5d34e30;
+    cfg->ziva_vtbl_rva[2] = 0x5d34dc0;
 }
 
 static int key_equals(const char *a, const char *b)
@@ -339,6 +344,40 @@ int sm2_config_set(struct sm2_config *cfg, const char *key, const char *value)
     if (key_equals(key, "snapshot_ms"))
     {
         cfg->snapshot_ms = (unsigned int)strtoul(value, NULL, 10);
+        return 0;
+    }
+    if (key_equals(key, "ziva_cpu"))
+    {
+        if (key_equals(value, "reference") || !strcmp(value, "1"))
+            cfg->ziva_cpu = SM2_ZIVA_REFERENCE;
+        else if (key_equals(value, "sse41") || !strcmp(value, "2"))
+            cfg->ziva_cpu = SM2_ZIVA_SSE41;
+        else if (key_equals(value, "avx2") || !strcmp(value, "3"))
+            cfg->ziva_cpu = SM2_ZIVA_AVX2;
+        else
+            cfg->ziva_cpu = SM2_ZIVA_AUTO;
+        return 0;
+    }
+    if (key_equals(key, "ziva_rvas"))
+    {
+        /* level function, impl global, Reference/SSE4.1/AVX2 vtables: five hex RVAs */
+        uint32_t v[5];
+        char *end;
+        int k;
+
+        for (k = 0; k < 5 && *value; k++)
+        {
+            v[k] = (uint32_t)strtoul(value, &end, 16);
+            value = *end == ',' ? end + 1 : end;
+        }
+        if (k == 5)
+        {
+            cfg->ziva_level_rva = v[0];
+            cfg->ziva_impl_rva = v[1];
+            cfg->ziva_vtbl_rva[0] = v[2];
+            cfg->ziva_vtbl_rva[1] = v[3];
+            cfg->ziva_vtbl_rva[2] = v[4];
+        }
         return 0;
     }
     if (key_equals(key, "skinning_hash"))

@@ -233,6 +233,25 @@ static void test_config(void)
     CHECK(sm2_config_set(&cfg, "cpu_count", "8") == 0 && cfg.cpu_count == 8);
 }
 
+static void test_ziva_config(void)
+{
+    struct sm2_config cfg;
+
+    sm2_config_defaults(&cfg);
+    CHECK(cfg.ziva_cpu == SM2_ZIVA_AUTO && cfg.ziva_level_rva == 0x295e6a0 && cfg.ziva_impl_rva == 0xbca9df0);
+    CHECK(cfg.ziva_vtbl_rva[0] == 0x5d34d50 && cfg.ziva_vtbl_rva[1] == 0x5d34e30 && cfg.ziva_vtbl_rva[2] == 0x5d34dc0);
+    sm2_config_parse_text(&cfg, "ziva_cpu = Reference\n");
+    CHECK(cfg.ziva_cpu == SM2_ZIVA_REFERENCE);
+    sm2_config_parse_text(&cfg, "ziva_cpu = sse41\n");
+    CHECK(cfg.ziva_cpu == SM2_ZIVA_SSE41);
+    sm2_config_parse_text(&cfg, "ziva_cpu = avx2\n");
+    CHECK(cfg.ziva_cpu == SM2_ZIVA_AVX2);
+    sm2_config_parse_text(&cfg, "ziva_cpu = auto\nziva_rvas = 1,2,3,4,5\n");
+    CHECK(cfg.ziva_cpu == SM2_ZIVA_AUTO && cfg.ziva_level_rva == 1 && cfg.ziva_impl_rva == 2 && cfg.ziva_vtbl_rva[2] == 5);
+    sm2_config_parse_text(&cfg, "ziva_rvas = 9,9\n");      /* incomplete: ignored */
+    CHECK(cfg.ziva_level_rva == 1);
+}
+
 int main(void)
 {
     test_hash();
@@ -241,6 +260,7 @@ int main(void)
     test_stream_walk_graphics();
     test_rootsig_samplers();
     test_config();
+    test_ziva_config();
     if (failures)
     {
         printf("%d failure(s)\n", failures);

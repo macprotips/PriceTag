@@ -78,7 +78,13 @@ struct sm2_config
     unsigned int skin_budget;   /* 0 = untouched, else raise RenderBudgets.ModelSkinGroupMax to at least this */
     int fake_timestamps;        /* replace D3DMetal's GPU timestamps (60 Hz, all zero on M1-M4) with real CPU time */
     unsigned int pso_delay_ms;  /* sleep this long in every pipeline creation (imitates a cold shader cache) */
+    int ziva_cpu;               /* enum sm2_ziva_cpu: which CPU code Ziva RT (faces, cloth) runs */
+    uint32_t ziva_level_rva;    /* game function returning the best SIMD level (CPUID) */
+    uint32_t ziva_impl_rva;     /* the global object whose vtable is the chosen implementation */
+    uint32_t ziva_vtbl_rva[3];  /* ReferenceImpl, SSE4_1Impl, AVX2Impl vtables */
 };
+
+enum sm2_ziva_cpu { SM2_ZIVA_AUTO = 0, SM2_ZIVA_REFERENCE, SM2_ZIVA_SSE41, SM2_ZIVA_AVX2 };
 
 /* Feature answers sm2fix can change, to steer the game onto a different code path. */
 #define SM2_SPOOF_SM65      0x01u  /* report Shader Model 6.5 instead of 6.6 */
