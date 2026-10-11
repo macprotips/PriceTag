@@ -237,6 +237,41 @@ int sm2_config_set(struct sm2_config *cfg, const char *key, const char *value)
         parse_hash_list(cfg, value);
         return 0;
     }
+    if (key_equals(key, "spoof"))
+    {
+        static const struct { const char *name; unsigned int bit; } names[] =
+        {
+            {"sm65", SM2_SPOOF_SM65}, {"no_int64", SM2_SPOOF_NO_INT64}, {"no_fp16", SM2_SPOOF_NO_FP16},
+            {"uma", SM2_SPOOF_UMA}, {"no_rt", SM2_SPOOF_NO_RT},
+        };
+        const char *p = value;
+
+        cfg->spoof = 0;
+        while (*p)
+        {
+            char word[32];
+            size_t n = 0, i;
+
+            while (*p == ' ' || *p == ',' || *p == '\t')
+                p++;
+            while (*p && *p != ' ' && *p != ',' && *p != '\t' && n < sizeof(word) - 1)
+                word[n++] = *p++;
+            word[n] = 0;
+            for (i = 0; n && i < sizeof(names) / sizeof(names[0]); i++)
+            {
+                if (key_equals(word, names[i].name))
+                    cfg->spoof |= names[i].bit;
+            }
+            while (*p && *p != ' ' && *p != ',' && *p != '\t')
+                p++;
+        }
+        return 0;
+    }
+    if (key_equals(key, "dump_compute"))
+    {
+        cfg->dump_compute = atoi(value) != 0;
+        return 0;
+    }
     if (key_equals(key, "real_d3d12"))
     {
         strncpy(cfg->real_d3d12, value, sizeof(cfg->real_d3d12) - 1);

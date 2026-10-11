@@ -11,7 +11,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-BOTTLE="" PREFIX="" GAME_DIR="" WINE="" MODE="hash" UNINSTALL=0
+BOTTLE="" PREFIX="" GAME_DIR="" WINE="" MODE="hash" UNINSTALL=0 SPOOF="" DUMP_COMPUTE=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -21,6 +21,8 @@ while [[ $# -gt 0 ]]; do
         --wine) WINE="$2"; shift 2 ;;
         --mode) MODE="$2"; shift 2 ;;
         --uninstall) UNINSTALL=1; shift ;;
+        --spoof) SPOOF="$2"; shift 2 ;;
+        --dump-compute) DUMP_COMPUTE=1; shift ;;
         -h|--help) sed -n 2,12p "$0"; exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 1 ;;
     esac
@@ -89,7 +91,8 @@ if [[ ! -w "$GAME_DIR" ]]; then
     exit 1
 fi
 cp "$DLL" "$GAME_DIR/d3d12.dll"
-sed "s/^mode = .*/mode = $MODE/" "$HERE/shim/sm2fix.ini" > "$GAME_DIR/sm2fix.ini"
+sed -e "s/^mode = .*/mode = $MODE/" -e "s/^spoof =.*/spoof = $SPOOF/" \
+    -e "s/^dump_compute = .*/dump_compute = $DUMP_COMPUTE/" "$HERE/shim/sm2fix.ini" > "$GAME_DIR/sm2fix.ini"
 
 if wine_reg add "$REG_KEY" /v d3d12 /t REG_SZ /d "native,builtin" /f >/dev/null 2>&1; then
     echo "Set per-game DLL override d3d12=native,builtin."
@@ -102,5 +105,5 @@ Could not set the DLL override automatically. Do it once by hand:
 EOF
 fi
 
-echo "Installed sm2fix (mode=$MODE). Launch the game, then check:"
+echo "Installed sm2fix (mode=$MODE${SPOOF:+, spoof=$SPOOF}). Launch the game, then check:"
 echo "  $GAME_DIR/sm2fix.log"

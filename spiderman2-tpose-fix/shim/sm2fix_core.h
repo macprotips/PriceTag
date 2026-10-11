@@ -52,7 +52,16 @@ struct sm2_config
     unsigned int hash_count;
     uint64_t hashes[SM2_MAX_HASHES];
     char real_d3d12[512];       /* optional explicit path of the real d3d12.dll */
+    unsigned int spoof;         /* SM2_SPOOF_* bits: features to hide from the game */
+    int dump_compute;           /* dump every compute shader to sm2fix-dumps */
 };
+
+/* Feature answers sm2fix can change, to steer the game onto a different code path. */
+#define SM2_SPOOF_SM65      0x01u  /* report Shader Model 6.5 instead of 6.6 */
+#define SM2_SPOOF_NO_INT64  0x02u  /* OPTIONS1.Int64ShaderOps = 0 */
+#define SM2_SPOOF_NO_FP16   0x04u  /* OPTIONS4.Native16BitShaderOpsSupported = 0 */
+#define SM2_SPOOF_UMA       0x08u  /* ARCHITECTURE(1).UMA = CacheCoherentUMA = 1 */
+#define SM2_SPOOF_NO_RT     0x10u  /* OPTIONS5.RaytracingTier = not supported */
 
 void sm2_config_defaults(struct sm2_config *cfg);
 /* Applies one "key=value" setting. Returns 0 if the key was recognised. */

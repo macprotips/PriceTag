@@ -22,7 +22,19 @@ That's it. To undo everything, run the file and pick **5**.
 | --- | --- | --- | --- |
 | 2026-10-10 | M3 Max, macOS 27.0.1, CrossOver, game on external drive | #1 barrier fix, `mode = all` (361,019 barriers injected) | **Still T-poses.** A missing barrier inside a command list is ruled out. |
 | 2026-10-10 | same | #2 DirectStorage off | **Still T-poses.** DirectStorage GPU decompression is ruled out. |
-| next | | #3 deep test (`mode = max`): wait for the GPU after every submission, plus logging of failed shaders and feature queries | pending |
+| 2026-10-10 | same | #3 deep test (`mode = max`): GPU idle after each of 35,306 submissions, barriers after 227,086 dispatches + 30,465 `ExecuteIndirect` | **Still T-poses** (assumed; awaiting confirmation). Rules out every GPU sync/race theory. **0 failed pipelines.** The game never submits to its compute queue. |
+| next | | #4 hide GPU features (`spoof = sm65,no_int64,no_fp16`), dump all compute shaders | pending |
+
+**What test #3's log tells us.** D3DMetal on the M3 Max reports Shader Model 6.6,
+wave ops (32 lanes), `Int64ShaderOps = 1`, `Native16BitShaderOpsSupported = 1`,
+raytracing tier 1.1, resource binding tier 3, and **UMA = 0** (it presents as a
+discrete GPU). The game creates command signatures for draw, indexed draw and
+dispatch, and uses `ExecuteIndirect` heavily. Since order and timing are ruled out,
+the remaining explanation is a shader that compiles but **computes the wrong
+answer on Apple7–9 GPUs**. Most likely D3DMetal mistranslates an operation that
+Apple10 runs natively. Test #4 hides the SM 6.6 / 64-bit integer / 16-bit float
+features, so the game may switch to fallback shaders. It also dumps every compute
+shader for offline disassembly.
 
 **Current thinking.** Rosetta translates CPU code the same way on every Apple chip,
 M5 included, so a Rosetta bug would hit M5 too. What changes on M5 is the GPU: a new
@@ -192,6 +204,8 @@ there.
 | `mode` | `hash` | `hash`: barrier only after the listed shaders. `all`: barrier after every compute dispatch, including `ExecuteIndirect`. `max`: `all`, plus wait for the GPU after every queue submission (slow, diagnostic only). `off`: log only. |
 | `hashes` | `324071d329f05ccc` | Comma-separated hex shader hashes. Uses the vkd3d-proton hash, so its quirk-table entries work as-is. |
 | `log_shaders` | `0` | `1` writes every compute shader hash to `sm2fix.log`. |
+| `spoof` | *(empty)* | Feature answers to hide from the game: `sm65` (report SM 6.5), `no_int64`, `no_fp16`, `uma` (claim unified memory), `no_rt`. |
+| `dump_compute` | `0` | `1` saves every compute shader to `sm2fix-dumps\`. |
 | `real_d3d12` | *(empty)* | Path to the real `d3d12.dll`. Empty means `system32\d3d12.dll`. |
 
 Environment variables `SM2FIX_MODE`, `SM2FIX_HASHES`, `SM2FIX_LOG_SHADERS` and

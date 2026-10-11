@@ -88,6 +88,8 @@ static void load_config(void)
         {"SM2FIX_HASHES", "hashes"},
         {"SM2FIX_LOG_SHADERS", "log_shaders"},
         {"SM2FIX_REAL_D3D12", "real_d3d12"},
+        {"SM2FIX_SPOOF", "spoof"},
+        {"SM2FIX_DUMP_COMPUTE", "dump_compute"},
     };
     WCHAR path[MAX_PATH];
     char value[1024];
@@ -310,6 +312,8 @@ static void list_forget(void *list)
     ReleaseSRWLockExclusive(&g_lock);
 }
 
+static void dump_shader_ex(const char *stage, const void *code, size_t size, BOOL quiet, LONG limit);
+
 /* ------------------------------------------------------------- shader matching */
 
 static void note_compute_shader(void *pso, const void *code, size_t size, const char *how)
@@ -319,6 +323,8 @@ static void note_compute_shader(void *pso, const void *code, size_t size, const 
     if (!pso || !code || !size)
         return;
     hash = sm2_shader_hash(code, size);
+    if (g_cfg.dump_compute)
+        dump_shader_ex("cs", code, size, TRUE, 20000);
     if (g_cfg.log_shaders)
         log_msg("compute shader %016llx (%zu bytes) via %s -> pso %p",
                 (unsigned long long)hash, size, how, pso);
@@ -350,7 +356,7 @@ static BOOL readable(const void *p, size_t size)
 }
 
 /* Saves shader bytecode to sm2fix-dumps\<hash>_<stage>.dxil so it can be disassembled. */
-static void dump_shader(const char *stage, const void *code, size_t size)
+static void dump_shader_ex(const char *stage, const void *code, size_t size, BOOL quiet, LONG limit)
 {
     static volatile LONG dumps;
     WCHAR dir[MAX_PATH], path[MAX_PATH];
@@ -363,8 +369,9 @@ static void dump_shader(const char *stage, const void *code, size_t size)
         return;
     }
     hash = sm2_shader_hash(code, size);
-    log_msg("  %s shader %016llx (%zu bytes)", stage, (unsigned long long)hash, size);
-    if (InterlockedIncrement(&dumps) > 200)
+    if (!quiet)
+        log_msg("  %s shader %016llx (%zu bytes)", stage, (unsigned long long)hash, size);
+    if (InterlockedIncrement(&dumps) > limit)
         return;
     path_next_to_self(dir, MAX_PATH, L"sm2fix-dumps");
     CreateDirectoryW(dir, NULL);
@@ -375,6 +382,11 @@ static void dump_shader(const char *stage, const void *code, size_t size)
         fwrite(code, 1, size, f);
         fclose(f);
     }
+}
+
+static void dump_shader(const char *stage, const void *code, size_t size)
+{
+    dump_shader_ex(stage, code, size, FALSE, 200);
 }
 
 static const char *stage_name(uint32_t type)
@@ -661,7 +673,42 @@ static HRESULT STDMETHODCALLTYPE hk_dev_CheckFeatureSupport(ID3D12Device *device
     HRESULT (STDMETHODCALLTYPE *orig)(ID3D12Device *, D3D12_FEATURE, void *, UINT)
             = orig_fn(device, DEV_IDX(CheckFeatureSupport));
     HRESULT hr = orig(device, feature, data, size);
+    unsigned int spoof = g_cfg.spoof;
     char what[64];
+
+    if (SUCCEEDED(hr) && data && spoof)
+    {
+        UINT32 *u = data;
+        BOOL changed = FALSE;
+
+        if (feature == D3D12_FEATURE_SHADER_MODEL && (spoof & SM2_SPOOF_SM65) && size >= 4 && u[0] > 0x65)
+            u[0] = 0x65, changed = TRUE;
+        if (feature == D3D12_FEATURE_D3D12_OPTIONS1 && (spoof & SM2_SPOOF_NO_INT64)
+                && size >= sizeof(D3D12_FEATURE_DATA_D3D12_OPTIONS1))
+            ((D3D12_FEATURE_DATA_D3D12_OPTIONS1 *)data)->Int64ShaderOps = FALSE, changed = TRUE;
+        if (feature == D3D12_FEATURE_D3D12_OPTIONS4 && (spoof & SM2_SPOOF_NO_FP16)
+                && size >= sizeof(D3D12_FEATURE_DATA_D3D12_OPTIONS4))
+            ((D3D12_FEATURE_DATA_D3D12_OPTIONS4 *)data)->Native16BitShaderOpsSupported = FALSE, changed = TRUE;
+        if (feature == D3D12_FEATURE_ARCHITECTURE && (spoof & SM2_SPOOF_UMA)
+                && size >= sizeof(D3D12_FEATURE_DATA_ARCHITECTURE))
+        {
+            ((D3D12_FEATURE_DATA_ARCHITECTURE *)data)->UMA = TRUE;
+            ((D3D12_FEATURE_DATA_ARCHITECTURE *)data)->CacheCoherentUMA = TRUE;
+            changed = TRUE;
+        }
+        if (feature == D3D12_FEATURE_ARCHITECTURE1 && (spoof & SM2_SPOOF_UMA)
+                && size >= sizeof(D3D12_FEATURE_DATA_ARCHITECTURE1))
+        {
+            ((D3D12_FEATURE_DATA_ARCHITECTURE1 *)data)->UMA = TRUE;
+            ((D3D12_FEATURE_DATA_ARCHITECTURE1 *)data)->CacheCoherentUMA = TRUE;
+            changed = TRUE;
+        }
+        if (feature == D3D12_FEATURE_D3D12_OPTIONS5 && (spoof & SM2_SPOOF_NO_RT)
+                && size >= sizeof(D3D12_FEATURE_DATA_D3D12_OPTIONS5))
+            ((D3D12_FEATURE_DATA_D3D12_OPTIONS5 *)data)->RaytracingTier = D3D12_RAYTRACING_TIER_NOT_SUPPORTED, changed = TRUE;
+        if (changed)
+            log_msg("spoofed answer for feature %d", (int)feature);
+    }
 
     if ((unsigned int)feature < ARRAYSIZE(seen) && InterlockedIncrement(&seen[feature]) <= 4)
     {
@@ -885,8 +932,8 @@ static BOOL CALLBACK init_once(INIT_ONCE *once, void *param, void **context)
     g_log = _wfopen(path, L"w");
     load_config();
 
-    log_msg("sm2fix loaded: mode=%s log_shaders=%d hashes=%u",
-            mode_names[g_cfg.mode], g_cfg.log_shaders, g_cfg.hash_count);
+    log_msg("sm2fix loaded: mode=%s log_shaders=%d hashes=%u spoof=%#x dump_compute=%d",
+            mode_names[g_cfg.mode], g_cfg.log_shaders, g_cfg.hash_count, g_cfg.spoof, g_cfg.dump_compute);
     for (i = 0; i < g_cfg.hash_count; i++)
         log_msg("  target hash %016llx", (unsigned long long)g_cfg.hashes[i]);
 

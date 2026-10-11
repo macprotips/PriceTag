@@ -164,6 +164,10 @@ current_mode() {
 }
 
 mode_label() {
+    if grep -q '^spoof = [a-z]' "$GAME_DIR/sm2fix.ini" 2>/dev/null; then
+        echo "Test #4 hide GPU features ($(sed -n 's/^spoof = //p' "$GAME_DIR/sm2fix.ini"))"
+        return
+    fi
     case "$1" in
         max) echo "Test #3 deep test" ;;
         all) echo "Test #1 barrier fix" ;;
@@ -201,19 +205,49 @@ fi
 
 say ""
 say "What do you want to do?"
-say "  1) Test #3: deep test  <-- do this one"
-say "  2) Save my results to the Desktop (to send for help)"
-say "  3) Remove everything (back to normal)"
+say "  1) Test #4: hide GPU features from the game  <-- do this one"
+say "  2) Test #4b: ONLY if test #4 crashed or wouldn't start"
+say "  3) Save my results to the Desktop (to send for help)"
+say "  4) Remove everything (back to normal)"
 say ""
 say "  Older tests:"
-say "  4) Test #1: barrier fix"
-say "  5) Test #2: DirectStorage off"
-say "  6) A test fixed it! Switch to the faster version"
-say "  7) Quit"
+say "  5) Test #3: deep test"
+say "  6) Test #1: barrier fix"
+say "  7) Test #2: DirectStorage off"
+say "  8) A test fixed it! Switch to the faster version"
+say "  9) Quit"
 read -r -p "Type a number and press Return: " action
 say ""
 
+# Map the new menu numbers onto the handlers below.
 case "$action" in
+    1) action=spoof ;;
+    2) action=spoof_b ;;
+    3) action=2 ;;
+    4) action=3 ;;
+    5) action=1 ;;
+    6) action=4 ;;
+    7) action=5 ;;
+    8) action=6 ;;
+    *) action=quit ;;
+esac
+
+case "$action" in
+    spoof|spoof_b)
+        ds_on
+        rm -rf "$GAME_DIR/sm2fix-dumps"
+        if [ "$action" = spoof ]; then SPOOF="sm65,no_int64,no_fp16"; else SPOOF="no_int64,no_fp16"; fi
+        bash "$INSTALLER" "${ARGS[@]}" --mode off --spoof "$SPOOF" --dump-compute || pause_exit 1
+        say ""
+        line
+        say "Test #4 installed. The game is told the GPU lacks a few features"
+        say "($SPOOF), so it may take a different code path. Speed is normal."
+        say "  1. Start Spider-Man 2 and go where characters T-pose."
+        say "  2. Quit the game normally."
+        say "  3. Run this again, pick 3, and send me what it saves (2 files)."
+        say "     Tell me: still T-posing? Any crash or weird graphics?"
+        line
+        ;;
     1)
         ds_on
         rm -rf "$GAME_DIR/sm2fix-dumps"
@@ -225,7 +259,7 @@ case "$action" in
         say "  1. Start Spider-Man 2 and play for 2-3 minutes where characters"
         say "     T-pose (a cutscene is perfect). Note whether they still T-pose."
         say "  2. Quit the game normally."
-        say "  3. Run this again and pick 2. Send me what it saves."
+        say "  3. Run this again and pick 3. Send me what it saves."
         line
         ;;
     2)
@@ -250,7 +284,7 @@ case "$action" in
             fi
             open -R "$OUT" 2>/dev/null
         else
-            say "No results yet. Pick 1, play the game, quit it, then pick 2."
+            say "No results yet. Pick 1, play the game, quit it, then pick 3."
             say "If you already did, the game didn't load the test. Send me a"
             say "screenshot of this window."
         fi
@@ -264,14 +298,14 @@ case "$action" in
         ds_on
         bash "$INSTALLER" "${ARGS[@]}" --mode all || pause_exit 1
         say ""
-        say "Test #1 installed. Play, quit, then run this again and pick 2."
+        say "Test #1 installed. Play, quit, then run this again and pick 3."
         ;;
     5)
         [ -n "$MODE_NOW" ] && bash "$INSTALLER" "${ARGS[@]}" --uninstall >/dev/null 2>&1
         ds_off
         say "Test #2: DirectStorage is OFF (other tests removed)."
         say "Play, then tell me if characters still T-pose."
-        say "Pick 3 any time to undo."
+        say "Pick 4 any time to undo."
         ;;
     6)
         bash "$INSTALLER" "${ARGS[@]}" --mode hash || pause_exit 1

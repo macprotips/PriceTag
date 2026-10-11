@@ -41,6 +41,8 @@ int main(int argc, char **argv)
     SetEnvironmentVariableA("SM2FIX_MODE", mode);
     SetEnvironmentVariableA("SM2FIX_REAL_D3D12", "mock_d3d12.dll");
     SetEnvironmentVariableA("SM2FIX_LOG_SHADERS", "1");
+    SetEnvironmentVariableA("SM2FIX_SPOOF", "sm65, no_int64,no_fp16");
+    SetEnvironmentVariableA("SM2FIX_DUMP_COMPUTE", "1");
 
     shim = LoadLibraryA(".\\d3d12.dll");
     mock = LoadLibraryA("mock_d3d12.dll");
@@ -124,6 +126,28 @@ int main(int argc, char **argv)
         CHECK(GetFileAttributesA(dump) != INVALID_FILE_ATTRIBUTES);
 
         CHECK(SUCCEEDED(ID3D12Device4_CheckFeatureSupport(device, D3D12_FEATURE_D3D12_OPTIONS, &opts, sizeof(opts))));
+
+        /* Spoofing: the mock answers 0xab.. everywhere; the shim must rewrite these. */
+        {
+            D3D12_FEATURE_DATA_SHADER_MODEL sm = {D3D_SHADER_MODEL_6_6};
+            D3D12_FEATURE_DATA_D3D12_OPTIONS1 o1;
+            D3D12_FEATURE_DATA_D3D12_OPTIONS4 o4;
+            D3D12_FEATURE_DATA_ARCHITECTURE arch = {0};
+
+            ID3D12Device4_CheckFeatureSupport(device, D3D12_FEATURE_SHADER_MODEL, &sm, sizeof(sm));
+            ID3D12Device4_CheckFeatureSupport(device, D3D12_FEATURE_D3D12_OPTIONS1, &o1, sizeof(o1));
+            ID3D12Device4_CheckFeatureSupport(device, D3D12_FEATURE_D3D12_OPTIONS4, &o4, sizeof(o4));
+            ID3D12Device4_CheckFeatureSupport(device, D3D12_FEATURE_ARCHITECTURE, &arch, sizeof(arch));
+            CHECK(sm.HighestShaderModel == 0x65);
+            CHECK(o1.Int64ShaderOps == 0 && o1.WaveOps == (BOOL)0xabababab);
+            CHECK(o4.Native16BitShaderOpsSupported == 0);
+            CHECK(arch.UMA == (BOOL)0xabababab); /* "uma" not requested: untouched */
+        }
+
+        /* dump_compute=1: every compute shader is saved. */
+        snprintf(dump, sizeof(dump), "sm2fix-dumps\\%016llx_cs.dxil",
+                (unsigned long long)sm2_shader_hash(other_shader, sizeof(other_shader)));
+        CHECK(GetFileAttributesA(dump) != INVALID_FILE_ATTRIBUTES);
 
         memset(&qdesc, 0, sizeof(qdesc));
         qdesc.Type = D3D12_COMMAND_LIST_TYPE_COMPUTE;

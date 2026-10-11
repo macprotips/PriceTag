@@ -160,6 +160,13 @@ static void test_config(void)
     CHECK(sm2_config_set(&cfg, "mode", "MAX") == 0 && cfg.mode == SM2_MODE_MAX);
     CHECK(sm2_config_set(&cfg, "mode", "hash") == 0 && cfg.mode == SM2_MODE_HASH);
     CHECK(sm2_config_set(&cfg, "nope", "1") == -1);
+
+    CHECK(sm2_config_set(&cfg, "spoof", "sm65, NO_FP16,bogus") == 0);
+    CHECK(cfg.spoof == (SM2_SPOOF_SM65 | SM2_SPOOF_NO_FP16));
+    CHECK(sm2_config_set(&cfg, "spoof", "uma no_rt no_int64") == 0);
+    CHECK(cfg.spoof == (SM2_SPOOF_UMA | SM2_SPOOF_NO_RT | SM2_SPOOF_NO_INT64));
+    CHECK(sm2_config_set(&cfg, "spoof", "") == 0 && cfg.spoof == 0);
+    CHECK(sm2_config_set(&cfg, "dump_compute", "1") == 0 && cfg.dump_compute == 1);
 }
 
 int main(void)
