@@ -11,7 +11,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-BOTTLE="" PREFIX="" GAME_DIR="" WINE="" MODE="hash" UNINSTALL=0 SPOOF="" DUMP_COMPUTE=0 DUMP_GRAPHICS=0 MINMAX=keep PROFILE=0
+BOTTLE="" PREFIX="" GAME_DIR="" WINE="" MODE="hash" UNINSTALL=0 SPOOF="" DUMP_COMPUTE=0 DUMP_GRAPHICS=0 MINMAX=keep PROFILE=0 CPU_COUNT=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -26,6 +26,7 @@ while [[ $# -gt 0 ]]; do
         --dump-graphics) DUMP_GRAPHICS=1; shift ;;
         --minmax) MINMAX="$2"; shift 2 ;;
         --profile) PROFILE=1; shift ;;
+        --cpu-count) CPU_COUNT="$2"; shift 2 ;;
         -h|--help) sed -n 2,12p "$0"; exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 1 ;;
     esac
@@ -93,10 +94,14 @@ if [[ ! -w "$GAME_DIR" ]]; then
     echo "If the game is on an external drive formatted as NTFS, macOS can only read it." >&2
     exit 1
 fi
+PREV_LOADED=0
+grep -q "D3D12CreateDevice ok" "$GAME_DIR/sm2fix.log" 2>/dev/null && PREV_LOADED=1
 cp "$DLL" "$GAME_DIR/d3d12.dll"
+rm -f "$GAME_DIR/sm2fix.log"   # each test starts with a fresh log
 sed -e "s/^mode = .*/mode = $MODE/" -e "s/^spoof =.*/spoof = $SPOOF/" \
     -e "s/^dump_compute = .*/dump_compute = $DUMP_COMPUTE/" -e "s/^dump_graphics = .*/dump_graphics = $DUMP_GRAPHICS/" \
     -e "s/^minmax = .*/minmax = $MINMAX/" -e "s/^profile = .*/profile = $PROFILE/" \
+    -e "s/^cpu_count = .*/cpu_count = $CPU_COUNT/" \
     "$HERE/shim/sm2fix.ini" > "$GAME_DIR/sm2fix.ini"
 
 if grep -qi 'AppDefaults\\\\Spider-Man2.exe\\\\DllOverrides' "$PREFIX/user.reg" 2>/dev/null \
@@ -104,7 +109,7 @@ if grep -qi 'AppDefaults\\\\Spider-Man2.exe\\\\DllOverrides' "$PREFIX/user.reg" 
     echo "DLL override already set."
 elif wine_reg add "$REG_KEY" /v d3d12 /t REG_SZ /d "native,builtin" /f >/dev/null 2>&1; then
     echo "Set per-game DLL override d3d12=native,builtin."
-elif [[ -f "$GAME_DIR/sm2fix.log" ]] && grep -q "D3D12CreateDevice ok" "$GAME_DIR/sm2fix.log"; then
+elif [[ $PREV_LOADED -eq 1 ]]; then
     echo "(DLL override not set, but a previous run shows the game loads sm2fix anyway: fine.)"
 else
     cat <<EOF

@@ -23,6 +23,7 @@
 
 #include "sm2fix_core.h"
 #include "sm2fix_dxbc.h"
+#include "sm2fix_cpu.h"
 
 _Static_assert(sizeof(void *) == 8, "Spider-Man 2 is a 64-bit game; build for x86_64");
 _Static_assert(sizeof(D3D12_SHADER_BYTECODE) == 16, "stream CS subobject layout");
@@ -99,6 +100,7 @@ static void load_config(void)
         {"SM2FIX_DUMP_GRAPHICS", "dump_graphics"},
         {"SM2FIX_MINMAX", "minmax"},
         {"SM2FIX_PROFILE", "profile"},
+        {"SM2FIX_CPU_COUNT", "cpu_count"},
     };
     WCHAR path[MAX_PATH];
     char value[1024];
@@ -1142,10 +1144,6 @@ static BOOL CALLBACK init_once(INIT_ONCE *once, void *param, void **context)
     WCHAR path[MAX_PATH];
     unsigned int i;
 
-    path_next_to_self(path, MAX_PATH, L"sm2fix.log");
-    g_log = _wfopen(path, L"w");
-    load_config();
-
     log_msg("sm2fix loaded: mode=%s log_shaders=%d hashes=%u spoof=%#x dump_compute=%d dump_graphics=%d minmax=%d",
             mode_names[g_cfg.mode], g_cfg.log_shaders, g_cfg.hash_count, g_cfg.spoof, g_cfg.dump_compute,
             g_cfg.dump_graphics, g_cfg.minmax);
@@ -1268,8 +1266,21 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, void *reserved)
 {
     if (reason == DLL_PROCESS_ATTACH)
     {
+        WCHAR path[MAX_PATH];
+
         g_self = instance;
         DisableThreadLibraryCalls(instance);
+        /* Config and log are needed this early so the CPU-count override is in place
+         * before the game's own startup code runs. Nothing here loads other DLLs. */
+        path_next_to_self(path, MAX_PATH, L"sm2fix.log");
+        /* Append: tests often need several launches in one log. */
+        g_log = _wfopen(path, L"a");
+        load_config();
+        log_msg("========== new launch ==========");
+        log_msg("attach: %u threads already in the process", sm2_count_process_threads());
+        if (g_cfg.cpu_count)
+            log_msg("cpu_count=%u: patched %u imports of the game", g_cfg.cpu_count,
+                    sm2_install_cpu_limit(g_cfg.cpu_count));
     }
     else if (reason == DLL_PROCESS_DETACH && g_log)
     {

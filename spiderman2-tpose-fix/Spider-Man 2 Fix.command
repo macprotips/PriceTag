@@ -164,6 +164,10 @@ current_mode() {
 }
 
 mode_label() {
+    if grep -q '^cpu_count = [1-9]' "$GAME_DIR/sm2fix.ini" 2>/dev/null; then
+        echo "Test #7 fewer CPU cores ($(sed -n 's/^cpu_count = //p' "$GAME_DIR/sm2fix.ini"))"
+        return
+    fi
     if grep -q '^profile = 1' "$GAME_DIR/sm2fix.ini" 2>/dev/null; then
         echo "Test #6 animation tracker"
         return
@@ -213,8 +217,8 @@ fi
 
 say ""
 say "What do you want to do?"
-say "  1) Test #6: animation tracker  <-- do this one"
-say "  2) Test #5: sampler fix"
+say "  1) Test #7: game sees 8 CPU cores  <-- do this one"
+say "  2) Test #7b: game sees 4 CPU cores (after test #7)"
 say "  3) Save my results to the Desktop (to send for help)"
 say "  4) Remove everything (back to normal)"
 say ""
@@ -224,14 +228,18 @@ say "  6) Test #1: barrier fix"
 say "  7) Test #2: DirectStorage off"
 say "  8) A test fixed it! Switch to the faster version"
 say "  9) Test #4: hide GPU features"
+say "  11) Test #6: animation tracker"
+say "  12) Test #5: sampler fix"
 say "  10) Quit"
 read -r -p "Type a number and press Return: " action
 say ""
 
 # Map the new menu numbers onto the handlers below.
 case "$action" in
-    1) action=t6 ;;
-    2) action=t5 ;;
+    1) action=t7 ;;
+    2) action=t7b ;;
+    11) action=t6 ;;
+    12) action=t5 ;;
     9) action=spoof_b ;;
     3) action=2 ;;
     4) action=3 ;;
@@ -243,6 +251,23 @@ case "$action" in
 esac
 
 case "$action" in
+    t7|t7b)
+        ds_on
+        rm -rf "$GAME_DIR/sm2fix-dumps"
+        if [ "$action" = t7 ]; then CORES=8; else CORES=4; fi
+        bash "$INSTALLER" "${ARGS[@]}" --mode off --profile --cpu-count "$CORES" || pause_exit 1
+        say ""
+        line
+        say "Test #7 installed: the game now thinks your Mac has $CORES CPU cores."
+        say "This changes how its loading threads overlap, which is where the"
+        say "T-pose seems to come from. The animation tracker stays on."
+        say "  1. Start the game, load your save, look at Spider-Man and NPCs."
+        say "     Switch suits a couple of times."
+        say "  2. Quit from the in-game menu. Then START IT ONE MORE TIME and"
+        say "     check again (the problem is random, so two launches tell more)."
+        say "  3. Run this again, pick 3, and send me the log + what you saw."
+        line
+        ;;
     t6)
         ds_on
         rm -rf "$GAME_DIR/sm2fix-dumps"

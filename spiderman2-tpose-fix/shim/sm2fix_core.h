@@ -57,6 +57,7 @@ struct sm2_config
     int dump_graphics;          /* dump every vertex/mesh shader to sm2fix-dumps */
     int minmax;                 /* enum sm2_minmax_rewrite: what to do with min/max samplers */
     int profile;                /* count dispatches per compute shader and log the top ones */
+    unsigned int cpu_count;     /* 0 = untouched, else max processors the game is told about */
 };
 
 /* Feature answers sm2fix can change, to steer the game onto a different code path. */

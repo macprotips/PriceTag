@@ -45,6 +45,7 @@ int main(int argc, char **argv)
     SetEnvironmentVariableA("SM2FIX_SPOOF", "sm65, no_int64,no_fp16");
     SetEnvironmentVariableA("SM2FIX_DUMP_COMPUTE", "1");
     SetEnvironmentVariableA("SM2FIX_PROFILE", "1");
+    SetEnvironmentVariableA("SM2FIX_CPU_COUNT", !strcmp(mode, "off") ? "0" : "2");
     SetEnvironmentVariableA("SM2FIX_MINMAX", !strcmp(mode, "off") ? "keep" : "linear");
 
     shim = LoadLibraryA(".\\d3d12.dll");
@@ -55,6 +56,41 @@ int main(int argc, char **argv)
         return 1;
     }
     create_device = (void *)GetProcAddress(shim, "D3D12CreateDevice");
+
+    /* CPU-count override: everything the game can ask must report <= 2 processors. */
+    {
+        SYSTEM_INFO si;
+        DWORD len = 0, cores = 0, procs_in_cores = 0;
+        DWORD_PTR pmask = 0, smask = 0;
+        BYTE *buf, *p;
+        int limited = strcmp(mode, "off") != 0;
+
+        GetSystemInfo(&si);
+        GetLogicalProcessorInformationEx(RelationAll, NULL, &len);
+        buf = HeapAlloc(GetProcessHeap(), 0, len);
+        CHECK(GetLogicalProcessorInformationEx(RelationAll, (PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX)buf, &len));
+        for (p = buf; p < buf + len; p += ((PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX)p)->Size)
+        {
+            PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX e = (PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX)p;
+            if (e->Relationship == RelationProcessorCore)
+            {
+                cores++;
+                procs_in_cores += (DWORD)__builtin_popcountll(e->Processor.GroupMask[0].Mask);
+            }
+        }
+        GetProcessAffinityMask(GetCurrentProcess(), &pmask, &smask);
+        printf("cpu: GetSystemInfo=%lu active=%lu ex_cores=%lu ex_procs=%lu affinity=%#llx\n",
+                si.dwNumberOfProcessors, GetActiveProcessorCount(ALL_PROCESSOR_GROUPS), cores, procs_in_cores,
+                (unsigned long long)pmask);
+        if (limited)
+        {
+            CHECK(si.dwNumberOfProcessors <= 2);
+            CHECK(GetActiveProcessorCount(ALL_PROCESSOR_GROUPS) <= 2);
+            CHECK(procs_in_cores <= 2 && cores >= 1);
+            CHECK(pmask && !(pmask & ~(DWORD_PTR)3));
+        }
+        HeapFree(GetProcessHeap(), 0, buf);
+    }
     get_counts = (void *)GetProcAddress(mock, "mock_get_counts");
 
     CHECK(SUCCEEDED(create_device(NULL, D3D_FEATURE_LEVEL_12_0, &IID_ID3D12Device4, (void **)&device)));

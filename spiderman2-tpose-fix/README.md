@@ -26,7 +26,22 @@ That's it. To undo everything, run the file and pick **5**.
 | 2026-10-10 | same | #4 `spoof = sm65,...` | Game refuses to start: *"Shader Model 6.6 support not detected … Current GPU: AMD Compatibility Mode"*. SM 6.6 is a hard requirement. |
 | 2026-10-10 | same | #4b `spoof = no_int64,no_fp16`, all 525 compute shaders dumped | **Still T-poses.** Shader analysis: **no compute shader uses 64-bit ints or native fp16** (only TypedUAVLoadAdditionalFormats ×52, WaveOps ×8, descriptor-heap indexing ×4). The vkd3d target `324071d329f05ccc` is in the dump; it's a 3D-texture copy, unrelated to animation. |
 | 2026-10-10 | same | #5 `minmax = linear` + vertex shader dump | **Still T-poses.** The game uses **no** MIN/MAX samplers (24 root signatures, 1,713 heap samplers, 0 min/max). Ruled out. |
-| next | | #6 `profile = 1`: count dispatches per compute shader, especially the skinning shader | pending |
+| 2026-10-10 | same | #6 `profile = 1` (~3.5 min) | **Skinning shader `3d50acdb…` created but dispatched 0 times**, while 197 other compute shaders ran ~1M times. |
+| 2026-10-10 | same | #6 again, ray tracing ON | Still T-poses and **still 0 skinning dispatches**, even though RT started (DispatchRays command signatures, 802 async-compute submits). One launch in this period came up with Spider-Man's current suit **fixed**. |
+| next | | #7 `cpu_count = 8` (then 4): game sees fewer cores; profiler on; two launches | pending |
+
+**The CPU side never schedules skinning.** The GPU never gets skinning work,
+even with ray tracing on (which needs posed bodies), and the outcome changes from
+launch to launch. Both point at a race in the game's own (Rosetta-translated)
+character-setup code, not at D3DMetal. Running without Rosetta isn't possible yet:
+CrossOver's ARM64/FEX preview has no D3D12 until CrossOver 27 (early 2027). Test #7
+attacks the race from inside the process instead. The shim patches the game's
+imports of `GetSystemInfo`, `GetNativeSystemInfo`, `GetActiveProcessorCount`,
+`GetMaximumProcessorCount`, `GetProcessAffinityMask` and
+`GetLogicalProcessorInformation(Ex)` (plus the process affinity mask) in
+`DllMain`, before the game's startup code runs. The game then sizes its job system
+for fewer cores, which changes how setup overlaps with streaming. The log records
+how many threads already existed when the shim loaded.
 
 **Who T-poses (user report):** Spider-Man himself and most other characters.
 Switching suits *sometimes* fixes Spider-Man, but at random.
@@ -248,6 +263,7 @@ there.
 | `dump_compute` | `0` | `1` saves every compute shader to `sm2fix-dumps\`. |
 | `dump_graphics` | `0` | `1` saves every vertex/mesh shader to `sm2fix-dumps\`. |
 | `profile` | `0` | `1` counts dispatches per compute shader (by hash) and logs the top ones every 20 s and at exit, always including skinning shader `3d50acdb571dce22`. |
+| `cpu_count` | `0` | Report at most this many processors to the game (import patching + affinity mask). `0` = unchanged. |
 | `minmax` | `keep` | Samplers with MIN/MAX reduction: `keep` (count only), `linear` (drop the reduction), `point` (point-sample). Root-signature blobs are edited on a copy and re-checksummed. |
 | `real_d3d12` | *(empty)* | Path to the real `d3d12.dll`. Empty means `system32\d3d12.dll`. |
 

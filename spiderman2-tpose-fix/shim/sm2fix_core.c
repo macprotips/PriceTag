@@ -267,6 +267,12 @@ int sm2_config_set(struct sm2_config *cfg, const char *key, const char *value)
         }
         return 0;
     }
+    if (key_equals(key, "cpu_count"))
+    {
+        int n = atoi(value);
+        cfg->cpu_count = n > 0 && n <= 64 ? (unsigned int)n : 0;
+        return 0;
+    }
     if (key_equals(key, "profile"))
     {
         cfg->profile = atoi(value) != 0;
