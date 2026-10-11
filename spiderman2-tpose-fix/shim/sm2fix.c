@@ -123,6 +123,9 @@ static void load_config(void)
         {"SM2FIX_ANIM_VTBL_RVAS", "anim_vtbl_rvas"},
         {"SM2FIX_ZIVA_CPU", "ziva_cpu"},
         {"SM2FIX_ZIVA_RVAS", "ziva_rvas"},
+        {"SM2FIX_CAPTURE", "capture"},
+        {"SM2FIX_CAPTURE_AFTER_MS", "capture_after_ms"},
+        {"SM2FIX_CAPTURE_HASHES", "capture_hashes"},
     };
     WCHAR path[MAX_PATH];
     char value[1024];
@@ -266,6 +269,16 @@ struct list_state
     D3D12_COMMAND_LIST_TYPE type;
     BOOL target_bound;
     void *pso;                  /* currently bound pipeline (profiling) */
+    struct root_state *root;    /* compute root bindings (capture) */
+};
+
+/* With capture: the compute root signature and root arguments currently set on a list. */
+#define ROOT_PARAMS 32
+struct root_state
+{
+    void *rs;
+    UINT64 val[ROOT_PARAMS];    /* descriptor table GPU handle or root view GPU address */
+    uint32_t consts[ROOT_PARAMS][16];
 };
 
 static struct list_state g_lists[LIST_TABLE_SIZE];
@@ -317,7 +330,7 @@ static void list_bind_pso(void *list, void *pso)
     struct list_state *e;
 
     AcquireSRWLockExclusive(&g_lock);
-    if ((e = find_list_locked(list, target || g_cfg.profile)))
+    if ((e = find_list_locked(list, target || g_cfg.profile || g_cfg.capture)))
     {
         e->target_bound = target;
         e->pso = pso;
@@ -346,8 +359,57 @@ static void list_forget(void *list)
 
     AcquireSRWLockExclusive(&g_lock);
     if ((e = find_list_locked(list, FALSE)))
+    {
         e->list = TOMBSTONE;
+        if (e->root)
+            HeapFree(GetProcessHeap(), 0, e->root);
+        e->root = NULL;
+    }
     ReleaseSRWLockExclusive(&g_lock);
+}
+
+/* Updates a list's root state (capture only). what: 0 reset, 1 root signature, 2 table/view,
+ * 3 constants. */
+static void root_note(void *list, int what, UINT index, UINT64 val, const void *consts, UINT count, UINT offset)
+{
+    struct list_state *e;
+    struct root_state *r;
+
+    if (!g_cfg.capture)
+        return;
+    AcquireSRWLockExclusive(&g_lock);
+    if ((e = find_list_locked(list, TRUE)))
+    {
+        if (!e->root)
+            e->root = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*e->root));
+        if ((r = e->root))
+        {
+            if (what == 0 || (what == 1 && r->rs != (void *)(UINT_PTR)val))
+                memset(r, 0, sizeof(*r));
+            if (what == 1)
+                r->rs = (void *)(UINT_PTR)val;
+            else if (what == 2 && index < ROOT_PARAMS)
+                r->val[index] = val;
+            else if (what == 3 && index < ROOT_PARAMS && offset < 16)
+                memcpy(&r->consts[index][offset], consts, 4 * (count < 16 - offset ? count : 16 - offset));
+        }
+    }
+    ReleaseSRWLockExclusive(&g_lock);
+}
+
+static BOOL root_get(void *list, struct root_state *out)
+{
+    struct list_state *e;
+    BOOL ok = FALSE;
+
+    AcquireSRWLockShared(&g_lock);
+    if ((e = find_list_locked(list, FALSE)) && e->root)
+    {
+        *out = *e->root;
+        ok = TRUE;
+    }
+    ReleaseSRWLockShared(&g_lock);
+    return ok;
 }
 
 /* -------------------------------------------------------------- profiling */
@@ -517,7 +579,7 @@ static void note_compute_shader(void *pso, const void *code, size_t size, const 
     if (!pso || !code || !size)
         return;
     hash = sm2_shader_hash(code, size);
-    if (g_cfg.profile)
+    if (g_cfg.profile || g_cfg.capture)
         pso_hash_set(pso, hash);
     if (hash == SM2_SKINNING_HASH)
         log_msg("skinning shader created via %s -> pso %p", how, pso);
@@ -697,6 +759,7 @@ static void STDMETHODCALLTYPE hk_list_SetComputeRootSignature(ID3D12GraphicsComm
     LONG i, n;
 
     orig(list, rs);
+    root_note(list, 1, 0, (UINT64)(UINT_PTR)rs, NULL, 0, 0);
     if (!win_root_log())
         return;
     log_msg("skin window: SetComputeRootSignature %p", (void *)rs);
@@ -721,6 +784,7 @@ static void STDMETHODCALLTYPE hk_list_SetComputeRootDescriptorTable(ID3D12Graphi
             = orig_fn(list, CL_IDX(SetComputeRootDescriptorTable));
 
     orig(list, index, base);
+    root_note(list, 2, index, base.ptr, NULL, 0, 0);
     if (win_root_log())
     {
         log_msg("skin window: root %u = descriptor table %#llx", index, (unsigned long long)base.ptr);
@@ -735,6 +799,7 @@ static void STDMETHODCALLTYPE hk_list_SetComputeRoot32BitConstants(ID3D12Graphic
             = orig_fn(list, CL_IDX(SetComputeRoot32BitConstants));
 
     orig(list, index, count, data, offset);
+    root_note(list, 3, index, 0, data, count, offset);
     if (win_root_log())
     {
         char what[96];
@@ -751,6 +816,7 @@ static void STDMETHODCALLTYPE hk_list_SetComputeRoot32BitConstant(ID3D12Graphics
             = orig_fn(list, CL_IDX(SetComputeRoot32BitConstant));
 
     orig(list, index, value, offset);
+    root_note(list, 3, index, 0, &value, 1, offset);
     if (win_root_log())
         log_msg("skin window: root %u = constant %#x at %u", index, value, offset);
 }
@@ -763,6 +829,7 @@ static void STDMETHODCALLTYPE hk_list_##name(ID3D12GraphicsCommandList *list, UI
             = orig_fn(list, CL_IDX(name)); \
 \
     orig(list, index, va); \
+    root_note(list, 2, index, va, NULL, 0, 0); \
     if (win_root_log()) \
         log_msg("skin window: root %u = " label " %#llx", index, (unsigned long long)va); \
 }
@@ -772,6 +839,7 @@ ROOT_VIEW_HOOK(SetComputeRootUnorderedAccessView, "UAV")
 
 
 static void hook_command_list_object(void *list);
+static void capture_drop_list(void *list);
 
 static ULONG STDMETHODCALLTYPE hk_list_Release(ID3D12GraphicsCommandList *list)
 {
@@ -791,7 +859,11 @@ static HRESULT STDMETHODCALLTYPE hk_list_Reset(ID3D12GraphicsCommandList *list,
     HRESULT hr = orig(list, allocator, pso);
 
     if (SUCCEEDED(hr))
+    {
         list_bind_pso(list, pso);
+        root_note(list, 0, 0, 0, NULL, 0, 0);
+        capture_drop_list(list);
+    }
     return hr;
 }
 
@@ -802,6 +874,7 @@ static void STDMETHODCALLTYPE hk_list_ClearState(ID3D12GraphicsCommandList *list
 
     orig(list, pso);
     list_bind_pso(list, pso);
+    root_note(list, 0, 0, 0, NULL, 0, 0);
 }
 
 static void STDMETHODCALLTYPE hk_list_SetPipelineState(ID3D12GraphicsCommandList *list, ID3D12PipelineState *pso)
@@ -835,6 +908,10 @@ static BOOL list_bound_hash(void *list, uint64_t *hash)
     return pso_hash_get(pso, hash);
 }
 
+static BOOL capture_wanted(uint64_t hash);
+static void capture_dispatch(ID3D12GraphicsCommandList *list, uint64_t hash, UINT x, UINT y, UINT z,
+        void (STDMETHODCALLTYPE *orig)(ID3D12GraphicsCommandList *, UINT, UINT, UINT));
+
 static void STDMETHODCALLTYPE hk_list_Dispatch(ID3D12GraphicsCommandList *list, UINT x, UINT y, UINT z)
 {
     void (STDMETHODCALLTYPE *orig)(ID3D12GraphicsCommandList *, UINT, UINT, UINT)
@@ -849,7 +926,13 @@ static void STDMETHODCALLTYPE hk_list_Dispatch(ID3D12GraphicsCommandList *list, 
             log_msg("skip_skinning: dropped %lld skinning dispatches so far (this one x=%u)", (long long)n, x);
         return;
     }
-    orig(list, x, y, z);
+    if (g_cfg.capture && x && y && z && list_bound_hash(list, &bound) && capture_wanted(bound))
+    {
+        capture_dispatch(list, bound, x, y, z, orig);
+        bound = 0;
+    }
+    else
+        orig(list, x, y, z);
     InterlockedIncrement64(&g_dispatches);
     if (in_skin_window())
     {
@@ -1344,6 +1427,9 @@ static void hook_command_list_vtable(void *list)
         hook_slot(list, CL_IDX(CopyBufferRegion), (void *)hk_list_CopyBufferRegion, "CommandList::CopyBufferRegion");
         hook_slot(list, CL_IDX(CopyResource), (void *)hk_list_CopyResource, "CommandList::CopyResource");
         hook_slot(list, CL_IDX(CopyTextureRegion), (void *)hk_list_CopyTextureRegion, "CommandList::CopyTextureRegion");
+    }
+    if (g_cfg.probe_skin || g_cfg.capture)
+    {
         hook_slot(list, CL_IDX(SetComputeRootSignature), (void *)hk_list_SetComputeRootSignature,
                 "CommandList::SetComputeRootSignature");
         hook_slot(list, CL_IDX(SetComputeRootDescriptorTable), (void *)hk_list_SetComputeRootDescriptorTable,
@@ -1585,7 +1671,7 @@ static HRESULT STDMETHODCALLTYPE hk_dev_CreateRootSignature(ID3D12Device *device
         }
     }
     hr = orig(device, node_mask, (g_cfg.minmax && minmax) ? copy : blob, size, riid, out);
-    if (SUCCEEDED(hr) && g_cfg.probe_skin && out && copy)
+    if (SUCCEEDED(hr) && (g_cfg.probe_skin || g_cfg.capture) && out && copy)
         rootsig_remember(*out, copy, size);
     if (FAILED(hr))
         log_msg("FAILED CreateRootSignature hr=%#lx (%zu bytes)", (unsigned long)hr, (size_t)size);
@@ -1724,6 +1810,8 @@ static volatile unsigned int g_palette_nbases;
 static volatile LONG g_palette_submits;   /* 0 = idle, else 1 + submissions seen */
 static void recheck_palettes_label(const char *when, const int32_t *bases, unsigned int nbases);
 
+static void capture_after_submit(ID3D12CommandQueue *queue, UINT count, ID3D12CommandList *const *lists);
+
 static void STDMETHODCALLTYPE hk_queue_ExecuteCommandLists(ID3D12CommandQueue *queue, UINT count,
         ID3D12CommandList *const *lists)
 {
@@ -1750,6 +1838,8 @@ static void STDMETHODCALLTYPE hk_queue_ExecuteCommandLists(ID3D12CommandQueue *q
             g_palette_submits = 0;
     }
     orig(queue, count, lists);
+    if (g_cfg.capture)
+        capture_after_submit(queue, count, lists);
     if (g_cfg.trace_queries)
         maybe_dump_queries();
 
@@ -2207,6 +2297,439 @@ static void log_table_views(UINT index, D3D12_GPU_DESCRIPTOR_HANDLE base)
     log_msg("skin window:   root %u: table not in a tracked heap", index);
 }
 
+/* ---------------------------------------------------------------- dispatch capture */
+
+/* With capture = N: for each shader in capture_hashes (the Ziva RT face/cloth shaders), N
+ * dispatches are saved to sm2fix-capture\<hash>-<n>.bin: root signature, root arguments,
+ * every buffer view the dispatch can see with its contents just before the dispatch, and
+ * every UAV's contents just after. gpu-test/replay.exe re-runs the dispatch from that
+ * file on another driver, so the Mac's output can be checked against a reference. */
+#define CAPTURE_MAX_VIEWS 128
+#define CAPTURE_SLOTS 16
+#define CAPTURE_VIEW_MAX (8ull << 20)
+#define CAPTURE_TOTAL_MAX (48ull << 20)
+
+struct cap_view
+{
+    uint32_t param, slot, kind, dim, format, num, stride, flags, heap_type, has_after;
+    uint64_t first, res_width, byte_off, byte_len, res_id, rb_before, rb_after, va;
+    ID3D12Resource *res;
+};
+
+struct cap_pending
+{
+    void *list;
+    ID3D12Device *dev;
+    ID3D12Resource *rb;
+    uint64_t hash, rb_size;
+    UINT x, y, z, seq;
+    struct root_state root;
+    struct sm2_rootsig rs;
+    const void *rs_blob;
+    SIZE_T rs_size;
+    unsigned int nviews;
+    struct cap_view v[CAPTURE_MAX_VIEWS];
+};
+
+static struct cap_pending *volatile g_cap[CAPTURE_SLOTS];
+static volatile LONG g_cap_count[8];
+static volatile DWORD g_cap_last[8], g_cap_t0;
+static volatile LONG g_cap_written;
+
+static void *real_fn(void *obj, unsigned int index)
+{
+    void *fn = orig_fn(obj, index);
+
+    return fn ? fn : (*(void ***)obj)[index];
+}
+
+static BOOL capture_wanted(uint64_t hash)
+{
+    DWORD now = GetTickCount();
+    unsigned int i;
+    LONG n;
+
+    for (i = 0; i < g_cfg.capture_hash_count && i < 8; i++)
+        if (g_cfg.capture_hashes[i] == hash)
+            break;
+    if (i >= g_cfg.capture_hash_count || i >= 8)
+        return FALSE;
+    if (!g_cap_t0)
+    {
+        InterlockedCompareExchange((volatile LONG *)&g_cap_t0, (LONG)(now | 1), 0);
+        log_msg("capture: first dispatch of a capture shader (%016llx); capturing in %u ms", (unsigned long long)hash,
+                g_cfg.capture_after_ms);
+    }
+    if (now - g_cap_t0 < g_cfg.capture_after_ms)
+        return FALSE;
+    n = g_cap_count[i];
+    if ((unsigned int)n >= g_cfg.capture || (n && now - g_cap_last[i] < 3000))
+        return FALSE;
+    if (InterlockedCompareExchange(&g_cap_count[i], n + 1, n) != n)
+        return FALSE;
+    g_cap_last[i] = now;
+    return TRUE;
+}
+
+static BOOL find_res_by_va(UINT64 va, ID3D12Resource **res, UINT64 *res_va, UINT64 *width)
+{
+    LONG i, n = g_heap_count < MAX_TRACKED_HEAPS ? g_heap_count : MAX_TRACKED_HEAPS;
+    UINT64 k;
+
+    for (i = 0; i < n; i++)
+    {
+        struct heap_rec *h = &g_heaps[i];
+
+        for (k = 0; h->recs && k < h->num; k++)
+        {
+            const struct view_rec *r = &h->recs[k];
+
+            if (r->res && r->va && va >= r->va && va < r->va + r->width)
+            {
+                *res = r->res;
+                *res_va = r->va;
+                *width = r->width;
+                return TRUE;
+            }
+        }
+    }
+    return FALSE;
+}
+
+static void capture_free(struct cap_pending *c)
+{
+    if (c->rb)
+        c->rb->lpVtbl->Release(c->rb);
+    if (c->dev)
+        c->dev->lpVtbl->Release(c->dev);
+    HeapFree(GetProcessHeap(), 0, c);
+}
+
+static void capture_drop_list(void *list)
+{
+    unsigned int i;
+
+    for (i = 0; i < CAPTURE_SLOTS; i++)
+    {
+        struct cap_pending *c = g_cap[i];
+
+        if (c && c->list == list && InterlockedCompareExchangePointer((void *volatile *)&g_cap[i], NULL, c) == c)
+        {
+            log_msg("capture: list %p was reset before it ran, dropping its capture of %016llx", list,
+                    (unsigned long long)c->hash);
+            capture_free(c);
+        }
+    }
+}
+
+static void cap_add_buffer(struct cap_pending *c, struct cap_view *v, UINT64 off, UINT64 len, uint64_t *total)
+{
+    if (off > v->res_width)
+        off = v->res_width;
+    if (len > v->res_width - off)
+        len = v->res_width - off;
+    if (len > CAPTURE_VIEW_MAX || *total + len > CAPTURE_TOTAL_MAX)
+        len = 0;
+    v->byte_off = off;
+    v->byte_len = len;
+    *total += (len + 255) & ~255ull;
+}
+
+static void capture_dispatch(ID3D12GraphicsCommandList *list, uint64_t hash, UINT x, UINT y, UINT z,
+        void (STDMETHODCALLTYPE *orig)(ID3D12GraphicsCommandList *, UINT, UINT, UINT))
+{
+    void (STDMETHODCALLTYPE *copy)(ID3D12GraphicsCommandList *, ID3D12Resource *, UINT64, ID3D12Resource *, UINT64,
+            UINT64) = real_fn(list, CL_IDX(CopyBufferRegion));
+    static volatile LONG seq;
+    D3D12_RESOURCE_BARRIER barrier;
+    D3D12_HEAP_PROPERTIES heap;
+    D3D12_RESOURCE_DESC desc;
+    struct cap_pending *c;
+    uint64_t total = 0, off;
+    unsigned int i, p, k;
+    LONG ri, rn;
+    HRESULT hr;
+
+    if (!(c = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*c))) || !root_get(list, &c->root))
+    {
+        log_msg("capture: %016llx: no root state for list %p", (unsigned long long)hash, (void *)list);
+        goto plain;
+    }
+    rn = g_rootsig_reg_n < ROOTSIG_MAX ? g_rootsig_reg_n : ROOTSIG_MAX;
+    for (ri = 0; ri < rn; ri++)
+        if (g_rootsig_reg[ri].obj == c->root.rs)
+        {
+            c->rs_blob = g_rootsig_reg[ri].blob;
+            c->rs_size = g_rootsig_reg[ri].size;
+        }
+    if (!c->rs_blob || sm2_rootsig_parse(c->rs_blob, c->rs_size, &c->rs))
+    {
+        log_msg("capture: %016llx: root signature %p unknown or unparsable", (unsigned long long)hash, c->root.rs);
+        goto plain;
+    }
+    c->list = list;
+    c->hash = hash;
+    c->x = x;
+    c->y = y;
+    c->z = z;
+    for (p = 0; p < c->rs.num_params && p < ROOT_PARAMS; p++)
+    {
+        UINT64 val = c->root.val[p];
+
+        if (c->rs.param_type[p] == SM2_RS_TABLE && val)
+        {
+            uint32_t n = sm2_rootsig_table_size(&c->rs, p, 32);
+            LONG hi, hn = g_heap_count < MAX_TRACKED_HEAPS ? g_heap_count : MAX_TRACKED_HEAPS;
+
+            for (hi = 0; hi < hn; hi++)
+            {
+                struct heap_rec *h = &g_heaps[hi];
+
+                if (!h->gpu || val < h->gpu || val >= h->gpu + h->num * h->inc)
+                    continue;
+                for (k = 0; k < n && (val - h->gpu) / h->inc + k < h->num && c->nviews < CAPTURE_MAX_VIEWS; k++)
+                {
+                    const struct view_rec *r = &h->recs[(val - h->gpu) / h->inc + k];
+                    struct cap_view *v = &c->v[c->nviews++];
+
+                    v->param = p;
+                    v->slot = k;
+                    v->kind = r->kind;
+                    v->dim = r->dim;
+                    v->format = r->format;
+                    v->num = r->num;
+                    v->stride = r->stride;
+                    v->flags = r->flags;
+                    v->first = r->first;
+                    v->heap_type = r->heap_type;
+                    v->res_id = (uint64_t)(UINT_PTR)r->res;
+                    v->va = r->va;
+                    if (r->kind == 3 && r->va)
+                    {
+                        ID3D12Resource *res;
+                        UINT64 res_va, width;
+
+                        if (find_res_by_va(r->va, &res, &res_va, &width))
+                        {
+                            v->res = res;
+                            v->res_width = width;
+                            v->res_id = (uint64_t)(UINT_PTR)res;
+                            cap_add_buffer(c, v, r->va - res_va, r->num, &total);
+                        }
+                    }
+                    else if ((r->kind == 1 || r->kind == 2) && r->dim == 1 && r->res)
+                    {
+                        unsigned int es = r->stride ? r->stride : (r->flags & 1) ? 4 : sm2_format_size(r->format);
+
+                        v->res = r->res;
+                        v->res_width = r->width;
+                        if (es)
+                            cap_add_buffer(c, v, r->first * es, (UINT64)r->num * es, &total);
+                        v->has_after = r->kind == 2 && v->byte_len;
+                        if (v->has_after)
+                            total += (v->byte_len + 255) & ~255ull;
+                    }
+                }
+                break;
+            }
+        }
+        else if (c->rs.param_type[p] >= SM2_RS_CBV && val && c->nviews < CAPTURE_MAX_VIEWS)
+        {
+            struct cap_view *v = &c->v[c->nviews++];
+            ID3D12Resource *res;
+            UINT64 res_va, width;
+
+            v->param = p;
+            v->slot = 0xffffffffu;
+            v->kind = c->rs.param_type[p] == SM2_RS_CBV ? 3 : c->rs.param_type[p] == SM2_RS_SRV ? 1 : 2;
+            v->va = val;
+            if (find_res_by_va(val, &res, &res_va, &width))
+            {
+                v->res = res;
+                v->res_width = width;
+                v->res_id = (uint64_t)(UINT_PTR)res;
+                cap_add_buffer(c, v, val - res_va, v->kind == 3 ? 65536 : (16u << 20), &total);
+                v->has_after = v->kind == 2 && v->byte_len;
+                if (v->has_after)
+                    total += (v->byte_len + 255) & ~255ull;
+            }
+        }
+    }
+    if (!total || FAILED(list->lpVtbl->GetDevice(list, &IID_ID3D12Device, (void **)&c->dev)) || !c->dev)
+    {
+        log_msg("capture: %016llx: nothing to capture (%u views)", (unsigned long long)hash, c->nviews);
+        goto plain;
+    }
+    memset(&heap, 0, sizeof(heap));
+    heap.Type = D3D12_HEAP_TYPE_READBACK;
+    memset(&desc, 0, sizeof(desc));
+    desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    desc.Width = total;
+    desc.Height = desc.DepthOrArraySize = desc.MipLevels = 1;
+    desc.SampleDesc.Count = 1;
+    desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    if (FAILED(hr = c->dev->lpVtbl->CreateCommittedResource(c->dev, &heap, D3D12_HEAP_FLAG_NONE, &desc,
+            D3D12_RESOURCE_STATE_COPY_DEST, NULL, &IID_ID3D12Resource, (void **)&c->rb)))
+    {
+        log_msg("capture: %016llx: readback buffer of %llu bytes failed, hr=%#lx", (unsigned long long)hash,
+                (unsigned long long)total, (unsigned long)hr);
+        c->rb = NULL;
+        goto plain;
+    }
+    c->rb_size = total;
+
+    memset(&barrier, 0, sizeof(barrier));
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+    list->lpVtbl->ResourceBarrier(list, 1, &barrier);
+    for (i = 0, off = 0; i < c->nviews; i++)
+    {
+        struct cap_view *v = &c->v[i];
+
+        if (!v->byte_len)
+            continue;
+        v->rb_before = off;
+        copy(list, c->rb, off, v->res, v->byte_off, v->byte_len);
+        off += (v->byte_len + 255) & ~255ull;
+    }
+    list->lpVtbl->ResourceBarrier(list, 1, &barrier);
+    orig(list, x, y, z);
+    list->lpVtbl->ResourceBarrier(list, 1, &barrier);
+    for (i = 0; i < c->nviews; i++)
+    {
+        struct cap_view *v = &c->v[i];
+
+        if (!v->has_after)
+            continue;
+        v->rb_after = off;
+        copy(list, c->rb, off, v->res, v->byte_off, v->byte_len);
+        off += (v->byte_len + 255) & ~255ull;
+    }
+    c->seq = (UINT)InterlockedIncrement(&seq);
+    for (i = 0; i < CAPTURE_SLOTS; i++)
+        if (!InterlockedCompareExchangePointer((void *volatile *)&g_cap[i], c, NULL))
+            break;
+    if (i == CAPTURE_SLOTS)
+    {
+        capture_free(c);
+        return;
+    }
+    log_msg("capture: recorded %016llx Dispatch(%u, %u, %u) on list %p: %u views, %llu bytes", (unsigned long long)hash,
+            x, y, z, (void *)list, c->nviews, (unsigned long long)total);
+    return;
+
+plain:
+    orig(list, x, y, z);
+    if (c)
+        capture_free(c);
+}
+
+static void capture_write(struct cap_pending *c)
+{
+    static const char magic[4] = { 'S', 'M', '2', 'C' };
+    D3D12_RANGE range = {0, (SIZE_T)c->rb_size}, none = {0, 0};
+    WCHAR dir[MAX_PATH], path[MAX_PATH];
+    const uint8_t *map = NULL;
+    uint32_t u, i;
+    FILE *f;
+
+    path_next_to_self(dir, MAX_PATH, L"sm2fix-capture");
+    CreateDirectoryW(dir, NULL);
+    swprintf(path, MAX_PATH, L"%ls\\%016llx-%u.bin", dir, (unsigned long long)c->hash, c->seq);
+    if (FAILED(c->rb->lpVtbl->Map(c->rb, 0, &range, (void **)&map)) || !map || !(f = _wfopen(path, L"wb")))
+    {
+        log_msg("capture: couldn't save %016llx", (unsigned long long)c->hash);
+        if (map)
+            c->rb->lpVtbl->Unmap(c->rb, 0, &none);
+        return;
+    }
+#define W32(v) do { u = (uint32_t)(v); fwrite(&u, 4, 1, f); } while (0)
+#define W64(v) do { uint64_t q_ = (uint64_t)(v); fwrite(&q_, 8, 1, f); } while (0)
+    fwrite(magic, 4, 1, f);
+    W32(1);
+    W64(c->hash);
+    W32(c->x); W32(c->y); W32(c->z);
+    W32(c->rs_size);
+    fwrite(c->rs_blob, 1, c->rs_size, f);
+    W32(ROOT_PARAMS);
+    for (i = 0; i < ROOT_PARAMS; i++)
+    {
+        W64(c->root.val[i]);
+        fwrite(c->root.consts[i], 4, 16, f);
+    }
+    W32(c->nviews);
+    for (i = 0; i < c->nviews; i++)
+    {
+        const struct cap_view *v = &c->v[i];
+
+        W32(v->param); W32(v->slot); W32(v->kind); W32(v->dim); W32(v->format); W32(v->num); W32(v->stride);
+        W32(v->flags); W32(v->heap_type); W32(v->has_after);
+        W64(v->first); W64(v->res_width); W64(v->byte_off); W64(v->byte_len); W64(v->res_id); W64(v->va);
+    }
+    for (i = 0; i < c->nviews; i++)
+        if (c->v[i].byte_len)
+            fwrite(map + c->v[i].rb_before, 1, c->v[i].byte_len, f);
+    for (i = 0; i < c->nviews; i++)
+        if (c->v[i].has_after)
+            fwrite(map + c->v[i].rb_after, 1, c->v[i].byte_len, f);
+#undef W32
+#undef W64
+    fclose(f);
+    c->rb->lpVtbl->Unmap(c->rb, 0, &none);
+    log_msg("capture: saved sm2fix-capture\\%016llx-%u.bin (%u views)", (unsigned long long)c->hash, c->seq, c->nviews);
+    InterlockedIncrement(&g_cap_written);
+}
+
+static void capture_after_submit(ID3D12CommandQueue *queue, UINT count, ID3D12CommandList *const *lists)
+{
+    unsigned int i, j;
+
+    for (i = 0; i < CAPTURE_SLOTS; i++)
+    {
+        struct cap_pending *c = g_cap[i];
+        ID3D12Fence *fence = NULL;
+        HANDLE event;
+        BOOL mine = FALSE;
+
+        if (!c)
+            continue;
+        for (j = 0; j < count; j++)
+        {
+            void *gl = NULL;
+
+            /* the submitted interface may differ from the one recorded on; compare objects */
+            if (lists[j] == c->list)
+                mine = TRUE;
+            else if (lists[j] && SUCCEEDED(((IUnknown *)lists[j])->lpVtbl->QueryInterface((IUnknown *)lists[j],
+                    &IID_ID3D12GraphicsCommandList, &gl)) && gl)
+            {
+                mine = gl == c->list;
+                ((IUnknown *)gl)->lpVtbl->Release((IUnknown *)gl);
+            }
+            if (mine)
+                break;
+        }
+        if (!mine || InterlockedCompareExchangePointer((void *volatile *)&g_cap[i], NULL, c) != c)
+            continue;
+        if (SUCCEEDED(c->dev->lpVtbl->CreateFence(c->dev, 0, D3D12_FENCE_FLAG_NONE, &IID_ID3D12Fence, (void **)&fence))
+                && fence)
+        {
+            HRESULT (STDMETHODCALLTYPE *signal)(ID3D12CommandQueue *, ID3D12Fence *, UINT64)
+                    = real_fn(queue, Q_IDX(Signal));
+
+            event = CreateEventW(NULL, FALSE, FALSE, NULL);
+            if (event && SUCCEEDED(signal(queue, fence, 1)) && SUCCEEDED(fence->lpVtbl->SetEventOnCompletion(fence, 1, event))
+                    && WaitForSingleObject(event, 10000) == WAIT_OBJECT_0)
+                capture_write(c);
+            else
+                log_msg("capture: GPU didn't finish the captured %016llx dispatch in 10 s", (unsigned long long)c->hash);
+            if (event)
+                CloseHandle(event);
+            fence->lpVtbl->Release(fence);
+        }
+        capture_free(c);
+    }
+}
+
 static void hook_device_object(void *obj)
 {
     static const struct
@@ -2242,7 +2765,7 @@ static void hook_device_object(void *obj)
         hook_slot(dev, DEV_IDX(CreateCommandSignature), (void *)hk_dev_CreateCommandSignature,
                 "Device::CreateCommandSignature");
         hook_slot(dev, DEV_IDX(CreateCommandQueue), (void *)hk_dev_CreateCommandQueue, "Device::CreateCommandQueue");
-        if (g_cfg.probe_skin)
+        if (g_cfg.probe_skin || g_cfg.capture)
         {
             hook_slot(dev, DEV_IDX(CreateDescriptorHeap), (void *)hk_dev_CreateDescriptorHeap, "Device::CreateDescriptorHeap");
             hook_slot(dev, DEV_IDX(CreateShaderResourceView), (void *)hk_dev_CreateShaderResourceView,

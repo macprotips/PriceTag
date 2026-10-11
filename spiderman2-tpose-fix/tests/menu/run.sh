@@ -30,7 +30,10 @@ for variant in no-crossover crossover; do
     out() { grep -q "$1" "$TMP/out"; }
 
     echo "== $variant"
-    run 1;  check "1 test#23 ziva reference"       eval 'ini ziva_cpu reference && ini mode off && ini probe_skin 0 && [ -f "$G/d3d12.dll" ]'
+    run 1;  check "1 test#24 ziva capture"         eval 'ini capture 1 && ini mode off && ini ziva_cpu auto && ini probe_skin 0 && [ -f "$G/d3d12.dll" ]'
+    mkdir -p "$G/sm2fix-capture" && echo x > "$G/sm2fix-capture/a.bin" && echo "x" > "$G/sm2fix.log"
+    run 3;  check "3 save results zips captures"   eval 'ls "$H"/Desktop/sm2fix-capture-*.zip >/dev/null 2>&1'
+    run 29; check "29 test#23 ziva reference"       eval 'ini ziva_cpu reference && ini mode off && ini probe_skin 0 && ini capture 0 && [ -f "$G/d3d12.dll" ]'
     run 27; check "27 test#23b ziva sse41"         eval 'ini ziva_cpu sse41 && ini mode off'
     run 28; check "28 test#23c ziva avx2"          eval 'ini ziva_cpu avx2 && ini mode off'
     run 25; check "25 test#21 writer trap"         eval 'ini trap_writer 1 && ini probe_skin 1 && ini force_anim 0 && ini ziva_cpu auto'

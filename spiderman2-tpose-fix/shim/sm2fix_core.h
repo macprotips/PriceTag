@@ -82,9 +82,33 @@ struct sm2_config
     uint32_t ziva_level_rva;    /* game function returning the best SIMD level (CPUID) */
     uint32_t ziva_impl_rva;     /* the global object whose vtable is the chosen implementation */
     uint32_t ziva_vtbl_rva[3];  /* ReferenceImpl, SSE4_1Impl, AVX2Impl vtables */
+    unsigned int capture;       /* save inputs/outputs of this many dispatches of each capture_hashes shader */
+    unsigned int capture_after_ms; /* only capture this long after the device was created (in game, not menus) */
+    unsigned int capture_hash_count;
+    uint64_t capture_hashes[8]; /* default: the Ziva RT face/cloth deformation shaders */
 };
 
 enum sm2_ziva_cpu { SM2_ZIVA_AUTO = 0, SM2_ZIVA_REFERENCE, SM2_ZIVA_SSE41, SM2_ZIVA_AVX2 };
+
+/* A root signature, flattened: what each root parameter is, and for descriptor tables
+ * every range (offset in the table, count, register, space, SRV/UAV/CBV/sampler). */
+#define SM2_RS_MAX_PARAMS 32
+#define SM2_RS_MAX_RANGES 64
+enum sm2_rs_param { SM2_RS_TABLE = 0, SM2_RS_CONSTANTS = 1, SM2_RS_CBV = 2, SM2_RS_SRV = 3, SM2_RS_UAV = 4 };
+struct sm2_rs_range { uint32_t param, type, count, reg, space, offset; };  /* type: 0 SRV 1 UAV 2 CBV 3 sampler */
+struct sm2_rootsig
+{
+    uint32_t version, num_params, num_ranges;
+    uint32_t param_type[SM2_RS_MAX_PARAMS];
+    uint32_t param_reg[SM2_RS_MAX_PARAMS], param_space[SM2_RS_MAX_PARAMS], param_num[SM2_RS_MAX_PARAMS];
+    struct sm2_rs_range ranges[SM2_RS_MAX_RANGES];
+};
+/* Parses a serialized root signature (bare RTS0 or inside a DXBC container). 0 on success. */
+int sm2_rootsig_parse(const void *blob, size_t size, struct sm2_rootsig *rs);
+/* Number of descriptors a table parameter spans (unbounded ranges count as `unbounded`). */
+uint32_t sm2_rootsig_table_size(const struct sm2_rootsig *rs, uint32_t param, uint32_t unbounded);
+/* Bytes per element of a DXGI format used in typed buffer views, 0 if unknown. */
+unsigned int sm2_format_size(unsigned int format);
 
 /* Feature answers sm2fix can change, to steer the game onto a different code path. */
 #define SM2_SPOOF_SM65      0x01u  /* report Shader Model 6.5 instead of 6.6 */

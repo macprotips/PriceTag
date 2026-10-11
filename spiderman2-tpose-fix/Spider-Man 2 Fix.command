@@ -267,7 +267,7 @@ fi
 
 say ""
 say "What do you want to do?"
-say "  1) Test #23: Ziva face/cloth code, plain version  <-- do this one"
+say "  1) Test #24: record Ziva face/cloth GPU work  <-- do this one"
 say "  2) Test #16: GPU check (done: the shader works on your Mac)"
 say "  3) Save my results to the Desktop (to send for help)"
 say "  4) Remove everything (back to normal)"
@@ -294,15 +294,17 @@ say "  23) Test #19: always animate (done: didn't help)"
 say "  24) Test #20: GPU readback watch (done: readbacks are fine)"
 say "  25) Test #21: catch the code that animates characters (done: only caught memory clears)"
 say "  26) Test #22: GPU data-format check (done: all 40 formats fine)"
-say "  27) Test #23b: Ziva face/cloth code, SSE4.1 version"
-say "  28) Test #23c: Ziva face/cloth code, AVX2 version"
+say "  29) Test #23: Ziva face/cloth code, plain version (done: no change)"
+say "  27) Test #23b: Ziva face/cloth code, SSE4.1 version (done: no change)"
+say "  28) Test #23c: Ziva face/cloth code, AVX2 version (done: no change)"
 say "  10) Quit"
 read -r -p "Type a number and press Return: " action
 say ""
 
 # Map the new menu numbers onto the handlers below.
 case "$action" in
-    1) action=t23 ;;
+    1) action=t24 ;;
+    29) action=t23 ;;
     26) action=t22 ;;
     27) action=t23b ;;
     28) action=t23c ;;
@@ -355,6 +357,22 @@ pick_wine() {
 }
 
 case "$action" in
+    t24)
+        ds_on
+        rm -rf "$GAME_DIR/sm2fix-dumps" "$GAME_DIR/sm2fix-capture"
+        bash "$INSTALLER" "${ARGS[@]}" --mode off --capture 1 || pause_exit 1
+        say ""
+        line
+        say "Test #24 installed. Faces and clothes are bent by Ziva RT's GPU programs."
+        say "This saves one real job of each of them (what went in, what your Mac's GPU"
+        say "made of it) so I can redo the same job on a reference GPU driver and see"
+        say "whether your Mac got it wrong. The game may pause for a moment once."
+        say "  1. Start the game and stay ~2 minutes on the main menu (the one where"
+        say "     Peter and Miles have no heads), then load your save for a minute."
+        say "  2. Quit from the in-game menu, run this again, pick 3, and send me BOTH"
+        say "     files it saves to your Desktop (the log and the capture zip)."
+        line
+        ;;
     t23|t23b|t23c)
         case "$action" in t23) ZV=reference; ZN="plain (reference)" ;; t23b) ZV=sse41; ZN="SSE4.1" ;; *) ZV=avx2; ZN="AVX2" ;; esac
         ds_on
@@ -718,6 +736,12 @@ case "$action" in
                 cat "$GAME_DIR/sm2fix.log"
             } > "$OUT"
             say "Saved: $OUT"
+            if [ -d "$GAME_DIR/sm2fix-capture" ] && [ -n "$(ls "$GAME_DIR/sm2fix-capture" 2>/dev/null)" ]; then
+                ZIP="$HOME/Desktop/sm2fix-capture-$STAMP.zip"
+                (cd "$GAME_DIR" && zip -qr "$ZIP" sm2fix-capture)
+                say "Saved: $ZIP"
+                say "Send me BOTH files."
+            fi
             if [ -d "$GAME_DIR/sm2fix-dumps" ] && [ -n "$(ls "$GAME_DIR/sm2fix-dumps" 2>/dev/null)" ]; then
                 ZIP="$HOME/Desktop/sm2fix-shaders-$STAMP.zip"
                 (cd "$GAME_DIR" && zip -qr "$ZIP" sm2fix-dumps)

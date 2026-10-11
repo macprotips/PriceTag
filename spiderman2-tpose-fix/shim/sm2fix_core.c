@@ -195,6 +195,14 @@ void sm2_config_defaults(struct sm2_config *cfg)
     cfg->ziva_vtbl_rva[0] = 0x5d34d50;
     cfg->ziva_vtbl_rva[1] = 0x5d34e30;
     cfg->ziva_vtbl_rva[2] = 0x5d34dc0;
+    cfg->capture_after_ms = 60000;
+    cfg->capture_hash_count = 6;
+    cfg->capture_hashes[0] = 0xbd8cf9af848f2800ull;   /* CS_ZivaTensorSkinning */
+    cfg->capture_hashes[1] = 0x9485836ba3df2694ull;   /* CS_ZivaKernelFunctions */
+    cfg->capture_hashes[2] = 0xd853ba193c3f8593ull;   /* CS_ZivaScatterAdd */
+    cfg->capture_hashes[3] = 0x5e3c76b17b779a4eull;   /* CS_ZivaRBFInterpolate */
+    cfg->capture_hashes[4] = 0x28a308ad4d452d2eull;   /* CS_ZivaEigenSkinning */
+    cfg->capture_hashes[5] = 0x66f5573a563fc86full;   /* CS_AnimVertZivaApply */
 }
 
 static int key_equals(const char *a, const char *b)
@@ -380,6 +388,35 @@ int sm2_config_set(struct sm2_config *cfg, const char *key, const char *value)
         }
         return 0;
     }
+    if (key_equals(key, "capture"))
+    {
+        cfg->capture = (unsigned int)strtoul(value, NULL, 10);
+        return 0;
+    }
+    if (key_equals(key, "capture_after_ms"))
+    {
+        cfg->capture_after_ms = (unsigned int)strtoul(value, NULL, 10);
+        return 0;
+    }
+    if (key_equals(key, "capture_hashes"))
+    {
+        /* hex hashes separated by commas */
+        char *end;
+
+        cfg->capture_hash_count = 0;
+        while (*value && cfg->capture_hash_count < 8)
+        {
+            uint64_t h = strtoull(value, &end, 16);
+
+            if (end == value)
+                break;
+            cfg->capture_hashes[cfg->capture_hash_count++] = h;
+            value = *end == ',' ? end + 1 : end;
+            while (*value == ' ')
+                value++;
+        }
+        return 0;
+    }
     if (key_equals(key, "skinning_hash"))
     {
         cfg->skinning_hash = strtoull(value, NULL, 16);
@@ -501,5 +538,143 @@ int sm2_config_has_hash(const struct sm2_config *cfg, uint64_t hash)
         if (cfg->hashes[i] == hash)
             return 1;
     }
+    return 0;
+}
+
+static uint32_t rd32(const uint8_t *p)
+{
+    return p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
+}
+
+int sm2_rootsig_parse(const void *blob, size_t size, struct sm2_rootsig *rs)
+{
+    const uint8_t *p = blob;
+    uint32_t i, j, params_off;
+
+    memset(rs, 0, sizeof(*rs));
+    if (!p || size < 24)
+        return -1;
+    if (!memcmp(p, "DXBC", 4))
+    {
+        uint32_t parts, found = 0;
+
+        if (size < 32 || (parts = rd32(p + 28)) > 64 || 32 + (size_t)parts * 4 > size)
+            return -1;
+        for (i = 0; i < parts; i++)
+        {
+            uint32_t off = rd32(p + 32 + i * 4);
+
+            if ((size_t)off + 8 <= size && !memcmp(p + off, "RTS0", 4) && (size_t)off + 8 + rd32(p + off + 4) <= size)
+            {
+                size = rd32(p + off + 4);
+                p += off + 8;
+                found = 1;
+                break;
+            }
+        }
+        if (!found || size < 24)
+            return -1;
+    }
+    rs->version = rd32(p);
+    if (rs->version != 1 && rs->version != 2)
+        return -1;
+    rs->num_params = rd32(p + 4);
+    params_off = rd32(p + 8);
+    if (rs->num_params > SM2_RS_MAX_PARAMS || (size_t)params_off + rs->num_params * 12ull > size)
+        return -1;
+    for (i = 0; i < rs->num_params; i++)
+    {
+        const uint8_t *e = p + params_off + i * 12;
+        uint32_t type = rd32(e), off = rd32(e + 8);
+
+        if (type > SM2_RS_UAV)
+            return -1;
+        rs->param_type[i] = type;
+        if (type == SM2_RS_TABLE)
+        {
+            uint32_t n, ranges_off, stride = rs->version == 1 ? 20 : 24;
+
+            if ((size_t)off + 8 > size)
+                return -1;
+            n = rd32(p + off);
+            ranges_off = rd32(p + off + 4);
+            if ((size_t)ranges_off + (size_t)n * stride > size)
+                return -1;
+            for (j = 0; j < n; j++)
+            {
+                const uint8_t *r = p + ranges_off + j * stride;
+                struct sm2_rs_range *d;
+
+                if (rs->num_ranges >= SM2_RS_MAX_RANGES)
+                    return -1;
+                d = &rs->ranges[rs->num_ranges++];
+                d->param = i;
+                d->type = rd32(r);
+                d->count = rd32(r + 4);
+                d->reg = rd32(r + 8);
+                d->space = rd32(r + 12);
+                d->offset = rd32(r + (rs->version == 1 ? 16 : 20));
+            }
+        }
+        else
+        {
+            if ((size_t)off + 12 > size)
+                return -1;
+            rs->param_reg[i] = rd32(p + off);
+            rs->param_space[i] = rd32(p + off + 4);
+            rs->param_num[i] = type == SM2_RS_CONSTANTS ? rd32(p + off + 8) : 0;
+        }
+    }
+    /* resolve D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND (0xffffffff) */
+    for (i = 0; i < rs->num_params; i++)
+    {
+        uint32_t next = 0;
+
+        for (j = 0; j < rs->num_ranges; j++)
+        {
+            struct sm2_rs_range *r = &rs->ranges[j];
+
+            if (r->param != i)
+                continue;
+            if (r->offset == 0xffffffffu)
+                r->offset = next;
+            next = r->count == 0xffffffffu ? r->offset : r->offset + r->count;
+        }
+    }
+    return 0;
+}
+
+uint32_t sm2_rootsig_table_size(const struct sm2_rootsig *rs, uint32_t param, uint32_t unbounded)
+{
+    uint32_t j, end = 0;
+
+    for (j = 0; j < rs->num_ranges; j++)
+    {
+        const struct sm2_rs_range *r = &rs->ranges[j];
+        uint32_t e;
+
+        if (r->param != param || r->type == 3)
+            continue;
+        e = r->offset + (r->count == 0xffffffffu ? unbounded : r->count);
+        if (e > end)
+            end = e;
+    }
+    return end;
+}
+
+unsigned int sm2_format_size(unsigned int f)
+{
+    if (f >= 1 && f <= 4) return 16;     /* R32G32B32A32 */
+    if (f >= 5 && f <= 8) return 12;     /* R32G32B32 */
+    if (f >= 9 && f <= 14) return 8;     /* R16G16B16A16 */
+    if (f >= 15 && f <= 18) return 8;    /* R32G32 */
+    if (f >= 23 && f <= 26) return 4;    /* R10G10B10A2, R11G11B10 */
+    if (f >= 27 && f <= 32) return 4;    /* R8G8B8A8 */
+    if (f >= 33 && f <= 38) return 4;    /* R16G16 */
+    if (f >= 39 && f <= 43) return 4;    /* R32 */
+    if (f >= 48 && f <= 52) return 2;    /* R8G8 */
+    if (f >= 53 && f <= 59) return 2;    /* R16 */
+    if (f >= 60 && f <= 64) return 1;    /* R8 */
+    if (f >= 87 && f <= 88) return 4;    /* B8G8R8A8/X8 */
     return 0;
 }
