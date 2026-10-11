@@ -1,0 +1,9 @@
+tests.s
+tests.o
+tests.bin
+tests.syms
+tests.work.s
+as.err
+bad.lines
+fuzz-report.txt
+wine-output.txt

@@ -267,7 +267,7 @@ fi
 
 say ""
 say "What do you want to do?"
-say "  1) Test #25: check EVERY GPU program the game runs  <-- do this one"
+say "  1) Test #26: check every CPU instruction the game uses (2 min, no game)  <-- do this one"
 say "  2) Test #16: GPU check (done: the shader works on your Mac)"
 say "  3) Save my results to the Desktop (to send for help)"
 say "  4) Remove everything (back to normal)"
@@ -294,6 +294,7 @@ say "  23) Test #19: always animate (done: didn't help)"
 say "  24) Test #20: GPU readback watch (done: readbacks are fine)"
 say "  25) Test #21: catch the code that animates characters (done: only caught memory clears)"
 say "  26) Test #22: GPU data-format check (done: all 40 formats fine)"
+say "  31) Test #25: check every GPU program the game runs (done: no differences found)"
 say "  30) Test #24: record Ziva face/cloth GPU work (done: Ziva GPU math is correct)"
 say "  29) Test #23: Ziva face/cloth code, plain version (done: no change)"
 say "  27) Test #23b: Ziva face/cloth code, SSE4.1 version (done: no change)"
@@ -304,7 +305,8 @@ say ""
 
 # Map the new menu numbers onto the handlers below.
 case "$action" in
-    1) action=t25 ;;
+    1) action=t26 ;;
+    31) action=t25 ;;
     30) action=t24 ;;
     29) action=t23 ;;
     26) action=t22 ;;
@@ -407,6 +409,42 @@ case "$action" in
         say "  2. Quit from the in-game menu, run this again, pick 3, send the log"
         say "     (and a screenshot if you can)."
         line
+        ;;
+    t26)
+        TDIR="$HERE/rosetta-fuzz"
+        pick_wine
+        say "Using: $CX_WINE"
+        say "Running the CPU instruction check: every kind of instruction the game's code"
+        say "uses (about 1,200), each on 96 inputs, compared with a real Intel CPU."
+        say "It takes a minute or two and doesn't change anything. Please wait..."
+        say ""
+        rm -f "$TDIR/fuzz-report.txt"
+        for TRY in "winemac.drv=d" ""; do
+            (cd "$TDIR" && WINEDEBUG=-all WINEDLLOVERRIDES="$TRY" "${RUN[@]}" rosetta_fuzz.exe check golden.bin \
+                fuzz-report.txt) > "$TDIR/wine-output.txt" 2>&1
+            grep -q "^RESULT" "$TDIR/fuzz-report.txt" 2>/dev/null && break
+            [ -n "$TRY" ] && say "First attempt didn't finish, trying again with the normal Wine setup..."
+        done
+        if grep -q "^RESULT" "$TDIR/fuzz-report.txt" 2>/dev/null; then
+            OUT="$HOME/Desktop/cpu-report-$(date +%Y%m%d-%H%M).txt"
+            {
+                echo "mac: $(sysctl -n machdep.cpu.brand_string 2>/dev/null) / macOS $(sw_vers -productVersion 2>/dev/null)"
+                echo "bottle: $KIND / $NAME"
+                cat "$TDIR/fuzz-report.txt"
+            } > "$OUT"
+            say ""
+            grep "^RESULT" "$TDIR/fuzz-report.txt"
+            say ""
+            say "Saved: $OUT"
+            say "Send me that file."
+            open -R "$OUT" 2>/dev/null
+        else
+            OUT="$HOME/Desktop/cpu-report-FAILED-$(date +%Y%m%d-%H%M).txt"
+            { echo "wine: $CX_WINE"; cat "$TDIR/fuzz-report.txt" 2>/dev/null; echo "--- wine output (last 60 lines)"; \
+              tail -n 60 "$TDIR/wine-output.txt" 2>/dev/null; } > "$OUT"
+            say "The test didn't finish. Saved what happened to: $OUT"
+            say "Send me that file."
+        fi
         ;;
     t22)
         TDIR="$HERE/gpu-test"

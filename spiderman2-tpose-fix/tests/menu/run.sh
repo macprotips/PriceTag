@@ -22,7 +22,7 @@ for variant in no-crossover crossover; do
         A="$H/Applications/CrossOver.app/Contents/SharedSupport/CrossOver/bin"
         mkdir -p "$A"
         # Fake wine: records its arguments; for the GPU check it writes a report like the real test.
-        printf '#!/bin/bash\nprintf "%%s\\n" "$@" "OVERRIDES=$WINEDLLOVERRIDES" > "%s/wine-args"\ncase "$*" in *skin_gpu_test.exe*) echo "RESULT: fake" > skin-report.txt ;; *format_test.exe*) echo "RESULT: fake" > format-report.txt ;; esac\nexit 0\n' "$H" > "$A/wine"
+        printf '#!/bin/bash\nprintf "%%s\\n" "$@" "OVERRIDES=$WINEDLLOVERRIDES" > "%s/wine-args"\ncase "$*" in *rosetta_fuzz.exe*) echo "RESULT: fake" > fuzz-report.txt ;; *skin_gpu_test.exe*) echo "RESULT: fake" > skin-report.txt ;; *format_test.exe*) echo "RESULT: fake" > format-report.txt ;; esac\nexit 0\n' "$H" > "$A/wine"
         chmod +x "$A/wine"
     fi
     run() { printf '%s\n\n' "$1" | HOME="$H" TERM=dumb SM2FIX_VOLUMES=/nonexistent bash "$CMD" > "$TMP/out" 2>&1; }
@@ -30,7 +30,7 @@ for variant in no-crossover crossover; do
     out() { grep -q "$1" "$TMP/out"; }
 
     echo "== $variant"
-    run 1;  check "1 test#25 capture all"          eval 'ini capture 1 && ini capture_all 1 && ini capture_view_mb 8 && ini capture_budget_mb 250 && ini mode off && [ -f "$G/d3d12.dll" ]'
+    run 31; check "31 test#25 capture all"          eval 'ini capture 1 && ini capture_all 1 && ini capture_view_mb 8 && ini capture_budget_mb 250 && ini mode off && [ -f "$G/d3d12.dll" ]'
     run 30; check "30 test#24 ziva capture"        eval 'ini capture 1 && ini capture_all 0 && ini capture_view_mb 32 && ini mode off && ini ziva_cpu auto && ini probe_skin 0'
     mkdir -p "$G/sm2fix-capture" && echo "x" > "$G/sm2fix.log"
     for n in 1 2 3; do head -c 70000000 /dev/zero > "$G/sm2fix-capture/c$n.bin"; done
@@ -69,6 +69,9 @@ for variant in no-crossover crossover; do
         run 2; check "2 test#16 GPU check runs in the bottle" eval 'ls "$H"/Desktop/skin-report-*.txt >/dev/null 2>&1 \
             && grep -qx -- "--bottle" "$H/wine-args" && grep -qx "skin_gpu_test.exe" "$H/wine-args" && grep -q "sm2fix-skinning.dxil$" "$H/wine-args" && grep -qx "OVERRIDES=winemac.drv=d" "$H/wine-args" \
             && grep -q "^Z:.*\\\\Marvel'"'"'s Spider-Man 2\\\\Spider-Man2.exe$" "$H/wine-args"'
+        rm -f "$H"/Desktop/cpu-report-*.txt
+        run 1; check "1 test#26 cpu check runs in the bottle" eval 'ls "$H"/Desktop/cpu-report-2*.txt >/dev/null 2>&1 \
+            && grep -qx "rosetta_fuzz.exe" "$H/wine-args" && grep -qx "check" "$H/wine-args" && grep -qx "OVERRIDES=winemac.drv=d" "$H/wine-args"'
         rm -f "$H"/Desktop/format-report-*.txt
         run 26; check "26 test#22 format check runs in the bottle" eval 'ls "$H"/Desktop/format-report-*.txt >/dev/null 2>&1 \
             && grep -qx -- "--bottle" "$H/wine-args" && grep -qx "format_test.exe" "$H/wine-args" && grep -qx "formats" "$H/wine-args" && grep -qx "OVERRIDES=winemac.drv=d" "$H/wine-args"'
