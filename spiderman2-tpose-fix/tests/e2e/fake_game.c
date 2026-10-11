@@ -31,6 +31,11 @@ static uint32_t g_fake_jobsys[32];
 int32_t fake_render_budgets[28] = {100, 200, 300, 16};
 uint32_t fake_skinning_sb[8];
 int32_t fake_skin_count = 5, fake_skin_seen;
+int32_t fake_queue_sel, fake_queue_alt;
+/* 5 queue items of 24 bytes: +8 = bone palette base (in 64-byte bones) */
+static int32_t fake_queue_items[5 * 6] = { 0, 0, 0, 0, 0, 0,  0, 0, 4, 0, 0, 0,  0, 0, -1, 0, 0, 0,
+                                           0, 0, 8, 0, 0, 0,  0, 0, 12, 0, 0, 0 };
+void *fake_queue = fake_queue_items;
 void (*fake_dispatch_cb)(void);   /* called from inside the stand-in dispatch function */
 static ID3D12GraphicsCommandList *g_cb_list;
 static D3D12_GPU_DESCRIPTOR_HANDLE g_cb_table;
@@ -51,7 +56,14 @@ __asm__(".text\n.globl skin_sb_stub_test\nskin_sb_stub_test:\n"
         "  .byte 0xe9\n  .long fake_sb_create - . - 4\n"
         ".globl skin_dispatch_test\nskin_dispatch_test:\n"
         "  .byte 0x4c, 0x8b, 0xdc, 0x56, 0x41, 0x57, 0x48, 0x81, 0xec, 0xc8, 0x00, 0x00, 0x00\n"
-        "  movslq fake_skin_count(%rip), %rsi\n  movl %esi, fake_skin_seen(%rip)\n"
+        "  movslq fake_skin_count(%rip), %rsi\n"                   /* +0x0d */
+        "  xorl %eax, %eax\n"                                      /* +0x14 */
+        "  cmpl %eax, fake_queue_sel(%rip)\n"                      /* +0x16 */
+        "  .byte 0x0f, 0x1f, 0x80, 0, 0, 0, 0\n"                   /* +0x1c nop7 */
+        "  cmovnel fake_queue_alt(%rip), %eax\n"                   /* +0x23 */
+        "  .byte 0x66, 0x0f, 0x1f, 0x44, 0, 0\n"                   /* +0x2a nop6 */
+        "  movq fake_queue(%rip), %rax\n"                          /* +0x30 */
+        "  movl %esi, fake_skin_seen(%rip)\n"
         "  movq fake_dispatch_cb(%rip), %rax\n  testq %rax, %rax\n  jz 1f\n  call *%rax\n1:\n"
         "  addq $0xc8, %rsp\n  popq %r15\n  popq %rsi\n  ret\n");
 uint64_t skin_sb_stub_test(void);
@@ -103,6 +115,7 @@ int main(int argc, char **argv)
     snprintf(hash, sizeof(hash), "%016llx", (unsigned long long)sm2_shader_hash(skin_shader, sizeof(skin_shader)));
     SetEnvironmentVariableA("SM2FIX_SKINNING_HASH", hash);
     SetEnvironmentVariableA("SM2FIX_REPLACE_SKINNING", !strcmp(mode, "hash") ? "1" : "0");
+    SetEnvironmentVariableA("SM2FIX_SNAPSHOT_MS", "0");
     SetEnvironmentVariableA("SM2FIX_TRACE_QUERIES", "1");
     /* all/max runs: mock behaves like D3DMetal (60 Hz, zero timestamps) and the shim fakes */
     SetEnvironmentVariableA("SM2FIX_FAKE_TIMESTAMPS", (!strcmp(mode, "all") || !strcmp(mode, "max")) ? "1" : "0");
@@ -242,6 +255,14 @@ int main(int argc, char **argv)
         D3D12_CPU_DESCRIPTOR_HANDLE cpu, vis_cpu;
         ID3D12DescriptorHeap *cpu_heap, *vis_heap;
         void *(*readback)(void) = (void *)GetProcAddress(mock, "mock_get_readback_resource");
+        float *bones;
+        int b, k;
+
+        /* bone palettes in the mock's CPU-visible buffer: 0 and 8 identity, 4 and 12 animated */
+        CHECK(SUCCEEDED(ID3D12Resource_Map((ID3D12Resource *)readback(), 0, NULL, (void **)&bones)));
+        for (b = 0; b < 16; b++)
+            for (k = 0; k < 16; k++)
+                bones[(7 + b) * 16 + k] = (k % 5 == 0) ? ((b / 4) % 2 ? 0.5f : 1.0f) : 0.0f;
 
         CHECK(SUCCEEDED(ID3D12Device4_CreateDescriptorHeap(device, &hd, &IID_ID3D12DescriptorHeap, (void **)&cpu_heap)));
         hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;

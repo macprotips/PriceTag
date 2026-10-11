@@ -67,6 +67,7 @@ struct sm2_config
     uint32_t probe_sb_rva;      /* stub that creates the SkinningSB buffer (sized by ModelSkinGroupMax) */
     uint32_t probe_dispatch_rva;/* function that fills SkinningSB and dispatches CS_ModelSkinning */
     uint64_t skinning_hash;     /* CS_ModelSkinning's hash (overridable for tests) */
+    unsigned int snapshot_ms;   /* probe_skin: period of the binding/palette snapshots */
     int replace_skinning;       /* swap CS_ModelSkinning for sm2fix-skinning.dxil (array-free rewrite) */
     int skip_skinning;          /* diagnostic: drop every Dispatch while CS_ModelSkinning is bound */
     unsigned int skin_budget;   /* 0 = untouched, else raise RenderBudgets.ModelSkinGroupMax to at least this */

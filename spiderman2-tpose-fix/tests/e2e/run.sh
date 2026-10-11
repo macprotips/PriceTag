@@ -37,8 +37,11 @@ for mode in hash all max off; do
     if [[ $mode == hash ]] && ! grep -q "replace_skinning: created the replacement skinning pipeline: hr=0" sm2fix.log; then
         echo "FAIL: replace_skinning ($mode)"; grep -i "replace" sm2fix.log; status=1
     fi
-    if [[ $mode != off ]] && ! grep -q "skin window:   root 1 \[0\] SRV dim=1 res=.* va=0xabc000 width=4096 heap=2 first=7 num=10 stride=64" sm2fix.log; then
+    if [[ $mode != off ]] && ! grep -q "skin window:   root 1 \[0\] SRV dim=1 res=.* va=0xabc000 width=1048576 heap=2 first=7 num=10 stride=64" sm2fix.log; then
         echo "FAIL: descriptor tracking ($mode)"; grep -i "skin window\|descriptor heap" sm2fix.log; status=1
+    fi
+    if [[ $mode != off ]] && ! grep -q "skin palettes (as the dispatch is recorded): 5 queued items, 1 skipped (no palette), 2 palettes ANIMATED, 2 IDENTITY" sm2fix.log; then
+        echo "FAIL: palette analysis ($mode)"; grep -i "palette" sm2fix.log; status=1
     fi
     if [[ $mode != off ]] && ! grep -q "skin window:     data: [0-9a-f]\{8\} " sm2fix.log; then
         echo "FAIL: upload-buffer data dump ($mode)"; grep -i "skin window" sm2fix.log; status=1

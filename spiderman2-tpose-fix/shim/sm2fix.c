@@ -18,6 +18,7 @@
 #include <initguid.h>
 #include <d3d12.h>
 #include <stddef.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdarg.h>
 
@@ -113,6 +114,7 @@ static void load_config(void)
         {"SM2FIX_SKIP_SKINNING", "skip_skinning"},
         {"SM2FIX_REPLACE_SKINNING", "replace_skinning"},
         {"SM2FIX_SKINNING_HASH", "skinning_hash"},
+        {"SM2FIX_SNAPSHOT_MS", "snapshot_ms"},
     };
     WCHAR path[MAX_PATH];
     char value[1024];
@@ -699,6 +701,8 @@ static void STDMETHODCALLTYPE hk_list_SetComputeRootSignature(ID3D12GraphicsComm
 }
 
 static void log_table_views(UINT index, D3D12_GPU_DESCRIPTOR_HANDLE base);
+static void *volatile g_bone_res;           /* bone palette buffer (t0) seen in a skin window */
+static UINT64 g_bone_width, g_bone_first;
 
 static void STDMETHODCALLTYPE hk_list_SetComputeRootDescriptorTable(ID3D12GraphicsCommandList *list, UINT index,
         D3D12_GPU_DESCRIPTOR_HANDLE base)
@@ -1998,6 +2002,15 @@ static void log_table_views(UINT index, D3D12_GPU_DESCRIPTOR_HANDLE base)
                     " stride=%u format=%u flags=%#x", index, k, kinds[r->kind < 4 ? r->kind : 0], r->dim, r->res,
                     (unsigned long long)r->va, (unsigned long long)r->width, r->heap_type,
                     (unsigned long long)r->first, r->num, r->stride, r->format, r->flags);
+            /* the bone palette buffer: structured, 64-byte elements, CPU-visible */
+            if (r->kind == 1 && r->dim == 1 && r->stride == 64 && r->heap_type == D3D12_HEAP_TYPE_UPLOAD
+                    && r->width >= (1u << 20) && !g_bone_res)
+            {
+                g_bone_res = r->res;
+                g_bone_width = r->width;
+                g_bone_first = r->first;
+                log_msg("skin window: bone palette buffer is %p (%llu bytes)", r->res, (unsigned long long)r->width);
+            }
             /* CPU-visible buffers (upload heap): show the first 32 words the view covers */
             if (r->res && r->dim == 1 && r->heap_type == D3D12_HEAP_TYPE_UPLOAD && (r->kind == 1 || r->kind == 2))
             {
@@ -2459,8 +2472,125 @@ static void log_skin_context(void)
     }
 }
 
+/* The dispatch function's work queue (from its own instructions, see install_skin_budget):
+ * 24-byte items, item+8 = bone palette base (in 64-byte bones, -1 = skipped), item+0x10 =
+ * the mesh subset record. */
+static const uint8_t *g_queue_base_ptr;     /* &queue array pointer */
+static const int32_t *g_queue_sel, *g_queue_alt;
+
+struct palette_stats { unsigned int items, skipped, identity, zero, other, out_of_range; };
+
+static int bone_is_identity(const float *m)
+{
+    static const float id[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+    int k;
+
+    for (k = 0; k < 16; k++)
+        if (k != 15 && fabsf(m[k] - id[k]) > 1e-4f)
+            return 0;
+    return 1;
+}
+
+static int bone_is_zero(const float *m)
+{
+    int k;
+
+    for (k = 0; k < 12; k++)
+        if (m[k] != 0.0f)
+            return 0;
+    return 1;
+}
+
+/* Classifies the first 4 bones of every queued palette: all identity (no animation
+ * applied: the mesh would render in its bind pose), all zero, or animated. */
+static void analyse_palettes(const char *when, int32_t n, int32_t *bases, unsigned int *nbases, int sample)
+{
+    struct palette_stats st = {0};
+    ID3D12Resource *res = g_bone_res;
+    D3D12_RANGE none = {0, 0};
+    const uint8_t *queue, *bones = NULL;
+    int32_t i, sel;
+    unsigned int shown_id = 0, shown_anim = 0;
+
+    if (!res || !g_queue_base_ptr || n <= 0 || !readable(g_queue_base_ptr, 8))
+        return;
+    sel = *g_queue_sel ? *g_queue_alt : 0;
+    queue = *(const uint8_t *const *)g_queue_base_ptr + (size_t)sel * 24;
+    if (!readable(queue, (size_t)n * 24))
+        return;
+    if (FAILED(res->lpVtbl->Map(res, 0, &none, (void **)&bones)) || !bones)
+        return;
+    bones += g_bone_first * 64;
+    for (i = 0; i < n && i < 30000; i++)
+    {
+        int32_t base = *(const int32_t *)(queue + (size_t)i * 24 + 8);
+        const float *m;
+        int k, ident = 1, zero = 1;
+
+        st.items++;
+        if (base < 0)
+        {
+            st.skipped++;
+            continue;
+        }
+        if ((UINT64)(base + 4) * 64 > g_bone_width - g_bone_first * 64)
+        {
+            st.out_of_range++;
+            continue;
+        }
+        if (bases && *nbases < 64)
+            bases[(*nbases)++] = base;
+        m = (const float *)(bones + (size_t)base * 64);
+        for (k = 0; k < 4; k++)
+        {
+            ident &= bone_is_identity(m + k * 16);
+            zero &= bone_is_zero(m + k * 16);
+        }
+        if (ident)
+            st.identity++;
+        else if (zero)
+            st.zero++;
+        else
+            st.other++;
+        if (sample && ((ident && shown_id < 2) || (!ident && !zero && shown_anim < 2)))
+        {
+            log_msg("skin palettes:   item %d base %d record %p %s: bone0 %.4f %.4f %.4f | %.4f %.4f %.4f | %.4f %.4f %.4f | t %.3f %.3f %.3f",
+                    i, base, *(void *const *)(queue + (size_t)i * 24 + 0x10), ident ? "IDENTITY" : "animated",
+                    m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10], m[12], m[13], m[14]);
+            if (ident)
+                shown_id++;
+            else
+                shown_anim++;
+        }
+    }
+    res->lpVtbl->Unmap(res, 0, &none);
+    log_msg("skin palettes (%s): %u queued items, %u skipped (no palette), %u palettes ANIMATED, %u IDENTITY"
+            " (bind pose), %u all-zero, %u out of range", when, st.items, st.skipped, st.other, st.identity, st.zero,
+            st.out_of_range);
+}
+
+/* The same palettes one frame later: did the CPU fill them after the dispatch was recorded? */
+static void recheck_palettes(const int32_t *bases, unsigned int nbases)
+{
+    ID3D12Resource *res = g_bone_res;
+    D3D12_RANGE none = {0, 0};
+    const uint8_t *bones = NULL;
+    unsigned int i, ident = 0;
+
+    if (!res || !nbases || FAILED(res->lpVtbl->Map(res, 0, &none, (void **)&bones)) || !bones)
+        return;
+    bones += g_bone_first * 64;
+    for (i = 0; i < nbases; i++)
+        ident += bone_is_identity((const float *)(bones + (size_t)bases[i] * 64));
+    res->lpVtbl->Unmap(res, 0, &none);
+    log_msg("skin palettes (one frame later): %u of the %u sampled palettes now start with an identity bone", ident, nbases);
+}
+
 static void hk_skin_dispatch(void *a1, void *a2, void *a3, void *a4)
 {
+    static int32_t sampled[64];
+    static unsigned int nsampled;
+    static volatile LONG recheck_pending;
     static volatile LONG context_logged;
     int32_t n = *g_sb.count;
     LONG now, last;
@@ -2484,15 +2614,23 @@ static void hk_skin_dispatch(void *a1, void *a2, void *a3, void *a4)
         LONG vl = view_last;
 
         /* every ~10 s, log the bindings and data of one skin dispatch with work */
-        if (n > 0 && now - vl > 10000 && InterlockedCompareExchange(&view_last, now, vl) == vl)
+        if (n > 0 && (now - vl >= (LONG)g_cfg.snapshot_ms || !vl) && InterlockedCompareExchange(&view_last, now, vl) == vl)
         {
             log_msg("skin window: snapshot (entries queued=%d)", (int)n);
             g_view_window_log = TRUE;
         }
     }
+    if (InterlockedExchange(&recheck_pending, 0))
+        recheck_palettes(sampled, nsampled);
     g_skin_window_tid = GetCurrentThreadId();
     g_dispatch_trampoline(a1, a2, a3, a4);
     g_skin_window_tid = 0;
+    if (g_view_window_log && n > 0)
+    {
+        nsampled = 0;
+        analyse_palettes("as the dispatch is recorded", n, sampled, &nsampled, 1);
+        recheck_pending = nsampled > 0;
+    }
     g_view_window_log = FALSE;
     if (n > 0 && !InterlockedExchange(&context_logged, 1))
         log_skin_context();
@@ -2535,6 +2673,15 @@ static void install_skin_budget(void)
         return;
     }
     g_sb.count = (int32_t *)(d + 20 + *(const int32_t *)(d + 16));
+    /* +0x16: 39 05 disp (cmp [selector], eax); +0x23: 0f 45 05 disp (cmovne eax, [alt]);
+     * +0x30: 48 8b 05 disp (mov rax, [queue array]) */
+    if (readable(d + 0x16, 0x21) && !memcmp(d + 0x16, "\x39\x05", 2) && !memcmp(d + 0x23, "\x0f\x45\x05", 3)
+            && !memcmp(d + 0x30, "\x48\x8b\x05", 3))
+    {
+        g_queue_sel = (const int32_t *)(d + 0x1c + *(const int32_t *)(d + 0x18));
+        g_queue_alt = (const int32_t *)(d + 0x2a + *(const int32_t *)(d + 0x26));
+        g_queue_base_ptr = d + 0x37 + *(const int32_t *)(d + 0x33);
+    }
     if (readable(g_sb.count, 4) && (g_dispatch_trampoline = patch_prologue(d, 13, hk_skin_dispatch)))
         log_msg("skin_budget: hooked skin dispatch at %p (queued count at %p)", (void *)d, (void *)g_sb.count);
 }

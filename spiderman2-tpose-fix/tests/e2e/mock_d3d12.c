@@ -103,7 +103,7 @@ static void STDMETHODCALLTYPE list_ExecuteIndirect(ID3D12GraphicsCommandList *if
 }
 
 /* readback buffer: timestamps 1000, 1600, 2600 ticks at 1 MHz -> deltas 600 us, 1000 us */
-static UINT64 g_readback[1024] = {1000, 1600, 2600};
+static UINT64 g_readback[131072] = {1000, 1600, 2600};   /* 1 MiB */
 struct resource { ID3D12ResourceVtbl *vtbl; LONG refs; };
 static HRESULT STDMETHODCALLTYPE res_QI(ID3D12Resource *iface, REFIID riid, void **out) { *out = iface; return S_OK; }
 static ULONG STDMETHODCALLTYPE res_AddRef(ID3D12Resource *iface) { return InterlockedIncrement(&((struct resource *)iface)->refs); }
@@ -114,7 +114,7 @@ static D3D12_RESOURCE_DESC *STDMETHODCALLTYPE res_GetDesc(ID3D12Resource *iface,
 {
     memset(ret, 0, sizeof(*ret));
     ret->Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    ret->Width = 4096;
+    ret->Width = sizeof(g_readback);
     return ret;
 }
 static D3D12_GPU_VIRTUAL_ADDRESS STDMETHODCALLTYPE res_GetGPUVirtualAddress(ID3D12Resource *iface) { return 0xabc000; }
