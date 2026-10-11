@@ -101,6 +101,22 @@ static void STDMETHODCALLTYPE list_ExecuteIndirect(ID3D12GraphicsCommandList *if
     InterlockedIncrement(&g_indirect);
 }
 
+/* readback buffer: timestamps 1000, 1600, 2600 ticks at 1 MHz -> deltas 600 us, 1000 us */
+static UINT64 g_readback[16] = {1000, 1600, 2600};
+struct resource { ID3D12ResourceVtbl *vtbl; LONG refs; };
+static HRESULT STDMETHODCALLTYPE res_QI(ID3D12Resource *iface, REFIID riid, void **out) { *out = iface; return S_OK; }
+static ULONG STDMETHODCALLTYPE res_AddRef(ID3D12Resource *iface) { return InterlockedIncrement(&((struct resource *)iface)->refs); }
+static ULONG STDMETHODCALLTYPE res_Release(ID3D12Resource *iface) { return InterlockedDecrement(&((struct resource *)iface)->refs); }
+static HRESULT STDMETHODCALLTYPE res_Map(ID3D12Resource *iface, UINT sub, const D3D12_RANGE *range, void **out) { *out = g_readback; return S_OK; }
+static ID3D12ResourceVtbl res_vtbl;
+static struct resource g_resource = {&res_vtbl, 1};
+void *mock_get_readback_resource(void) { return &g_resource; }
+
+static void STDMETHODCALLTYPE list_EndQuery(ID3D12GraphicsCommandList *iface, ID3D12QueryHeap *h, D3D12_QUERY_TYPE t, UINT i) {}
+static void STDMETHODCALLTYPE list_ResolveQueryData(ID3D12GraphicsCommandList *iface, ID3D12QueryHeap *h, D3D12_QUERY_TYPE t,
+        UINT start, UINT count, ID3D12Resource *dest, UINT64 off) {}
+static HRESULT STDMETHODCALLTYPE queue_GetTimestampFrequency(ID3D12CommandQueue *iface, UINT64 *f) { *f = 1000000; return S_OK; }
+
 static ID3D12GraphicsCommandListVtbl list_vtbl;
 
 /* ---- fence: completes asynchronously ~5 ms after a queue signals it, like a GPU */
@@ -292,6 +308,12 @@ HRESULT WINAPI mock_D3D12CreateDevice(IUnknown *adapter, D3D_FEATURE_LEVEL level
         list_vtbl.Dispatch = list_Dispatch;
         list_vtbl.ResourceBarrier = list_ResourceBarrier;
         list_vtbl.ExecuteIndirect = list_ExecuteIndirect;
+        list_vtbl.EndQuery = list_EndQuery;
+        list_vtbl.ResolveQueryData = list_ResolveQueryData;
+        res_vtbl.QueryInterface = res_QI;
+        res_vtbl.AddRef = res_AddRef;
+        res_vtbl.Release = res_Release;
+        res_vtbl.Map = res_Map;
 
         fence_vtbl.QueryInterface = fence_QI;
         fence_vtbl.AddRef = fence_AddRef;
@@ -305,6 +327,7 @@ HRESULT WINAPI mock_D3D12CreateDevice(IUnknown *adapter, D3D_FEATURE_LEVEL level
         queue_vtbl.ExecuteCommandLists = queue_ExecuteCommandLists;
         queue_vtbl.Signal = queue_Signal;
         queue_vtbl.Wait = queue_Wait;
+        queue_vtbl.GetTimestampFrequency = queue_GetTimestampFrequency;
     }
     g_device.vtbl = dev_vtbl;
     g_device.refs = 1;

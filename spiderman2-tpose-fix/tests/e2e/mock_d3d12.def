@@ -4,3 +4,4 @@ EXPORTS
     mock_get_counts
     mock_get_queue_counts
     mock_get_sampler_info
+    mock_get_readback_resource

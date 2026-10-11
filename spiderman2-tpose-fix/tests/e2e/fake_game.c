@@ -45,6 +45,7 @@ int main(int argc, char **argv)
     SetEnvironmentVariableA("SM2FIX_SPOOF", "sm65, no_int64,no_fp16");
     SetEnvironmentVariableA("SM2FIX_DUMP_COMPUTE", "1");
     SetEnvironmentVariableA("SM2FIX_PROFILE", "1");
+    SetEnvironmentVariableA("SM2FIX_TRACE_QUERIES", "1");
     SetEnvironmentVariableA("SM2FIX_PSO_DELAY_MS", !strcmp(mode, "max") ? "50" : "0");
     SetEnvironmentVariableA("SM2FIX_CPU_COUNT", !strcmp(mode, "off") ? "0" : "2");
     SetEnvironmentVariableA("SM2FIX_MINMAX", !strcmp(mode, "off") ? "keep" : "linear");
@@ -200,6 +201,16 @@ int main(int argc, char **argv)
         memset(&qdesc, 0, sizeof(qdesc));
         qdesc.Type = D3D12_COMMAND_LIST_TYPE_COMPUTE;
         CHECK(SUCCEEDED(ID3D12Device4_CreateCommandQueue(device, &qdesc, &IID_ID3D12CommandQueue, (void **)&queue)));
+        /* Query tracing: timestamps resolved into a readback buffer get decoded in the log. */
+        {
+            void *(*readback)(void) = (void *)GetProcAddress(mock, "mock_get_readback_resource");
+            UINT64 freq = 0;
+
+            ID3D12CommandQueue_GetTimestampFrequency(queue, &freq);
+            ID3D12GraphicsCommandList_EndQuery(list, NULL, D3D12_QUERY_TYPE_TIMESTAMP, 0);
+            ID3D12GraphicsCommandList_ResolveQueryData(list, NULL, D3D12_QUERY_TYPE_TIMESTAMP, 0, 3,
+                    (ID3D12Resource *)readback(), 0);
+        }
         for (i = 0; i < 3; i++)
             ID3D12CommandQueue_ExecuteCommandLists(queue, 1, (ID3D12CommandList *const *)&list);
         mock_get_queue = (void *)GetProcAddress(mock, "mock_get_queue_counts");

@@ -30,7 +30,17 @@ That's it. To undo everything, run the file and pick **5**.
 | 2026-10-10 | same | #6 again, ray tracing ON | Still T-poses and **still 0 skinning dispatches**, even though RT started (DispatchRays command signatures, 802 async-compute submits). One launch in this period came up with Spider-Man's current suit **fixed**. |
 | 2026-10-10 | same | #7 `cpu_count = 8` | Still T-poses, skinning still 0. **Inconclusive:** 41 threads already existed when d3d12.dll loaded, so the game's job system was sized before the shim could act. |
 | 2026-10-10 | same | #8 `pso_delay_ms = 10` (4,096+ pipelines delayed, ~40 s slower load) | **Still T-poses**, skinning still 0. Slow loading isn't the trigger. |
-| next | | #9 Rosetta instruction check (`rosetta-test/`), run outside the game | pending |
+| 2026-10-10 | same | #9 Rosetta instruction check | **Rosetta is conformant.** All FMA/F16C/AVX/AVX2/SSE4/BMI tests match Intel bit-for-bit in all MXCSR modes. `rcpps`/`rsqrtps` match Intel's exact values (within spec). All atomics, split-line `lock xadd`, `cmpxchg16b` and TSO litmus tests pass. Only `dpps` differs, and only in *which* NaN encoding it returns when inputs are NaN (Intel's default-NaN vs propagated payload): harmless, and AMD differs from Intel there too. CPU translation is ruled out. |
+| next | | #10 `trace_queries = 1`: log query heaps, Begin/EndQuery counts, `GetTimestampFrequency`/`GetClockCalibration`, and the values read back from resolved timestamp/occlusion/pipeline-stat queries every 15 s | pending |
+
+**Current theory.** Since CPU translation is ruled out, what differs between
+M1–M4 and M5 is the GPU, and how D3DMetal emulates D3D12 features on each family.
+The engine has an `AnimUpdateLODSystem` (how often each character's animation is
+updated) and `RenderBudgets`, which consume values read back from the GPU
+(occlusion visibility, GPU timestamps). If those come back as zeros or garbage on
+Apple7–9, animation updates could be throttled to nothing and skinning frozen
+(`AutoFreezeSkinning`), giving bind pose while characters still render. Test #10
+records exactly what the game reads back.
 
 **Static analysis of `Spider-Man2.exe`** (the user's copy, not committed). It isn't
 packed (normal section entropy) and it statically imports `amd_ags_x64.dll`.
@@ -299,6 +309,7 @@ there.
 | `dump_compute` | `0` | `1` saves every compute shader to `sm2fix-dumps\`. |
 | `dump_graphics` | `0` | `1` saves every vertex/mesh shader to `sm2fix-dumps\`. |
 | `profile` | `0` | `1` counts dispatches per compute shader (by hash) and logs the top ones every 20 s and at exit, always including skinning shader `3d50acdb571dce22`. |
+| `trace_queries` | `0` | `1` logs query heaps, query counts, timestamp frequency and calibration, and periodically decodes the values the game reads back (timestamp deltas in µs, occlusion counts, pipeline statistics). |
 | `pso_delay_ms` | `0` | Sleep this long in every pipeline creation, to imitate a cold shader cache (slow first boot). |
 | `cpu_count` | `0` | Report at most this many processors to the game (import patching + affinity mask). `0` = unchanged. |
 | `minmax` | `keep` | Samplers with MIN/MAX reduction: `keep` (count only), `linear` (drop the reduction), `point` (point-sample). Root-signature blobs are edited on a copy and re-checksummed. |

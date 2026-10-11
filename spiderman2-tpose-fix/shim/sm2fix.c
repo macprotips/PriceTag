@@ -102,6 +102,7 @@ static void load_config(void)
         {"SM2FIX_PROFILE", "profile"},
         {"SM2FIX_CPU_COUNT", "cpu_count"},
         {"SM2FIX_PSO_DELAY_MS", "pso_delay_ms"},
+        {"SM2FIX_TRACE_QUERIES", "trace_queries"},
     };
     WCHAR path[MAX_PATH];
     char value[1024];
@@ -694,8 +695,163 @@ static void STDMETHODCALLTYPE hk_list_ExecuteIndirect(ID3D12GraphicsCommandList 
     }
 }
 
+/* --------------------------------------------------------- GPU query tracing */
+
+/* The engine reads GPU answers back on the CPU (timestamps for budgets, occlusion for
+ * visibility). If D3DMetal returns bad values on M1-M4, the animation-LOD system could
+ * decide nothing needs animating. Log what the game asks for and what it gets. */
+static volatile LONG64 g_query_begin[8], g_query_end[8], g_query_resolve[8];
+static volatile LONG g_query_last_tick;
+static UINT64 g_ts_freq;
+
+struct resolve_rec
+{
+    ID3D12Resource *dest;
+    UINT64 offset;
+    UINT count;
+    D3D12_QUERY_TYPE type;
+    const uint8_t *mapped;
+};
+static struct resolve_rec g_resolves[48];
+static unsigned int g_resolve_count;
+
+static const char *query_type_name(D3D12_QUERY_TYPE t)
+{
+    static const char *names[] = {"occlusion", "binary-occlusion", "timestamp", "pipeline-stats",
+            "so-stats0", "so-stats1", "so-stats2", "so-stats3"};
+    return (unsigned int)t < 8 ? names[t] : "other";
+}
+
+static void STDMETHODCALLTYPE hk_list_BeginQuery(ID3D12GraphicsCommandList *list, ID3D12QueryHeap *heap,
+        D3D12_QUERY_TYPE type, UINT index)
+{
+    void (STDMETHODCALLTYPE *orig)(ID3D12GraphicsCommandList *, ID3D12QueryHeap *, D3D12_QUERY_TYPE, UINT)
+            = orig_fn(list, CL_IDX(BeginQuery));
+    orig(list, heap, type, index);
+    if ((unsigned int)type < 8)
+        InterlockedIncrement64(&g_query_begin[type]);
+}
+
+static void STDMETHODCALLTYPE hk_list_EndQuery(ID3D12GraphicsCommandList *list, ID3D12QueryHeap *heap,
+        D3D12_QUERY_TYPE type, UINT index)
+{
+    void (STDMETHODCALLTYPE *orig)(ID3D12GraphicsCommandList *, ID3D12QueryHeap *, D3D12_QUERY_TYPE, UINT)
+            = orig_fn(list, CL_IDX(EndQuery));
+    orig(list, heap, type, index);
+    if ((unsigned int)type < 8)
+        InterlockedIncrement64(&g_query_end[type]);
+}
+
+static void STDMETHODCALLTYPE hk_list_ResolveQueryData(ID3D12GraphicsCommandList *list, ID3D12QueryHeap *heap,
+        D3D12_QUERY_TYPE type, UINT start, UINT count, ID3D12Resource *dest, UINT64 offset)
+{
+    void (STDMETHODCALLTYPE *orig)(ID3D12GraphicsCommandList *, ID3D12QueryHeap *, D3D12_QUERY_TYPE, UINT, UINT,
+            ID3D12Resource *, UINT64) = orig_fn(list, CL_IDX(ResolveQueryData));
+    unsigned int i;
+    BOOL known = FALSE;
+
+    orig(list, heap, type, start, count, dest, offset);
+    if ((unsigned int)type < 8)
+        InterlockedIncrement64(&g_query_resolve[type]);
+    if (!dest || !count)
+        return;
+
+    AcquireSRWLockExclusive(&g_prof_lock);
+    for (i = 0; i < g_resolve_count; i++)
+    {
+        if (g_resolves[i].dest == dest && g_resolves[i].offset == offset && g_resolves[i].type == type)
+        {
+            known = TRUE;
+            break;
+        }
+    }
+    if (!known && g_resolve_count < ARRAYSIZE(g_resolves))
+    {
+        struct resolve_rec *r = &g_resolves[g_resolve_count];
+        D3D12_RANGE none = {0, 0};
+        void *ptr = NULL;
+
+        /* Keep our own reference and mapping so we can read the values any time later. */
+        dest->lpVtbl->AddRef(dest);
+        if (SUCCEEDED(dest->lpVtbl->Map(dest, 0, NULL, &ptr)) && ptr)
+        {
+            r->dest = dest;
+            r->offset = offset;
+            r->count = count;
+            r->type = type;
+            r->mapped = ptr;
+            g_resolve_count++;
+        }
+        else
+            dest->lpVtbl->Release(dest);
+        (void)none;
+    }
+    ReleaseSRWLockExclusive(&g_prof_lock);
+    if (!known)
+        log_msg("ResolveQueryData type=%s start=%u count=%u -> resource %p +%llu", query_type_name(type), start, count,
+                (void *)dest, (unsigned long long)offset);
+}
+
+static void dump_query_values(void)
+{
+    unsigned int i, j, n;
+
+    AcquireSRWLockShared(&g_prof_lock);
+    n = g_resolve_count;
+    ReleaseSRWLockShared(&g_prof_lock);
+    log_msg("queries so far: timestamp end=%lld resolve=%lld | occlusion begin=%lld resolve=%lld | binary-occl begin=%lld"
+            " | pipeline-stats begin=%lld; timestamp freq=%llu",
+            (long long)g_query_end[2], (long long)g_query_resolve[2], (long long)g_query_begin[0],
+            (long long)g_query_resolve[0], (long long)g_query_begin[1], (long long)g_query_begin[3],
+            (unsigned long long)g_ts_freq);
+    for (i = 0; i < n; i++)
+    {
+        const struct resolve_rec *r = &g_resolves[i];
+        const UINT64 *v = (const UINT64 *)(r->mapped + r->offset);
+        char line[512];
+        size_t len = 0;
+        UINT shown = r->count < 8 ? r->count : 8;
+
+        if (r->type == D3D12_QUERY_TYPE_PIPELINE_STATISTICS)
+        {
+            /* IAVertices IAPrimitives VSInvocations GSInvocations GSPrimitives CInvocations CPrimitives
+             * PSInvocations HSInvocations DSInvocations CSInvocations */
+            for (j = 0; j < 11; j++)
+                len += snprintf(line + len, sizeof(line) - len, "%llu ", (unsigned long long)v[j]);
+        }
+        else if (r->type == D3D12_QUERY_TYPE_TIMESTAMP && g_ts_freq)
+        {
+            len += snprintf(line + len, sizeof(line) - len, "t0=%llu deltas(us):", (unsigned long long)v[0]);
+            for (j = 1; j < shown; j++)
+                len += snprintf(line + len, sizeof(line) - len, " %.1f",
+                        (double)(INT64)(v[j] - v[j - 1]) * 1e6 / (double)g_ts_freq);
+        }
+        else
+        {
+            for (j = 0; j < shown; j++)
+                len += snprintf(line + len, sizeof(line) - len, "%llu ", (unsigned long long)v[j]);
+        }
+        log_msg("  %s x%u @%p+%llu: %s", query_type_name(r->type), r->count, (void *)r->dest,
+                (unsigned long long)r->offset, line);
+    }
+}
+
+static void maybe_dump_queries(void)
+{
+    LONG now = (LONG)GetTickCount(), last = g_query_last_tick;
+
+    if (now - last > 15000 && InterlockedCompareExchange(&g_query_last_tick, now, last) == last)
+        dump_query_values();
+}
+
 static void hook_command_list_vtable(void *list)
 {
+    if (g_cfg.trace_queries)
+    {
+        hook_slot(list, CL_IDX(BeginQuery), (void *)hk_list_BeginQuery, "CommandList::BeginQuery");
+        hook_slot(list, CL_IDX(EndQuery), (void *)hk_list_EndQuery, "CommandList::EndQuery");
+        hook_slot(list, CL_IDX(ResolveQueryData), (void *)hk_list_ResolveQueryData, "CommandList::ResolveQueryData");
+    }
     hook_slot(list, CL_IDX(ExecuteIndirect), (void *)hk_list_ExecuteIndirect, "CommandList::ExecuteIndirect");
     hook_slot(list, CL_IDX(Release), (void *)hk_list_Release, "CommandList::Release");
     hook_slot(list, CL_IDX(Reset), (void *)hk_list_Reset, "CommandList::Reset");
@@ -1015,6 +1171,8 @@ static void STDMETHODCALLTYPE hk_queue_ExecuteCommandLists(ID3D12CommandQueue *q
     UINT64 value = 0;
 
     orig(queue, count, lists);
+    if (g_cfg.trace_queries)
+        maybe_dump_queries();
 
     AcquireSRWLockExclusive(&g_lock);
     if ((q = find_queue(queue)))
@@ -1052,6 +1210,33 @@ static void STDMETHODCALLTYPE hk_queue_ExecuteCommandLists(ID3D12CommandQueue *q
     }
 }
 
+static HRESULT STDMETHODCALLTYPE hk_queue_GetTimestampFrequency(ID3D12CommandQueue *queue, UINT64 *freq)
+{
+    static volatile LONG logged;
+    HRESULT (STDMETHODCALLTYPE *orig)(ID3D12CommandQueue *, UINT64 *) = orig_fn(queue, Q_IDX(GetTimestampFrequency));
+    HRESULT hr = orig(queue, freq);
+
+    if (SUCCEEDED(hr) && freq)
+    {
+        g_ts_freq = *freq;
+        if (InterlockedIncrement(&logged) <= 4)
+            log_msg("GetTimestampFrequency(queue %p) = %llu Hz", (void *)queue, (unsigned long long)*freq);
+    }
+    return hr;
+}
+
+static HRESULT STDMETHODCALLTYPE hk_queue_GetClockCalibration(ID3D12CommandQueue *queue, UINT64 *gpu, UINT64 *cpu)
+{
+    static volatile LONG logged;
+    HRESULT (STDMETHODCALLTYPE *orig)(ID3D12CommandQueue *, UINT64 *, UINT64 *) = orig_fn(queue, Q_IDX(GetClockCalibration));
+    HRESULT hr = orig(queue, gpu, cpu);
+
+    if (InterlockedIncrement(&logged) <= 4)
+        log_msg("GetClockCalibration hr=%#lx gpu=%llu cpu=%llu", (unsigned long)hr,
+                gpu ? (unsigned long long)*gpu : 0ull, cpu ? (unsigned long long)*cpu : 0ull);
+    return hr;
+}
+
 static HRESULT STDMETHODCALLTYPE hk_queue_Signal(ID3D12CommandQueue *queue, ID3D12Fence *fence, UINT64 value)
 {
     HRESULT (STDMETHODCALLTYPE *orig)(ID3D12CommandQueue *, ID3D12Fence *, UINT64) = orig_fn(queue, Q_IDX(Signal));
@@ -1086,6 +1271,12 @@ static HRESULT STDMETHODCALLTYPE hk_dev_CreateCommandQueue(ID3D12Device *device,
     hook_slot(*out, Q_IDX(ExecuteCommandLists), (void *)hk_queue_ExecuteCommandLists, "Queue::ExecuteCommandLists");
     hook_slot(*out, Q_IDX(Signal), (void *)hk_queue_Signal, "Queue::Signal");
     hook_slot(*out, Q_IDX(Wait), (void *)hk_queue_Wait, "Queue::Wait");
+    if (g_cfg.trace_queries)
+    {
+        hook_slot(*out, Q_IDX(GetTimestampFrequency), (void *)hk_queue_GetTimestampFrequency,
+                "Queue::GetTimestampFrequency");
+        hook_slot(*out, Q_IDX(GetClockCalibration), (void *)hk_queue_GetClockCalibration, "Queue::GetClockCalibration");
+    }
 
     if (g_cfg.mode == SM2_MODE_MAX)
         device->lpVtbl->CreateFence(device, 0, D3D12_FENCE_FLAG_NONE, &IID_ID3D12Fence, (void **)&fence);
@@ -1105,6 +1296,21 @@ static HRESULT STDMETHODCALLTYPE hk_dev_CreateCommandQueue(ID3D12Device *device,
     ReleaseSRWLockExclusive(&g_lock);
     if (fence)
         ID3D12Fence_Release(fence);
+    return hr;
+}
+
+static HRESULT STDMETHODCALLTYPE hk_dev_CreateQueryHeap(ID3D12Device *device, const D3D12_QUERY_HEAP_DESC *desc,
+        REFIID riid, void **out)
+{
+    static const char *types[] = {"occlusion", "timestamp", "pipeline-stats", "so-stats", "video-decode-stats",
+            "copy-queue-timestamp"};
+    HRESULT (STDMETHODCALLTYPE *orig)(ID3D12Device *, const D3D12_QUERY_HEAP_DESC *, REFIID, void **)
+            = orig_fn(device, DEV_IDX(CreateQueryHeap));
+    HRESULT hr = orig(device, desc, riid, out);
+
+    if (desc)
+        log_msg("CreateQueryHeap type=%s count=%u hr=%#lx", (unsigned int)desc->Type < 6 ? types[desc->Type] : "?",
+                desc->Count, (unsigned long)hr);
     return hr;
 }
 
@@ -1138,6 +1344,8 @@ static void hook_device_object(void *obj)
         hook_slot(dev, DEV_IDX(CreateRootSignature), (void *)hk_dev_CreateRootSignature, "Device::CreateRootSignature");
         hook_slot(dev, DEV_IDX(CheckFeatureSupport), (void *)hk_dev_CheckFeatureSupport, "Device::CheckFeatureSupport");
         hook_slot(dev, DEV_IDX(CreateSampler), (void *)hk_dev_CreateSampler, "Device::CreateSampler");
+        if (g_cfg.trace_queries)
+            hook_slot(dev, DEV_IDX(CreateQueryHeap), (void *)hk_dev_CreateQueryHeap, "Device::CreateQueryHeap");
         hook_slot(dev, DEV_IDX(CreateCommandSignature), (void *)hk_dev_CreateCommandSignature,
                 "Device::CreateCommandSignature");
         hook_slot(dev, DEV_IDX(CreateCommandQueue), (void *)hk_dev_CreateCommandQueue, "Device::CreateCommandQueue");
@@ -1171,7 +1379,7 @@ static BOOL CALLBACK init_once(INIT_ONCE *once, void *param, void **context)
     log_msg("sm2fix loaded: mode=%s log_shaders=%d hashes=%u spoof=%#x dump_compute=%d dump_graphics=%d minmax=%d",
             mode_names[g_cfg.mode], g_cfg.log_shaders, g_cfg.hash_count, g_cfg.spoof, g_cfg.dump_compute,
             g_cfg.dump_graphics, g_cfg.minmax);
-    log_msg("profile=%d", g_cfg.profile);
+    log_msg("profile=%d trace_queries=%d", g_cfg.profile, g_cfg.trace_queries);
     for (i = 0; i < g_cfg.hash_count; i++)
         log_msg("  target hash %016llx", (unsigned long long)g_cfg.hashes[i]);
 

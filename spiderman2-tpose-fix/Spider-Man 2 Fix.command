@@ -164,6 +164,10 @@ current_mode() {
 }
 
 mode_label() {
+    if grep -q '^trace_queries = 1' "$GAME_DIR/sm2fix.ini" 2>/dev/null; then
+        echo "Test #10 GPU query tracer"
+        return
+    fi
     if grep -q '^pso_delay_ms = [1-9]' "$GAME_DIR/sm2fix.ini" 2>/dev/null; then
         echo "Test #8 slow loading ($(sed -n 's/^pso_delay_ms = //p' "$GAME_DIR/sm2fix.ini") ms)"
         return
@@ -221,8 +225,8 @@ fi
 
 say ""
 say "What do you want to do?"
-say "  1) Test #9: Rosetta instruction check (2 min, game stays closed)  <-- do this one"
-say "  2) Test #8: slow loading"
+say "  1) Test #10: GPU query tracer  <-- do this one"
+say "  2) Test #9: Rosetta instruction check (done: Rosetta is fine)"
 say "  3) Save my results to the Desktop (to send for help)"
 say "  4) Remove everything (back to normal)"
 say ""
@@ -235,14 +239,16 @@ say "  9) Test #4: hide GPU features"
 say "  11) Test #6: animation tracker"
 say "  12) Test #5: sampler fix"
 say "  13) Test #7: game sees 8 CPU cores"
+say "  14) Test #8: slow loading"
 say "  10) Quit"
 read -r -p "Type a number and press Return: " action
 say ""
 
 # Map the new menu numbers onto the handlers below.
 case "$action" in
-    1) action=t9 ;;
-    2) action=t8 ;;
+    1) action=t10 ;;
+    2) action=t9 ;;
+    14) action=t8 ;;
     13) action=t7 ;;
     11) action=t6 ;;
     12) action=t5 ;;
@@ -257,6 +263,20 @@ case "$action" in
 esac
 
 case "$action" in
+    t10)
+        ds_on
+        rm -rf "$GAME_DIR/sm2fix-dumps"
+        bash "$INSTALLER" "${ARGS[@]}" --mode off --profile --trace-queries || pause_exit 1
+        say ""
+        line
+        say "Test #10 installed. It records the questions the game asks the GPU"
+        say "(\"was this visible?\", \"how long did that take?\") and the answers it"
+        say "reads back, every 15 seconds. Speed should be normal."
+        say "  1. Start the game, load your save, play 2-3 minutes near people."
+        say "  2. Quit from the in-game menu."
+        say "  3. Run this again, pick 3, and send me the log."
+        line
+        ;;
     t9)
         TDIR="$HERE/rosetta-test"
         if [ "$KIND" = CrossOver ] && [ -x "$CX_WINE" ]; then
