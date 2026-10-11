@@ -42,7 +42,8 @@ That's it. To undo everything, run the file and pick **4**.
 | 2026-10-11 | same | #18b palette check | **Found the bind pose in the data.** While loading, all queued palettes are identity. During play, ~85% of the 4,200–5,800 queued mesh subsets per frame have animated palettes, but **410–830 per frame use palettes that are pure identity** (first 4 bones), and they stay identity. A mesh skinned with identity bones renders in its bind pose: the T-pose. The shader and the bone buffer are fine; some palettes are simply never written. |
 | 2026-10-11 | same | #18c flags + job queue | **CPU-job theory out.** No queued mesh record has bit 0 set, and the job queue's capacity is 22,528. Identity palettes don't line up with any record flag (some animated ones carry bits 1/2). Still 400–860 identity palettes per frame during play. |
 | 2026-10-11 | same | #18d identity recheck | **Never written, not late.** Every identity palette stayed identity at the 1st, 4th and 16th queue submission after the dispatch was recorded and a frame later (up to ~180 ms). A user screenshot shows the pattern: an NPC on a bench with head, hands and trousers posed (sitting) but his **jacket** in the bind pose. |
-| next | | #18e: compare identity vs animated meshes: how many use a bone remap table (record +0x1c, typical for clothing driven by the body skeleton), plus raw dumps of 3 records and meshes of each kind | pending |
+| 2026-10-11 | same | #18e record dumps | The remap-table field doesn't separate them. Sampled identity meshes come from several NPC models with mesh flag word (+0x14) `3`/`1`/`0x11`; sampled animated ones (one big model, likely the player) have `7`. |
+| next | | #18f: histogram identity vs animated over every queued mesh by mesh +0x14 (flags), +0x1c and +0x34 | pending |
 
 **Static analysis of the skinning scheduler.** Code cross-references from the
 `ModelSkinJobFunc` and `Skinning Fence` strings lead to the per-frame skin-job

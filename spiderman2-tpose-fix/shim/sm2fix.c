@@ -2504,7 +2504,23 @@ struct palette_stats
     unsigned int flag_identity[8], flag_animated[8];    /* by bit of the record's flag byte (+4) */
     unsigned int noflag_identity, noflag_animated;      /* record unreadable */
     unsigned int remap_identity, remap_animated;        /* record +0x1c != -1: bones looked up via a remap table */
+    /* per value of a mesh field (low byte): identity / animated counts */
+    unsigned int mflags_id[256], mflags_an[256];        /* mesh +0x14 */
+    unsigned int m1c_id[256], m1c_an[256];              /* mesh +0x1c */
+    unsigned int m34_id[256], m34_an[256];              /* mesh +0x34 */
 };
+
+static void log_histogram(const char *name, const unsigned int *id, const unsigned int *an)
+{
+    char line[1024];
+    size_t len = 0;
+    int v;
+
+    for (v = 0; v < 256 && len < sizeof(line) - 40; v++)
+        if (id[v] || an[v])
+            len += snprintf(line + len, sizeof(line) - len, " %#x:%u/%u", v, id[v], an[v]);
+    log_msg("skin palettes: by %s (value:identity/animated):%s", name, len ? line : " none");
+}
 
 static void log_record(const char *what, int32_t item, int32_t base, const uint8_t *rec)
 {
@@ -2609,6 +2625,16 @@ static void analyse_palettes(const char *when, int32_t n, int32_t *bases, unsign
                         (ident ? st.flag_identity : st.flag_animated)[bit]++;
                 if (*(const int32_t *)(rec + 0x1c) != -1)
                     (ident ? st.remap_identity++ : st.remap_animated++);
+                {
+                    const uint8_t *mesh = *(const uint8_t *const *)(rec + 8);
+
+                    if (mesh && readable(mesh, 0x38))
+                    {
+                        (ident ? st.mflags_id : st.mflags_an)[mesh[0x14]]++;
+                        (ident ? st.m1c_id : st.m1c_an)[mesh[0x1c]]++;
+                        (ident ? st.m34_id : st.m34_an)[mesh[0x34]]++;
+                    }
+                }
                 if (sample && ident && st.identity <= 3)
                     log_record("IDENTITY", i, base, rec);
                 if (sample && !ident && st.other <= 3)
@@ -2640,6 +2666,9 @@ static void analyse_palettes(const char *when, int32_t n, int32_t *bases, unsign
             st.flag_animated[5], st.flag_animated[6], st.flag_animated[7], st.noflag_animated);
     log_msg("skin palettes: using a bone remap table (record +0x1c != -1): %u of %u IDENTITY, %u of %u ANIMATED",
             st.remap_identity, st.identity, st.remap_animated, st.other);
+    log_histogram("mesh +0x14", st.mflags_id, st.mflags_an);
+    log_histogram("mesh +0x1c", st.m1c_id, st.m1c_an);
+    log_histogram("mesh +0x34", st.m34_id, st.m34_an);
     {
         const uint32_t *m = (const uint32_t *)(g_game_base + SKIN_MANAGER_RVA);
 
