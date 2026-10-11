@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# Installs (or removes) the sm2fix d3d12.dll shim into a CrossOver / Whisky / GPTK
+# bottle that has Marvel's Spider-Man 2 installed.
+#
+#   ./scripts/install-macos.sh --bottle "Steam"                 # CrossOver bottle name
+#   ./scripts/install-macos.sh --prefix ~/path/to/wineprefix    # Whisky / GPTK prefix
+#   ./scripts/install-macos.sh --bottle "Steam" --mode all      # diagnostic mode
+#   ./scripts/install-macos.sh --bottle "Steam" --uninstall
+#
+# Optional: --game-dir "/path/to/Marvel's Spider-Man 2"  --wine /path/to/wine
+set -euo pipefail
+
+HERE="$(cd "$(dirname "$0")/.." && pwd)"
+BOTTLE="" PREFIX="" GAME_DIR="" WINE="" MODE="hash" UNINSTALL=0
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --bottle) BOTTLE="$2"; shift 2 ;;
+        --prefix) PREFIX="$2"; shift 2 ;;
+        --game-dir) GAME_DIR="$2"; shift 2 ;;
+        --wine) WINE="$2"; shift 2 ;;
+        --mode) MODE="$2"; shift 2 ;;
+        --uninstall) UNINSTALL=1; shift ;;
+        -h|--help) sed -n 2,12p "$0"; exit 0 ;;
+        *) echo "unknown option: $1" >&2; exit 1 ;;
+    esac
+done
+
+CX_WINE="/Applications/CrossOver.app/Contents/SharedSupport/CrossOver/bin/wine"
+
+if [[ -n "$BOTTLE" ]]; then
+    PREFIX="$HOME/Library/Application Support/CrossOver/Bottles/$BOTTLE"
+    [[ -z "$WINE" && -x "$CX_WINE" ]] && WINE="$CX_WINE"
+fi
+if [[ -z "$PREFIX" || ! -d "$PREFIX/drive_c" ]]; then
+    echo "Can't find a bottle at '$PREFIX'. Pass --bottle NAME (CrossOver) or --prefix PATH." >&2
+    exit 1
+fi
+
+if [[ -z "$GAME_DIR" ]]; then
+    exe="$(find "$PREFIX/drive_c" -name 'Spider-Man2.exe' -not -path '*/windows/*' 2>/dev/null | head -n 1 || true)"
+    if [[ -z "$exe" ]]; then
+        echo "Spider-Man2.exe not found in $PREFIX. Pass --game-dir." >&2
+        exit 1
+    fi
+    GAME_DIR="$(dirname "$exe")"
+fi
+echo "Game folder: $GAME_DIR"
+
+# Runs `wine reg ...` inside the bottle so Wine loads our d3d12.dll from the game folder
+# before the translation layer's. Scoped to Spider-Man2.exe only.
+REG_KEY='HKCU\Software\Wine\AppDefaults\Spider-Man2.exe\DllOverrides'
+wine_reg() {
+    if [[ -n "$BOTTLE" && "$WINE" == "$CX_WINE" ]]; then
+        "$WINE" --bottle "$BOTTLE" reg "$@"
+    elif [[ -n "$WINE" ]]; then
+        WINEPREFIX="$PREFIX" "$WINE" reg "$@"
+    else
+        return 1
+    fi
+}
+
+if [[ $UNINSTALL -eq 1 ]]; then
+    rm -f "$GAME_DIR/d3d12.dll" "$GAME_DIR/sm2fix.ini" "$GAME_DIR/sm2fix.log"
+    [[ -f "$GAME_DIR/d3d12.dll.sm2fix-backup" ]] && mv "$GAME_DIR/d3d12.dll.sm2fix-backup" "$GAME_DIR/d3d12.dll"
+    wine_reg delete "$REG_KEY" /v d3d12 /f >/dev/null 2>&1 || true
+    echo "Removed sm2fix."
+    exit 0
+fi
+
+DLL="$HERE/prebuilt/d3d12.dll"
+[[ -f "$HERE/build/d3d12.dll" ]] && DLL="$HERE/build/d3d12.dll"
+if [[ ! -f "$DLL" ]]; then
+    echo "No d3d12.dll found. Run ./build.sh first." >&2
+    exit 1
+fi
+
+if [[ -f "$GAME_DIR/d3d12.dll" ]] && ! grep -q "sm2fix" "$GAME_DIR/d3d12.dll" 2>/dev/null; then
+    echo "Backing up the game's existing d3d12.dll"
+    mv "$GAME_DIR/d3d12.dll" "$GAME_DIR/d3d12.dll.sm2fix-backup"
+fi
+cp "$DLL" "$GAME_DIR/d3d12.dll"
+sed "s/^mode = .*/mode = $MODE/" "$HERE/shim/sm2fix.ini" > "$GAME_DIR/sm2fix.ini"
+
+if wine_reg add "$REG_KEY" /v d3d12 /t REG_SZ /d "native,builtin" /f >/dev/null 2>&1; then
+    echo "Set per-game DLL override d3d12=native,builtin."
+else
+    cat <<EOF
+Could not set the DLL override automatically. Do it once by hand:
+  CrossOver: select the bottle > Wine Configuration > Libraries tab >
+             type d3d12 > Add > Edit > "Native then Builtin".
+  Whisky:    Bottle > Wine Configuration > Libraries, same steps.
+EOF
+fi
+
+echo "Installed sm2fix (mode=$MODE). Launch the game, then check:"
+echo "  $GAME_DIR/sm2fix.log"

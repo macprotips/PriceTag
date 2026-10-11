@@ -1,0 +1,4 @@
+LIBRARY mock_d3d12.dll
+EXPORTS
+    D3D12CreateDevice = mock_D3D12CreateDevice
+    mock_get_counts
