@@ -1568,6 +1568,12 @@ static struct queue_state *find_queue(void *queue)
     return NULL;
 }
 
+/* After a palette snapshot: recheck its identity palettes at the next queue submissions. */
+static const int32_t *volatile g_palette_bases;
+static volatile unsigned int g_palette_nbases;
+static volatile LONG g_palette_submits;   /* 0 = idle, else 1 + submissions seen */
+static void recheck_palettes_label(const char *when, const int32_t *bases, unsigned int nbases);
+
 static void STDMETHODCALLTYPE hk_queue_ExecuteCommandLists(ID3D12CommandQueue *queue, UINT count,
         ID3D12CommandList *const *lists)
 {
@@ -1579,6 +1585,20 @@ static void STDMETHODCALLTYPE hk_queue_ExecuteCommandLists(ID3D12CommandQueue *q
     ID3D12Fence *fence = NULL;
     UINT64 value = 0;
 
+    if (g_palette_submits)
+    {
+        LONG k = InterlockedIncrement(&g_palette_submits) - 1;
+
+        if (k == 1 || k == 4 || k == 16)
+        {
+            char when[48];
+
+            snprintf(when, sizeof(when), "at queue submission %ld", k);
+            recheck_palettes_label(when, g_palette_bases, g_palette_nbases);
+        }
+        if (k >= 16)
+            g_palette_submits = 0;
+    }
     orig(queue, count, lists);
     if (g_cfg.trace_queries)
         maybe_dump_queries();
@@ -2543,14 +2563,14 @@ static void analyse_palettes(const char *when, int32_t n, int32_t *bases, unsign
             st.out_of_range++;
             continue;
         }
-        if (bases && *nbases < 64)
-            bases[(*nbases)++] = base;
         m = (const float *)(bones + (size_t)base * 64);
         for (k = 0; k < 4; k++)
         {
             ident &= bone_is_identity(m + k * 16);
             zero &= bone_is_zero(m + k * 16);
         }
+        if (ident && bases && *nbases < 64 && (!*nbases || bases[*nbases - 1] != base))
+            bases[(*nbases)++] = base;   /* remember identity palettes to recheck later */
         if (ident)
             st.identity++;
         else if (zero)
@@ -2601,8 +2621,10 @@ static void analyse_palettes(const char *when, int32_t n, int32_t *bases, unsign
     }
 }
 
-/* The same palettes one frame later: did the CPU fill them after the dispatch was recorded? */
-static void recheck_palettes(const int32_t *bases, unsigned int nbases)
+/* The identity palettes again, later: were they filled after the dispatch was recorded? */
+static DWORD g_palette_check_tick;
+
+static void recheck_palettes_label(const char *when, const int32_t *bases, unsigned int nbases)
 {
     ID3D12Resource *res = g_bone_res;
     D3D12_RANGE none = {0, 0};
@@ -2613,9 +2635,17 @@ static void recheck_palettes(const int32_t *bases, unsigned int nbases)
         return;
     bones += g_bone_first * 64;
     for (i = 0; i < nbases; i++)
-        ident += bone_is_identity((const float *)(bones + (size_t)bases[i] * 64));
+    {
+        const float *m = (const float *)(bones + (size_t)bases[i] * 64);
+        int k, all = 1;
+
+        for (k = 0; k < 4; k++)
+            all &= bone_is_identity(m + k * 16);
+        ident += all;
+    }
     res->lpVtbl->Unmap(res, 0, &none);
-    log_msg("skin palettes (one frame later): %u of the %u sampled palettes now start with an identity bone", ident, nbases);
+    log_msg("skin palettes (%s, +%lu ms): of %u identity palettes, %u still identity, %u now ANIMATED",
+            when, (unsigned long)(GetTickCount() - g_palette_check_tick), nbases, ident, nbases - ident);
 }
 
 static void hk_skin_dispatch(void *a1, void *a2, void *a3, void *a4)
@@ -2653,7 +2683,10 @@ static void hk_skin_dispatch(void *a1, void *a2, void *a3, void *a4)
         }
     }
     if (InterlockedExchange(&recheck_pending, 0))
-        recheck_palettes(sampled, nsampled);
+    {
+        g_palette_submits = 0;
+        recheck_palettes_label("one frame later", sampled, nsampled);
+    }
     g_skin_window_tid = GetCurrentThreadId();
     g_dispatch_trampoline(a1, a2, a3, a4);
     g_skin_window_tid = 0;
@@ -2661,6 +2694,10 @@ static void hk_skin_dispatch(void *a1, void *a2, void *a3, void *a4)
     {
         nsampled = 0;
         analyse_palettes("as the dispatch is recorded", n, sampled, &nsampled, 1);
+        g_palette_check_tick = GetTickCount();
+        g_palette_bases = sampled;
+        g_palette_nbases = nsampled;
+        g_palette_submits = nsampled ? 1 : 0;
         recheck_pending = nsampled > 0;
     }
     g_view_window_log = FALSE;
