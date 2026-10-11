@@ -5,7 +5,7 @@
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 INSTALLER="$HERE/scripts/install-macos.sh"
-CX_WINE="$(bash "$(dirname "$0")/scripts/find-crossover-wine.sh" 2>/dev/null)"
+CX_WINE="$(bash "$(dirname "$0")/scripts/find-crossover-wine.sh" 2>/dev/null || true)"
 WHISKY_WINE="$HOME/Library/Application Support/com.isaacmarovitz.Whisky/Libraries/Wine/bin/wine64"
 
 say()  { printf '%s\n' "$*"; }

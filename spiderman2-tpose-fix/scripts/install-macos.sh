@@ -34,7 +34,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-CX_WINE="$(bash "$HERE/scripts/find-crossover-wine.sh" 2>/dev/null)"
+CX_WINE="$(bash "$HERE/scripts/find-crossover-wine.sh" 2>/dev/null || true)"
 
 if [[ -n "$BOTTLE" ]]; then
     PREFIX="$HOME/Library/Application Support/CrossOver/Bottles/$BOTTLE"
