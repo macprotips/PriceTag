@@ -606,6 +606,19 @@ static void log_hex(const char *what, const void *data, UINT size)
 
 /* ---------------------------------------------------------- command list hooks */
 
+/* What D3D12 sees while the game's skin dispatch function runs (see install_skin_budget):
+ * set by hk_skin_dispatch on its own thread, read by the command-list hooks below. */
+static volatile DWORD g_skin_window_tid;
+static volatile LONG64 g_win_set_pso, g_win_set_pso_skin, g_win_dispatch, g_win_dispatch_skin,
+        g_win_indirect;
+static volatile uint64_t g_win_last_hash;
+static volatile UINT g_win_last_x;
+
+static BOOL in_skin_window(void)
+{
+    return g_skin_window_tid && g_skin_window_tid == GetCurrentThreadId();
+}
+
 #define CL_IDX(m) VT_INDEX(ID3D12GraphicsCommandListVtbl, m)
 
 static void hook_command_list_object(void *list);
@@ -648,6 +661,16 @@ static void STDMETHODCALLTYPE hk_list_SetPipelineState(ID3D12GraphicsCommandList
 
     orig(list, pso);
     list_bind_pso(list, pso);
+    if (in_skin_window())
+    {
+        uint64_t hash = 0;
+
+        InterlockedIncrement64(&g_win_set_pso);
+        if (pso_hash_get(pso, &hash))
+            g_win_last_hash = hash;
+        if (hash == SM2_SKINNING_HASH)
+            InterlockedIncrement64(&g_win_set_pso_skin);
+    }
 }
 
 static void STDMETHODCALLTYPE hk_list_Dispatch(ID3D12GraphicsCommandList *list, UINT x, UINT y, UINT z)
@@ -657,6 +680,21 @@ static void STDMETHODCALLTYPE hk_list_Dispatch(ID3D12GraphicsCommandList *list, 
 
     orig(list, x, y, z);
     InterlockedIncrement64(&g_dispatches);
+    if (in_skin_window())
+    {
+        struct list_state *e;
+        uint64_t hash = 0;
+        void *pso = NULL;
+
+        InterlockedIncrement64(&g_win_dispatch);
+        g_win_last_x = x;
+        AcquireSRWLockShared(&g_lock);
+        if ((e = find_list_locked(list, FALSE)))
+            pso = e->pso;
+        ReleaseSRWLockShared(&g_lock);
+        if (pso_hash_get(pso, &hash) && hash == SM2_SKINNING_HASH)
+            InterlockedIncrement64(&g_win_dispatch_skin);
+    }
     if (g_cfg.profile)
         profile_dispatch(list, FALSE, (UINT64)x * y * z);
 
@@ -688,6 +726,8 @@ static void STDMETHODCALLTYPE hk_list_ExecuteIndirect(ID3D12GraphicsCommandList 
 
     orig(list, signature, max_count, args, args_offset, count_buffer, count_offset);
     InterlockedIncrement64(&g_indirect);
+    if (in_skin_window())
+        InterlockedIncrement64(&g_win_indirect);
     if (g_cfg.profile)
         profile_dispatch(list, TRUE, max_count);
 
@@ -1831,14 +1871,72 @@ static uint64_t hk_skin_sb_create(void)
 static void log_skin_dispatch(const char *why)
 {
     log_msg("skin dispatch (%s): calls=%lld with-work=%lld over-capacity=%lld | entries queued=%d"
-            " SkinningSB capacity=%u ModelSkinGroupMax=%d",
+            " SkinningSB capacity=%u ModelSkinGroupMax=%d | D3D12 seen inside: SetPipelineState=%lld (skinning=%lld,"
+            " last %016llx) Dispatch=%lld (skinning=%lld, last x=%u) ExecuteIndirect=%lld",
             why, (long long)g_sb_dispatch_calls, (long long)g_sb_dispatch_work, (long long)g_sb_dispatch_starved,
             g_sb.count ? (int)*g_sb.count : -1, g_sb.object ? g_sb.object[4] : 0,
-            g_sb.budget ? (int)*g_sb.budget : -1);
+            g_sb.budget ? (int)*g_sb.budget : -1, (long long)g_win_set_pso, (long long)g_win_set_pso_skin,
+            (unsigned long long)g_win_last_hash, (long long)g_win_dispatch, (long long)g_win_dispatch_skin,
+            g_win_last_x, (long long)g_win_indirect);
+}
+
+/* The dispatch function talks to an engine render context, r14[index]:
+ *   +0x406: 4c 8d 35 disp   lea r14, [contexts]
+ *   +0x428: 0f b6 05 disp   movzx eax, byte [current context index]
+ * then calls vtable+0x148 (dispatch), after +0x220/+0x228 earlier. Log those methods as
+ * game RVAs so they can be disassembled. */
+static void log_skin_context(void)
+{
+    const uint8_t *d = g_game_base + g_cfg.probe_dispatch_rva;
+    void **contexts, **ctx, **vtbl;
+    uint8_t index;
+    IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS *)(g_game_base + ((IMAGE_DOS_HEADER *)g_game_base)->e_lfanew);
+    uintptr_t lo = (uintptr_t)g_game_base, hi = lo + nt->OptionalHeader.SizeOfImage;
+
+    if (!readable(d + 0x406, 0x30) || memcmp(d + 0x406, "\x4c\x8d\x35", 3) || memcmp(d + 0x428, "\x0f\xb6\x05", 3))
+    {
+        log_msg("skin context: dispatch function layout differs, not decoding");
+        return;
+    }
+    contexts = (void **)(d + 0x40d + *(const int32_t *)(d + 0x409));
+    index = *(const uint8_t *)(d + 0x42f + *(const int32_t *)(d + 0x42b));
+    if (!readable(contexts + index, 8) || !(ctx = contexts[index]) || !readable(ctx, 8)
+            || !(vtbl = *ctx) || !readable(vtbl, 0x240))
+    {
+        log_msg("skin context: contexts=%p index=%u unreadable", (void *)contexts, index);
+        return;
+    }
+#define SKIN_RVA(p) ((uintptr_t)(p) >= lo && (uintptr_t)(p) < hi ? (unsigned long long)((uintptr_t)(p) - lo) : 0ull)
+    log_msg("skin context: contexts=%p index=%u ctx=%p vtbl rva=%#llx | +0x148 (dispatch) rva=%#llx"
+            " +0x220 rva=%#llx +0x228 (set shader) rva=%#llx",
+            (void *)contexts, index, (void *)ctx, SKIN_RVA(vtbl), SKIN_RVA(vtbl[0x148 / 8]),
+            SKIN_RVA(vtbl[0x220 / 8]), SKIN_RVA(vtbl[0x228 / 8]));
+#undef SKIN_RVA
+
+    /* +0x1d9: 8b 1d disp (mov ebx, [CS_ModelSkinning index]); +0x1e1: e8 rel (call getter);
+     * getter+0xd: 48 8b 05 disp (mov rax, [shader table]); entries are 40 bytes, the
+     * first qword is the engine's handle (-1 = not created yet). */
+    if (readable(d + 0x1d9, 0x10) && !memcmp(d + 0x1d9, "\x8b\x1d", 2) && d[0x1e1] == 0xe8)
+    {
+        const int32_t *shader_index = (const int32_t *)(d + 0x1df + *(const int32_t *)(d + 0x1db));
+        const uint8_t *getter = d + 0x1e6 + *(const int32_t *)(d + 0x1e2);
+        const uint64_t *entry;
+        uint8_t *const *table;
+
+        if (readable(shader_index, 4) && readable(getter, 0x14) && !memcmp(getter + 0xd, "\x48\x8b\x05", 3)
+                && readable((table = (uint8_t *const *)(getter + 0x14 + *(const int32_t *)(getter + 0x10))), 8)
+                && *table && readable((entry = (const uint64_t *)(*table + 40 * (size_t)*shader_index)), 40))
+            log_msg("skin shader slot: index=%d entry %016llx %016llx %016llx %016llx %016llx",
+                    (int)*shader_index, (unsigned long long)entry[0], (unsigned long long)entry[1],
+                    (unsigned long long)entry[2], (unsigned long long)entry[3], (unsigned long long)entry[4]);
+        else
+            log_msg("skin shader slot: could not decode the shader table");
+    }
 }
 
 static void hk_skin_dispatch(void *a1, void *a2, void *a3, void *a4)
 {
+    static volatile LONG context_logged;
     int32_t n = *g_sb.count;
     LONG now, last;
 
@@ -1856,7 +1954,11 @@ static void hk_skin_dispatch(void *a1, void *a2, void *a3, void *a4)
     last = g_sb_last_tick;
     if (now - last > 3000 && InterlockedCompareExchange(&g_sb_last_tick, now, last) == last)
         log_skin_dispatch("periodic");
+    g_skin_window_tid = GetCurrentThreadId();
     g_dispatch_trampoline(a1, a2, a3, a4);
+    g_skin_window_tid = 0;
+    if (n > 0 && !InterlockedExchange(&context_logged, 1))
+        log_skin_context();
 }
 
 static void install_skin_budget(void)
@@ -1929,9 +2031,12 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, void *reserved)
     {
         g_exiting = TRUE;
         if (g_dispatch_trampoline)
-            fprintf(g_log, "exit: skin dispatch calls=%lld with-work=%lld over-capacity=%lld capacity=%u\n",
+            fprintf(g_log, "exit: skin dispatch calls=%lld with-work=%lld over-capacity=%lld capacity=%u;"
+                    " inside: SetPipelineState=%lld (skinning=%lld) Dispatch=%lld (skinning=%lld) ExecuteIndirect=%lld\n",
                     (long long)g_sb_dispatch_calls, (long long)g_sb_dispatch_work,
-                    (long long)g_sb_dispatch_starved, g_sb.object[4]);
+                    (long long)g_sb_dispatch_starved, g_sb.object[4], (long long)g_win_set_pso,
+                    (long long)g_win_set_pso_skin, (long long)g_win_dispatch, (long long)g_win_dispatch_skin,
+                    (long long)g_win_indirect);
         if (g_skin_trampoline)
             fprintf(g_log, "exit: skin launcher calls=%lld with-requests=%lld blocked-by-flag=%lld\n",
                     (long long)g_skin_calls, (long long)g_skin_with_requests, (long long)g_skin_flag_blocked);
