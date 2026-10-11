@@ -25,6 +25,29 @@ __asm__(".text\n.globl skin_launcher_test\nskin_launcher_test:\n"
 void skin_launcher_test(void *mgr);
 static uint32_t g_fake_jobsys[32];
 
+/* Stand-ins for the SkinningSB stub (same instruction encodings as the game's) and the
+ * skin dispatch function (same 13-byte prologue, then movsxd rsi, [queued count]). */
+int32_t fake_render_budgets[28] = {100, 200, 300, 16};
+uint32_t fake_skinning_sb[8];
+int32_t fake_skin_count = 5, fake_skin_seen;
+const char fake_sb_name[] = "SkinningSB";
+uint64_t fake_sb_create(uint32_t *object, const char *name, uint32_t count, uint32_t stride)
+{
+    object[4] = count;
+    object[5] = stride;
+    return name == fake_sb_name;
+}
+__asm__(".text\n.globl skin_sb_stub_test\nskin_sb_stub_test:\n"
+        "  movl fake_render_budgets+12(%rip), %r8d\n  leaq fake_sb_name(%rip), %rdx\n"
+        "  movl $0x20, %r9d\n  leaq fake_skinning_sb(%rip), %rcx\n"
+        "  .byte 0xe9\n  .long fake_sb_create - . - 4\n"
+        ".globl skin_dispatch_test\nskin_dispatch_test:\n"
+        "  .byte 0x4c, 0x8b, 0xdc, 0x56, 0x41, 0x57, 0x48, 0x81, 0xec, 0xc8, 0x00, 0x00, 0x00\n"
+        "  movslq fake_skin_count(%rip), %rsi\n  movl %esi, fake_skin_seen(%rip)\n"
+        "  addq $0xc8, %rsp\n  popq %r15\n  popq %rsi\n  ret\n");
+uint64_t skin_sb_stub_test(void);
+void skin_dispatch_test(void);
+
 struct sub_ptr { UINT type; UINT pad; void *p; };
 struct sub_bytecode { UINT type; UINT pad; const void *code; UINT64 size; };
 
@@ -60,6 +83,12 @@ int main(int argc, char **argv)
         snprintf(rva, sizeof(rva), "%llx", (unsigned long long)((uint8_t *)g_fake_jobsys - (uint8_t *)GetModuleHandleA(NULL)));
         SetEnvironmentVariableA("SM2FIX_PROBE_JOBSYS_RVA", rva);
         SetEnvironmentVariableA("SM2FIX_PROBE_SKIN", !strcmp(mode, "off") ? "0" : "1");
+        snprintf(rva, sizeof(rva), "%llx", (unsigned long long)((uint8_t *)skin_sb_stub_test - (uint8_t *)GetModuleHandleA(NULL)));
+        SetEnvironmentVariableA("SM2FIX_PROBE_SB_RVA", rva);
+        snprintf(rva, sizeof(rva), "%llx", (unsigned long long)((uint8_t *)skin_dispatch_test - (uint8_t *)GetModuleHandleA(NULL)));
+        SetEnvironmentVariableA("SM2FIX_PROBE_DISPATCH_RVA", rva);
+        /* hash: budget raised; all/max: probe only (budget 0); off: nothing hooked */
+        SetEnvironmentVariableA("SM2FIX_SKIN_BUDGET", !strcmp(mode, "hash") ? "65536" : "0");
         g_fake_jobsys[9] = 7; /* the gate flag at +0x24 */
     }
     SetEnvironmentVariableA("SM2FIX_TRACE_QUERIES", "1");
@@ -91,6 +120,23 @@ int main(int argc, char **argv)
         CHECK(mgr[13] == 42);
         CHECK(!strcmp(mode, "off") ? *(uint8_t *)skin_launcher_test == 0x48 && ((uint8_t *)skin_launcher_test)[1] == 0x89
                                    : ((uint8_t *)skin_launcher_test)[1] == 0xb8);
+    }
+
+    /* SkinningSB: the stub must still create the buffer, with the raised budget in hash mode. */
+    {
+        uint64_t ok = skin_sb_stub_test();
+        int k;
+
+        printf("SkinningSB: ok=%llu capacity=%u stride=%u budget=%d\n", (unsigned long long)ok,
+                fake_skinning_sb[4], fake_skinning_sb[5], fake_render_budgets[3]);
+        CHECK(ok == 1 && fake_skinning_sb[5] == 32);
+        CHECK(fake_skinning_sb[4] == (!strcmp(mode, "hash") ? 65536u : 16u));
+        CHECK(fake_render_budgets[3] == (int32_t)fake_skinning_sb[4]);
+        CHECK(fake_render_budgets[0] == 100 && fake_render_budgets[2] == 300);
+        for (k = 0; k < 3; k++)
+            skin_dispatch_test();
+        CHECK(fake_skin_seen == 5);
+        CHECK(!strcmp(mode, "off") ? ((uint8_t *)skin_dispatch_test)[0] == 0x4c : ((uint8_t *)skin_dispatch_test)[1] == 0xb8);
     }
 
     /* CPU-count override: everything the game can ask must report <= 2 processors. */

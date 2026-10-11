@@ -181,6 +181,8 @@ void sm2_config_defaults(struct sm2_config *cfg)
     cfg->hashes[0] = SM2_DEFAULT_HASH;
     cfg->probe_skin_rva = 0x2b42560;
     cfg->probe_jobsys_rva = 0xc2ca170;
+    cfg->probe_sb_rva = 0x2b087c0;
+    cfg->probe_dispatch_rva = 0x2b08f00;
 }
 
 static int key_equals(const char *a, const char *b)
@@ -282,6 +284,21 @@ int sm2_config_set(struct sm2_config *cfg, const char *key, const char *value)
     if (key_equals(key, "probe_jobsys_rva"))
     {
         cfg->probe_jobsys_rva = (uint32_t)strtoul(value, NULL, 16);
+        return 0;
+    }
+    if (key_equals(key, "probe_sb_rva"))
+    {
+        cfg->probe_sb_rva = (uint32_t)strtoul(value, NULL, 16);
+        return 0;
+    }
+    if (key_equals(key, "probe_dispatch_rva"))
+    {
+        cfg->probe_dispatch_rva = (uint32_t)strtoul(value, NULL, 16);
+        return 0;
+    }
+    if (key_equals(key, "skin_budget"))
+    {
+        cfg->skin_budget = (unsigned int)strtoul(value, NULL, 10);
         return 0;
     }
     if (key_equals(key, "fake_timestamps"))

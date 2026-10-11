@@ -23,6 +23,19 @@ for mode in hash all max off; do
     if [[ $mode != off ]] && ! grep -q "skin launcher (first calls): calls=1 with-requests=1 blocked-by-flag=1 .*+30(requests)=41 .*jobsys flag(+24)=7" sm2fix.log; then
         echo "FAIL: skin probe ($mode)"; grep -i "skin" sm2fix.log; status=1
     fi
+    if [[ $mode == hash ]] && ! { grep -q "RenderBudgets (SkinningSB about to be created): ModelInstMax=100 ModelSkinInstMax=200 ModelSkinSubsetMax=300 ModelSkinGroupMax=16 " sm2fix.log \
+            && grep -q "skin_budget: raising ModelSkinGroupMax 16 -> 65536" sm2fix.log \
+            && grep -q "SkinningSB created: ok=1 capacity=65536 entries, stride=32 (ModelSkinGroupMax was 16)" sm2fix.log \
+            && grep -q "exit: skin dispatch calls=3 with-work=3 over-capacity=0 capacity=65536" sm2fix.log; }; then
+        echo "FAIL: skin budget ($mode)"; grep -i "skin" sm2fix.log; status=1
+    fi
+    if [[ $mode == all || $mode == max ]] && ! { grep -q "SkinningSB created: ok=1 capacity=16 entries" sm2fix.log \
+            && grep -q "skin dispatch (first calls): calls=1 with-work=1 over-capacity=0 | entries queued=5 SkinningSB capacity=16" sm2fix.log; }; then
+        echo "FAIL: skin budget probe ($mode)"; grep -i "skin" sm2fix.log; status=1
+    fi
+    if [[ $mode == off ]] && awk '/new launch/{buf=""} {buf=buf $0 "\n"} END{printf "%s", buf}' sm2fix.log | grep -q "SkinningSB\|skin dispatch"; then
+        echo "FAIL: skin hooks active in off mode"; status=1
+    fi
     if [[ $mode != all && $mode != max ]] && ! grep -q "timestamp x3 .*t0=1000 deltas(us): 600.0 1000.0" sm2fix.log; then
         echo "FAIL: query tracing ($mode)"; grep -i "quer\|timestamp" sm2fix.log; status=1
     fi

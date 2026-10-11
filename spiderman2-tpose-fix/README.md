@@ -10,11 +10,10 @@
    time, because macOS blocks downloaded scripts until you approve them.
 4. A Terminal window opens and finds the game for you. Type **1** and press Return.
 5. Play the game. Is the T-pose gone?
-   - **Yes:** run the file again and pick **2** for better performance.
-   - **No:** run the file again and pick **4**. That saves a log to your Desktop.
-     Send it to me.
+   - Either way, quit from the in-game menu, run the file again and pick **3**.
+     That saves a log to your Desktop. Send it to me.
 
-That's it. To undo everything, run the file and pick **5**.
+That's it. To undo everything, run the file and pick **4**.
 
 ## Results so far
 
@@ -33,7 +32,8 @@ That's it. To undo everything, run the file and pick **5**.
 | 2026-10-10 | same | #9 Rosetta instruction check | **Rosetta is conformant.** All FMA/F16C/AVX/AVX2/SSE4/BMI tests match Intel bit-for-bit in all MXCSR modes. `rcpps`/`rsqrtps` match Intel's exact values (within spec). All atomics, split-line `lock xadd`, `cmpxchg16b` and TSO litmus tests pass. Only `dpps` differs, and only in *which* NaN encoding it returns when inputs are NaN (Intel's default-NaN vs propagated payload): harmless, and AMD differs from Intel there too. CPU translation is ruled out. |
 | 2026-10-10 | same | #10 `trace_queries = 1` | **Found a broken GPU clock.** D3DMetal answers `GetTimestampFrequency` with **60 Hz**, and **every resolved timestamp is 0**, across ~15,000 timestamp queries in a few minutes (1M-entry timestamp and occlusion query heaps). Occlusion results look normal (small non-zero sample counts). Skinning still 0 dispatches. |
 | 2026-10-10 | same | #11 `fake_timestamps = 1` | Emulation worked: 16,163 resolves answered with sane QPC times (1–80 µs deltas, 10 MHz). **Still T-poses**, skinning still 0. The broken clock is a real D3DMetal bug (see `APPLE-FEEDBACK.md`), but it isn't this one's cause. |
-| next | | #12 `probe_skin = 1`: inline hook on the game's per-frame CPU skin-job launcher, logging its gate values | pending |
+| 2026-10-11 | same | #12 `probe_skin = 1` | The CPU skin-job launcher never has requests (+0x30 = 0, flag 0), so that path is idle. But the skinning manager's **queued-item count (+0x50) is 1,100–5,600 every frame**: work is queued and never reaches the GPU (skinning shader still 0 dispatches). A screenshot showed an NPC with T-posed jacket sleeves but animated arms, and Spider-Man upside down in bind pose: only meshes skinned by `CS_ModelSkinning` are stuck. |
+| next | | #13 `skin_budget = 65536`: log `RenderBudgets` and raise `ModelSkinGroupMax` (the size of the `SkinningSB` work buffer) before the game creates it; count skin-dispatch calls vs. capacity | pending |
 
 **Static analysis of the skinning scheduler.** Code cross-references from the
 `ModelSkinJobFunc` and `Skinning Fence` strings lead to the per-frame skin-job
@@ -46,6 +46,24 @@ launcher's first 15 bytes (three register saves, verified byte-for-byte before
 patching) with a jump to a logger, then runs the original code through a
 trampoline. It logs the request count, the flag and the manager state at first
 calls and every 3 s.
+
+**Where queued skinning work goes (test #13).** `CS_ModelSkinning` is shader 224 in
+the game's shader table; its index is used in exactly one function, at RVA `0x2b08f00`.
+That function walks the queued items (count at manager+`0x50`, the value test #12 saw
+at 1,100–5,600), writes one 32-byte entry per 1,280 vertices into the **`SkinningSB`**
+structured buffer, but only while `entry < SkinningSB.capacity`, and then dispatches
+`min(entries, capacity)` thread groups. The capacity is set once, by a stub at RVA
+`0x2b087c0`, from **`RenderBudgets.ModelSkinGroupMax`** ("the maximum number of gpu
+thread group elements ModelSkinningGroupCB in the skinning structured buffer").
+`RenderBudgets` lives in zero-initialised data and is filled from the game's scene
+settings at runtime. If that budget is 0 (or tiny) on this configuration, every
+compute-skinned mesh is silently dropped and keeps its bind pose. That matches both
+the 0 dispatches and the mixed-pose screenshot. Test #13 hooks that stub, logs all 28
+`RenderBudgets` values, raises `ModelSkinGroupMax` to at least 65,536 (a 2 MB
+buffer), then calls the game's own create function. It also hooks the dispatch
+function and logs, every 3 s, the queued count against the buffer capacity. The shim
+reads every address from the stub's own instruction displacements, and patches
+nothing unless the opcodes match.
 
 **Why the clock matters.** Apple GPUs before M5 can't sample timestamps at arbitrary
 points in a command stream, so D3DMetal appears to stub D3D12 timestamps out on
@@ -331,6 +349,7 @@ there.
 | `dump_compute` | `0` | `1` saves every compute shader to `sm2fix-dumps\`. |
 | `dump_graphics` | `0` | `1` saves every vertex/mesh shader to `sm2fix-dumps\`. |
 | `profile` | `0` | `1` counts dispatches per compute shader (by hash) and logs the top ones every 20 s and at exit, always including skinning shader `3d50acdb571dce22`. |
+| `skin_budget` | `0` | Raise `RenderBudgets.ModelSkinGroupMax` (the `SkinningSB` capacity, which caps `CS_ModelSkinning` work per frame) to at least this many entries before the game creates the buffer. Also logs the budgets and skin-dispatch calls vs. capacity. `probe_sb_rva`/`probe_dispatch_rva` override the stub and dispatch-function RVAs. |
 | `probe_skin` | `0` | `1` hooks the game's skin-job launcher (only if its bytes match the analysed build) and logs requests, the job-system gate flag and manager state. `probe_skin_rva`/`probe_jobsys_rva` override the addresses. |
 | `fake_timestamps` | `0` | `1` answers timestamp queries in the shim: QPC frequency, QPC time recorded at each `EndQuery(TIMESTAMP)`, written into the game's mapped resolve buffer; also `GetClockCalibration`. |
 | `trace_queries` | `0` | `1` logs query heaps, query counts, timestamp frequency and calibration, and periodically decodes the values the game reads back (timestamp deltas in µs, occlusion counts, pipeline statistics). |

@@ -107,6 +107,9 @@ static void load_config(void)
         {"SM2FIX_PROBE_SKIN", "probe_skin"},
         {"SM2FIX_PROBE_SKIN_RVA", "probe_skin_rva"},
         {"SM2FIX_PROBE_JOBSYS_RVA", "probe_jobsys_rva"},
+        {"SM2FIX_PROBE_SB_RVA", "probe_sb_rva"},
+        {"SM2FIX_PROBE_DISPATCH_RVA", "probe_dispatch_rva"},
+        {"SM2FIX_SKIN_BUDGET", "skin_budget"},
     };
     WCHAR path[MAX_PATH];
     char value[1024];
@@ -1708,40 +1711,193 @@ static void hk_skin_launcher(void *mgr, void *a2, void *a3, void *a4)
     g_skin_trampoline(mgr, a2, a3, a4);
 }
 
-static void install_skin_probe(void)
+/* Redirects the first n (>= 12) bytes at target to hook. Returns a trampoline that runs
+ * those bytes and continues at target+n, or NULL. The caller checks the bytes first:
+ * they must be position-independent instructions ending exactly at target+n. */
+static void *patch_prologue(uint8_t *target, size_t n, const void *hook)
 {
-    uint8_t *target, *tramp;
+    uint8_t *tramp, patch[32];
     DWORD old;
 
-    g_game_base = (uint8_t *)GetModuleHandleA(NULL);
-    target = g_game_base + g_cfg.probe_skin_rva;
+    if (n < 12 || n > sizeof(patch))
+        return NULL;
+    if (!(tramp = VirtualAlloc(NULL, 4096, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE)))
+        return NULL;
+    /* trampoline: original n bytes, then mov rax, target+n; jmp rax */
+    memcpy(tramp, target, n);
+    tramp[n] = 0x48; tramp[n + 1] = 0xb8;
+    *(uint64_t *)(tramp + n + 2) = (uint64_t)(target + n);
+    tramp[n + 10] = 0xff; tramp[n + 11] = 0xe0;
+    FlushInstructionCache(GetCurrentProcess(), tramp, n + 12);
+
+    if (!VirtualProtect(target, n, PAGE_EXECUTE_READWRITE, &old))
+        return NULL;
+    /* mov rax, hook; jmp rax; nops (rax is free at function entry) */
+    memset(patch, 0x90, sizeof(patch));
+    patch[0] = 0x48; patch[1] = 0xb8;
+    *(uint64_t *)(patch + 2) = (uint64_t)hook;
+    patch[10] = 0xff; patch[11] = 0xe0;
+    memcpy(target, patch, n);
+    VirtualProtect(target, n, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), target, n);
+    return tramp;
+}
+
+static void install_skin_probe(void)
+{
+    uint8_t *target = g_game_base + g_cfg.probe_skin_rva;
+
     if (!readable(target, 15) || memcmp(target, skin_launcher_bytes, 15))
     {
         log_msg("probe_skin: launcher bytes don't match this game build, not patching");
         return;
     }
-    if (!(tramp = VirtualAlloc(NULL, 4096, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE)))
+    if (!(g_skin_trampoline = patch_prologue(target, 15, hk_skin_launcher)))
         return;
-    /* trampoline: original 15 bytes, then mov rax, target+15; jmp rax */
-    memcpy(tramp, target, 15);
-    tramp[15] = 0x48; tramp[16] = 0xb8;
-    *(uint64_t *)(tramp + 17) = (uint64_t)(target + 15);
-    tramp[25] = 0xff; tramp[26] = 0xe0;
-    g_skin_trampoline = (void *)tramp;
-    FlushInstructionCache(GetCurrentProcess(), tramp, 27);
-
-    if (!VirtualProtect(target, 15, PAGE_EXECUTE_READWRITE, &old))
-        return;
-    /* mov rax, hk_skin_launcher; jmp rax; nop x3 (rax is free at function entry) */
-    {
-        uint8_t patch[15] = {0x48, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xe0, 0x90, 0x90, 0x90};
-        *(uint64_t *)(patch + 2) = (uint64_t)hk_skin_launcher;
-        memcpy(target, patch, 15);
-    }
-    VirtualProtect(target, 15, old, &old);
-    FlushInstructionCache(GetCurrentProcess(), target, 15);
     log_msg("probe_skin: hooked skin launcher at %p (manager global at %p)", (void *)target,
             (void *)(g_game_base + SKIN_MANAGER_RVA));
+}
+
+/* ------------------------------------------------------------ SkinningSB budget */
+
+/* CS_ModelSkinning work is written into the "SkinningSB" structured buffer, one 32-byte
+ * entry per 1280 vertices, and dispatched as Dispatch(min(entries, capacity), 1, 1)
+ * (function at RVA 0x2b08f00). The capacity is RenderBudgets.ModelSkinGroupMax ("the
+ * maximum number of gpu thread group elements ModelSkinningGroupCB in the skinning
+ * structured buffer"), read once by this stub at RVA 0x2b087c0:
+ *     44 8b 05 d1      mov  r8d, [ModelSkinGroupMax]
+ *     48 8d 15 d2      lea  rdx, "SkinningSB"
+ *     41 b9 20 00 00 00 mov r9d, 32               ; stride
+ *     48 8d 0d d3      lea  rcx, [SkinningSB object] ; +0x10 = capacity, +0x14 = stride
+ *     e9 rel           jmp  create_structured_buffer
+ * Work past the capacity is silently dropped, and those meshes keep their bind pose.
+ * The hook replaces the stub: it logs the budgets, optionally raises ModelSkinGroupMax,
+ * then calls the game's create function itself. Addresses come from the stub's own
+ * displacements, so only the opcodes have to match. */
+struct skin_sb
+{
+    int32_t *budget;            /* &RenderBudgets.ModelSkinGroupMax (struct starts 0xc before) */
+    const char *name;
+    uint32_t *object;
+    uint64_t (*create)(void *object, const char *name, uint32_t count, uint32_t stride);
+    int32_t *count;             /* skin entries queued this frame (read by the dispatch function) */
+};
+static struct skin_sb g_sb;
+static void (*g_dispatch_trampoline)(void *, void *, void *, void *);
+static volatile LONG64 g_sb_dispatch_calls, g_sb_dispatch_work, g_sb_dispatch_starved;
+static volatile LONG g_sb_last_tick, g_sb_logged;
+
+static const char *const render_budget_names[28] = {
+    "ModelInstMax", "ModelSkinInstMax", "ModelSkinSubsetMax", "ModelSkinGroupMax",
+    "GpuRegistryStaticObjMax", "GpuRegistryHibernateObjMax", "GpuRegistryPerFrameObjMax",
+    "LightMax", "VolumeMax", "DynamicDecalMax", "StaticDecalMax", "CurveMax", "VisualEffectInstMax",
+    "ImpostorMax", "TerrainMax", "LandscapeMax", "ComponentMax", "ComponentEntryMax",
+    "ComponentBlockSizeMax", "ActorMax", "ActorGroupMax", "ScriptVarMax", "SignalRelayMax",
+    "DeferredEventHandlerMax", "ModelRenderInfoRatio", "ModelCompositeMatRatio",
+    "ModelTriangleSortJobsMax", "IncludeCurvesInSceneDatabase",
+};
+
+static void log_render_budgets(const char *why)
+{
+    const int32_t *rb = g_sb.budget - 3;
+    char line[1024];
+    size_t len = 0;
+    unsigned int i;
+
+    if (!readable(rb, sizeof(int32_t) * 28))
+        return;
+    for (i = 0; i < 28 && len < sizeof(line) - 64; i++)
+        len += snprintf(line + len, sizeof(line) - len, " %s=%d", render_budget_names[i], (int)rb[i]);
+    log_msg("RenderBudgets (%s):%s", why, line);
+}
+
+static uint64_t hk_skin_sb_create(void)
+{
+    int32_t before = *g_sb.budget;
+    uint64_t ret;
+
+    log_render_budgets("SkinningSB about to be created");
+    if (g_cfg.skin_budget && (before < 0 || (uint32_t)before < g_cfg.skin_budget))
+    {
+        *g_sb.budget = (int32_t)g_cfg.skin_budget;
+        log_msg("skin_budget: raising ModelSkinGroupMax %d -> %u", (int)before, g_cfg.skin_budget);
+    }
+    ret = g_sb.create(g_sb.object, g_sb.name, (uint32_t)*g_sb.budget, 32);
+    log_msg("SkinningSB created: ok=%u capacity=%u entries, stride=%u (ModelSkinGroupMax was %d)",
+            (unsigned)(ret & 0xff), g_sb.object[4], g_sb.object[5], (int)before);
+    return ret;
+}
+
+static void log_skin_dispatch(const char *why)
+{
+    log_msg("skin dispatch (%s): calls=%lld with-work=%lld over-capacity=%lld | entries queued=%d"
+            " SkinningSB capacity=%u ModelSkinGroupMax=%d",
+            why, (long long)g_sb_dispatch_calls, (long long)g_sb_dispatch_work, (long long)g_sb_dispatch_starved,
+            g_sb.count ? (int)*g_sb.count : -1, g_sb.object ? g_sb.object[4] : 0,
+            g_sb.budget ? (int)*g_sb.budget : -1);
+}
+
+static void hk_skin_dispatch(void *a1, void *a2, void *a3, void *a4)
+{
+    int32_t n = *g_sb.count;
+    LONG now, last;
+
+    InterlockedIncrement64(&g_sb_dispatch_calls);
+    if (n > 0)
+    {
+        InterlockedIncrement64(&g_sb_dispatch_work);
+        /* entries needed are >= the queued item count; capacity below that drops work */
+        if (g_sb.object && (uint32_t)n > g_sb.object[4])
+            InterlockedIncrement64(&g_sb_dispatch_starved);
+    }
+    if (InterlockedIncrement(&g_sb_logged) <= 3)
+        log_skin_dispatch("first calls");
+    now = (LONG)GetTickCount();
+    last = g_sb_last_tick;
+    if (now - last > 3000 && InterlockedCompareExchange(&g_sb_last_tick, now, last) == last)
+        log_skin_dispatch("periodic");
+    g_dispatch_trampoline(a1, a2, a3, a4);
+}
+
+static void install_skin_budget(void)
+{
+    static const uint8_t prologue[13] = {
+        0x4c, 0x8b, 0xdc, 0x56, 0x41, 0x57, 0x48, 0x81, 0xec, 0xc8, 0x00, 0x00, 0x00,
+    };
+    uint8_t *t = g_game_base + g_cfg.probe_sb_rva, *d = g_game_base + g_cfg.probe_dispatch_rva;
+
+    if (!readable(t, 32) || memcmp(t, "\x44\x8b\x05", 3) || memcmp(t + 7, "\x48\x8d\x15", 3)
+            || memcmp(t + 14, "\x41\xb9\x20\x00\x00\x00", 6) || memcmp(t + 20, "\x48\x8d\x0d", 3) || t[27] != 0xe9)
+    {
+        log_msg("skin_budget: SkinningSB stub bytes don't match this game build, not patching");
+        return;
+    }
+    g_sb.budget = (int32_t *)(t + 7 + *(const int32_t *)(t + 3));
+    g_sb.name = (const char *)(t + 14 + *(const int32_t *)(t + 10));
+    g_sb.object = (uint32_t *)(t + 27 + *(const int32_t *)(t + 23));
+    g_sb.create = (void *)(t + 32 + *(const int32_t *)(t + 28));
+    if (!readable(g_sb.budget, 4) || !readable(g_sb.object, 0x18) || !readable(g_sb.name, 11)
+            || memcmp(g_sb.name, "SkinningSB", 11))
+    {
+        log_msg("skin_budget: SkinningSB stub targets look wrong, not patching");
+        return;
+    }
+    log_msg("skin_budget: SkinningSB stub at %p: budget %p object %p (capacity now %u) create %p; minimum %u",
+            (void *)t, (void *)g_sb.budget, (void *)g_sb.object, g_sb.object[4], (void *)g_sb.create, g_cfg.skin_budget);
+    if (g_sb.object[4])
+        log_msg("skin_budget: SkinningSB already exists, the budget can only apply if the game recreates it");
+    if (!patch_prologue(t, 12, hk_skin_sb_create))
+        return;
+
+    /* dispatch function: prologue, then movsxd rsi, [queued entry count] */
+    if (!readable(d, 20) || memcmp(d, prologue, 13) || memcmp(d + 13, "\x48\x63\x35", 3))
+    {
+        log_msg("skin_budget: skin dispatch function doesn't match this game build, not hooked");
+        return;
+    }
+    g_sb.count = (int32_t *)(d + 20 + *(const int32_t *)(d + 16));
+    if (readable(g_sb.count, 4) && (g_dispatch_trampoline = patch_prologue(d, 13, hk_skin_dispatch)))
+        log_msg("skin_budget: hooked skin dispatch at %p (queued count at %p)", (void *)d, (void *)g_sb.count);
 }
 
 BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, void *reserved)
@@ -1763,12 +1919,19 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, void *reserved)
         if (g_cfg.cpu_count)
             log_msg("cpu_count=%u: patched %u imports of the game", g_cfg.cpu_count,
                     sm2_install_cpu_limit(g_cfg.cpu_count));
+        g_game_base = (uint8_t *)GetModuleHandleA(NULL);
         if (g_cfg.probe_skin)
             install_skin_probe();
+        if (g_cfg.probe_skin || g_cfg.skin_budget)
+            install_skin_budget();
     }
     else if (reason == DLL_PROCESS_DETACH && g_log)
     {
         g_exiting = TRUE;
+        if (g_dispatch_trampoline)
+            fprintf(g_log, "exit: skin dispatch calls=%lld with-work=%lld over-capacity=%lld capacity=%u\n",
+                    (long long)g_sb_dispatch_calls, (long long)g_sb_dispatch_work,
+                    (long long)g_sb_dispatch_starved, g_sb.object[4]);
         if (g_skin_trampoline)
             fprintf(g_log, "exit: skin launcher calls=%lld with-requests=%lld blocked-by-flag=%lld\n",
                     (long long)g_skin_calls, (long long)g_skin_with_requests, (long long)g_skin_flag_blocked);
