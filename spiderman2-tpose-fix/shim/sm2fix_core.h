@@ -92,8 +92,8 @@ enum sm2_ziva_cpu { SM2_ZIVA_AUTO = 0, SM2_ZIVA_REFERENCE, SM2_ZIVA_SSE41, SM2_Z
 
 /* A root signature, flattened: what each root parameter is, and for descriptor tables
  * every range (offset in the table, count, register, space, SRV/UAV/CBV/sampler). */
-#define SM2_RS_MAX_PARAMS 32
-#define SM2_RS_MAX_RANGES 64
+#define SM2_RS_MAX_PARAMS 64
+#define SM2_RS_MAX_RANGES 1024
 enum sm2_rs_param { SM2_RS_TABLE = 0, SM2_RS_CONSTANTS = 1, SM2_RS_CBV = 2, SM2_RS_SRV = 3, SM2_RS_UAV = 4 };
 struct sm2_rs_range { uint32_t param, type, count, reg, space, offset; };  /* type: 0 SRV 1 UAV 2 CBV 3 sampler */
 struct sm2_rootsig
@@ -107,6 +107,18 @@ struct sm2_rootsig
 int sm2_rootsig_parse(const void *blob, size_t size, struct sm2_rootsig *rs);
 /* Number of descriptors a table parameter spans (unbounded ranges count as `unbounded`). */
 uint32_t sm2_rootsig_table_size(const struct sm2_rootsig *rs, uint32_t param, uint32_t unbounded);
+/* Finds where a shader register lives in a root signature. cls: 0 SRV, 1 UAV, 2 CBV.
+ * Returns 0 and sets *param and *slot (descriptor offset in the table, or 0xffffffff for a
+ * root descriptor); -1 if the root signature doesn't cover it. */
+int sm2_rootsig_locate(const struct sm2_rootsig *rs, uint32_t cls, uint32_t space, uint32_t reg,
+        uint32_t *param, uint32_t *slot);
+
+/* The resources a shader declares (DXIL PSV0 part). type: 1 sampler, 2 CBV, 3-5 SRV
+ * (typed/raw/structured), 6-9 UAV. hi is 0xffffffff for unbounded arrays. */
+struct sm2_binding { uint32_t type, space, lo, hi; };
+/* Returns the number of bindings written (up to max), or -1 if there is no readable PSV0. */
+int sm2_shader_bindings(const void *dxbc, size_t size, struct sm2_binding *out, int max);
+
 /* Bytes per element of a DXGI format used in typed buffer views, 0 if unknown. */
 unsigned int sm2_format_size(unsigned int format);
 

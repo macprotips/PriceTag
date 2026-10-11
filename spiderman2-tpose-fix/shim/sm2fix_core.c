@@ -576,7 +576,7 @@ int sm2_rootsig_parse(const void *blob, size_t size, struct sm2_rootsig *rs)
             return -1;
     }
     rs->version = rd32(p);
-    if (rs->version != 1 && rs->version != 2)
+    if (rs->version < 1 || rs->version > 3)    /* 1.0, 1.1, 1.2 */
         return -1;
     rs->num_params = rd32(p + 4);
     params_off = rd32(p + 8);
@@ -592,7 +592,7 @@ int sm2_rootsig_parse(const void *blob, size_t size, struct sm2_rootsig *rs)
         rs->param_type[i] = type;
         if (type == SM2_RS_TABLE)
         {
-            uint32_t n, ranges_off, stride = rs->version == 1 ? 20 : 24;
+            uint32_t n, ranges_off, stride = rs->version == 1 ? 20 : 24;   /* 1.1 and 1.2 ranges are alike */
 
             if ((size_t)off + 8 > size)
                 return -1;
@@ -677,4 +677,77 @@ unsigned int sm2_format_size(unsigned int f)
     if (f >= 60 && f <= 64) return 1;    /* R8 */
     if (f >= 87 && f <= 88) return 4;    /* B8G8R8A8/X8 */
     return 0;
+}
+
+int sm2_rootsig_locate(const struct sm2_rootsig *rs, uint32_t cls, uint32_t space, uint32_t reg,
+        uint32_t *param, uint32_t *slot)
+{
+    static const uint32_t root_type[3] = { SM2_RS_SRV, SM2_RS_UAV, SM2_RS_CBV };
+    uint32_t i;
+
+    for (i = 0; i < rs->num_ranges; i++)
+    {
+        const struct sm2_rs_range *r = &rs->ranges[i];
+
+        if (r->type != cls || r->space != space || reg < r->reg
+                || (r->count != 0xffffffffu && reg - r->reg >= r->count))
+            continue;
+        *param = r->param;
+        *slot = r->offset + (reg - r->reg);
+        return 0;
+    }
+    for (i = 0; i < rs->num_params && cls < 3; i++)
+    {
+        if (rs->param_type[i] == root_type[cls] && rs->param_reg[i] == reg && rs->param_space[i] == space)
+        {
+            *param = i;
+            *slot = 0xffffffffu;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+int sm2_shader_bindings(const void *dxbc, size_t size, struct sm2_binding *out, int max)
+{
+    const uint8_t *p = dxbc;
+    uint32_t parts, i;
+
+    if (!p || size < 32 || memcmp(p, "DXBC", 4) || (parts = rd32(p + 28)) > 64 || 32 + (size_t)parts * 4 > size)
+        return -1;
+    for (i = 0; i < parts; i++)
+    {
+        uint32_t off = rd32(p + 32 + i * 4), len, info, count, bind, k, n = 0;
+        const uint8_t *d;
+
+        if ((size_t)off + 8 > size || memcmp(p + off, "PSV0", 4))
+            continue;
+        len = rd32(p + off + 4);
+        d = p + off + 8;
+        if ((size_t)off + 8 + len > size || len < 4)
+            return -1;
+        info = rd32(d);
+        if (4ull + info + 4 > len)
+            return -1;
+        count = rd32(d + 4 + info);
+        if (!count)
+            return 0;
+        if (4ull + info + 8 > len)
+            return -1;
+        bind = rd32(d + 8 + info);
+        if (bind < 16 || 8ull + info + 4 + (uint64_t)bind * count > len)
+            return -1;
+        for (k = 0; k < count && (int)n < max; k++)
+        {
+            const uint8_t *e = d + 12 + info + (size_t)k * bind;
+
+            out[n].type = rd32(e);
+            out[n].space = rd32(e + 4);
+            out[n].lo = rd32(e + 8);
+            out[n].hi = rd32(e + 12);
+            n++;
+        }
+        return (int)n;
+    }
+    return -1;
 }

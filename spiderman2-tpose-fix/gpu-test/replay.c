@@ -86,7 +86,7 @@ static uint8_t *find_shader(const uint8_t *exe, size_t n, uint64_t hash, size_t 
 
 /* ------------------------------------------------------------- capture file */
 
-#define ROOT_PARAMS 32
+#define ROOT_PARAMS 64
 struct view
 {
     uint32_t param, slot, kind, dim, format, num, stride, flags, heap_type, has_after;
@@ -125,9 +125,9 @@ static int parse_capture(const uint8_t *p, size_t n, struct capture *c)
     c->rs_blob = p;
     p += c->rs_size;
     R32(nparams);
-    if (nparams != ROOT_PARAMS)
+    if (nparams > ROOT_PARAMS)
         return -1;
-    for (i = 0; i < ROOT_PARAMS; i++)
+    for (i = 0; i < nparams; i++)
     {
         R64(c->root_val[i]);
         NEED(64);
@@ -323,7 +323,7 @@ static int replay(const uint8_t *exe, size_t exe_size, const char *path)
     D3D12_DESCRIPTOR_HEAP_DESC hd = { D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 0, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE };
     D3D12_CPU_DESCRIPTOR_HANDLE cpu0;
     D3D12_GPU_DESCRIPTOR_HANDLE gpu0;
-    uint32_t table_start[ROOT_PARAMS] = {0}, p, i, j, ng = 0, inc;
+    uint32_t table_start[ROOT_PARAMS] = {0}, table_size[ROOT_PARAMS] = {0}, p, i, j, ng = 0, inc;
     uint64_t rb_size = 0, *rb_off, bad = 0, uavs = 0;
     uint8_t *file, *shader, *map;
     size_t file_size, shader_size;
@@ -440,11 +440,15 @@ static int replay(const uint8_t *exe, size_t exe_size, const char *path)
     barrier_all(list, bufs, ng, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 
     /* descriptor tables, one block per table parameter */
-    for (p = 0; p < rs.num_params; p++)
+    for (p = 0; p < rs.num_params && p < ROOT_PARAMS; p++)
         if (rs.param_type[p] == SM2_RS_TABLE)
         {
+            table_size[p] = 1;
+            for (i = 0; i < c.nviews; i++)
+                if (c.v[i].param == p && c.v[i].slot != 0xffffffffu && c.v[i].slot + 1 > table_size[p])
+                    table_size[p] = c.v[i].slot + 1;
             table_start[p] = hd.NumDescriptors;
-            hd.NumDescriptors += sm2_rootsig_table_size(&rs, p, 32);
+            hd.NumDescriptors += table_size[p];
         }
     if (!hd.NumDescriptors)
         hd.NumDescriptors = 1;
@@ -460,11 +464,11 @@ static int replay(const uint8_t *exe, size_t exe_size, const char *path)
     for (i = 0; i < rs.num_ranges; i++)
     {
         const struct sm2_rs_range *r = &rs.ranges[i];
-        uint32_t n = r->count == 0xffffffffu ? 32 : r->count, k;
+        uint32_t n = r->count, k;
 
-        if (r->type == 3 || rs.param_type[r->param] != SM2_RS_TABLE)
+        if (r->type == 3 || r->param >= ROOT_PARAMS || rs.param_type[r->param] != SM2_RS_TABLE)
             continue;
-        for (k = 0; k < n && r->offset + k < sm2_rootsig_table_size(&rs, r->param, 32); k++)
+        for (k = 0; k < n && r->offset + k < table_size[r->param]; k++)
         {
             D3D12_CPU_DESCRIPTOR_HANDLE h = { cpu0.ptr + (SIZE_T)(table_start[r->param] + r->offset + k) * inc };
 

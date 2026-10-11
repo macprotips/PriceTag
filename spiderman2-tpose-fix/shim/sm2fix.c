@@ -273,7 +273,7 @@ struct list_state
 };
 
 /* With capture: the compute root signature and root arguments currently set on a list. */
-#define ROOT_PARAMS 32
+#define ROOT_PARAMS 64
 struct root_state
 {
     void *rs;
@@ -572,6 +572,8 @@ static void pso_creation_delay(void)
 
 /* ------------------------------------------------------------- shader matching */
 
+static void capture_note_shader(uint64_t hash, const void *code, size_t size);
+
 static void note_compute_shader(void *pso, const void *code, size_t size, const char *how)
 {
     uint64_t hash;
@@ -581,6 +583,8 @@ static void note_compute_shader(void *pso, const void *code, size_t size, const 
     hash = sm2_shader_hash(code, size);
     if (g_cfg.profile || g_cfg.capture)
         pso_hash_set(pso, hash);
+    if (g_cfg.capture)
+        capture_note_shader(hash, code, size);
     if (hash == SM2_SKINNING_HASH)
         log_msg("skinning shader created via %s -> pso %p", how, pso);
     if (g_cfg.dump_compute)
@@ -702,7 +706,7 @@ static BOOL in_skin_window(void)
 }
 
 /* Root signatures by object, so the one the skinning shader runs with can be logged. */
-#define ROOTSIG_MAX 256
+#define ROOTSIG_MAX 2048
 static struct { void *obj; void *blob; SIZE_T size; } g_rootsig_reg[ROOTSIG_MAX];
 static volatile LONG g_rootsig_reg_n, g_win_root_lines;
 static volatile LONG64 g_skin_skipped;
@@ -712,7 +716,7 @@ static void rootsig_remember(void *obj, const void *blob, SIZE_T size)
     LONG i;
     void *copy;
 
-    if (!obj || !size || size > 64 * 1024 || !(copy = HeapAlloc(GetProcessHeap(), 0, size)))
+    if (!obj || !size || size > 1024 * 1024 || !(copy = HeapAlloc(GetProcessHeap(), 0, size)))
         return;
     memcpy(copy, blob, size);
     if ((i = InterlockedIncrement(&g_rootsig_reg_n) - 1) >= ROOTSIG_MAX)
@@ -2332,6 +2336,9 @@ struct cap_pending
 };
 
 static struct cap_pending *volatile g_cap[CAPTURE_SLOTS];
+static struct sm2_binding g_cap_bind[8][32];  /* per capture hash: the resources its shader declares */
+static volatile LONG g_cap_nbind[8];
+static volatile LONG g_cap_fail[8];
 static volatile LONG g_cap_count[8];
 static volatile DWORD g_cap_last[8], g_cap_t0;
 static volatile LONG g_cap_written;
@@ -2341,6 +2348,27 @@ static void *real_fn(void *obj, unsigned int index)
     void *fn = orig_fn(obj, index);
 
     return fn ? fn : (*(void ***)obj)[index];
+}
+
+static int capture_index(uint64_t hash)
+{
+    unsigned int i;
+
+    for (i = 0; i < g_cfg.capture_hash_count && i < 8; i++)
+        if (g_cfg.capture_hashes[i] == hash)
+            return (int)i;
+    return -1;
+}
+
+static void capture_note_shader(uint64_t hash, const void *code, size_t size)
+{
+    int i = capture_index(hash), n;
+
+    if (i < 0 || g_cap_nbind[i])
+        return;
+    n = sm2_shader_bindings(code, size, g_cap_bind[i], 32);
+    g_cap_nbind[i] = n > 0 ? n : -1;
+    log_msg("capture: shader %016llx declares %d resources", (unsigned long long)hash, n);
 }
 
 static BOOL capture_wanted(uint64_t hash)
@@ -2435,6 +2463,97 @@ static void cap_add_buffer(struct cap_pending *c, struct cap_view *v, UINT64 off
     *total += (len + 255) & ~255ull;
 }
 
+/* Adds the view at (root parameter, table slot) -- slot 0xffffffff for a root descriptor. */
+static void capture_add_view(struct cap_pending *c, uint32_t p, uint32_t slot, uint64_t *total)
+{
+    UINT64 val = c->root.val[p];
+    struct cap_view *v = &c->v[c->nviews];
+    unsigned int i;
+
+    for (i = 0; i < c->nviews; i++)
+        if (c->v[i].param == p && c->v[i].slot == slot)
+            return;
+    memset(v, 0, sizeof(*v));
+    v->param = p;
+    v->slot = slot;
+    if (!val)
+        return;
+    if (slot == 0xffffffffu)
+    {
+        ID3D12Resource *res;
+        UINT64 res_va, width;
+        uint32_t t = c->rs.param_type[p];
+
+        c->nviews++;
+        v->kind = t == SM2_RS_CBV ? 3 : t == SM2_RS_SRV ? 1 : 2;
+        v->va = val;
+        if (find_res_by_va(val, &res, &res_va, &width))
+        {
+            v->res = res;
+            v->res_width = width;
+            v->res_id = (uint64_t)(UINT_PTR)res;
+            cap_add_buffer(c, v, val - res_va, v->kind == 3 ? 65536 : (8u << 20), total);
+            v->has_after = v->kind == 2 && v->byte_len;
+            if (v->has_after)
+                *total += (v->byte_len + 255) & ~255ull;
+        }
+        return;
+    }
+    {
+        LONG hi, hn = g_heap_count < MAX_TRACKED_HEAPS ? g_heap_count : MAX_TRACKED_HEAPS;
+
+        for (hi = 0; hi < hn; hi++)
+        {
+            struct heap_rec *h = &g_heaps[hi];
+            const struct view_rec *r;
+            UINT64 idx;
+
+            if (!h->gpu || val < h->gpu || val >= h->gpu + h->num * h->inc)
+                continue;
+            if ((idx = (val - h->gpu) / h->inc + slot) >= h->num)
+                return;
+            r = &h->recs[idx];
+            c->nviews++;
+            v->kind = r->kind;
+            v->dim = r->dim;
+            v->format = r->format;
+            v->num = r->num;
+            v->stride = r->stride;
+            v->flags = r->flags;
+            v->first = r->first;
+            v->heap_type = r->heap_type;
+            v->res_id = (uint64_t)(UINT_PTR)r->res;
+            v->va = r->va;
+            if (r->kind == 3 && r->va)
+            {
+                ID3D12Resource *res;
+                UINT64 res_va, width;
+
+                if (find_res_by_va(r->va, &res, &res_va, &width))
+                {
+                    v->res = res;
+                    v->res_width = width;
+                    v->res_id = (uint64_t)(UINT_PTR)res;
+                    cap_add_buffer(c, v, r->va - res_va, r->num, total);
+                }
+            }
+            else if ((r->kind == 1 || r->kind == 2) && r->dim == 1 && r->res)
+            {
+                unsigned int es = r->stride ? r->stride : (r->flags & 1) ? 4 : sm2_format_size(r->format);
+
+                v->res = r->res;
+                v->res_width = r->width;
+                if (es)
+                    cap_add_buffer(c, v, r->first * es, (UINT64)r->num * es, total);
+                v->has_after = r->kind == 2 && v->byte_len;
+                if (v->has_after)
+                    *total += (v->byte_len + 255) & ~255ull;
+            }
+            return;
+        }
+    }
+}
+
 static void capture_dispatch(ID3D12GraphicsCommandList *list, uint64_t hash, UINT x, UINT y, UINT z,
         void (STDMETHODCALLTYPE *orig)(ID3D12GraphicsCommandList *, UINT, UINT, UINT))
 {
@@ -2446,7 +2565,7 @@ static void capture_dispatch(ID3D12GraphicsCommandList *list, uint64_t hash, UIN
     D3D12_RESOURCE_DESC desc;
     struct cap_pending *c;
     uint64_t total = 0, off;
-    unsigned int i, p, k;
+    unsigned int i;
     LONG ri, rn;
     HRESULT hr;
 
@@ -2462,9 +2581,20 @@ static void capture_dispatch(ID3D12GraphicsCommandList *list, uint64_t hash, UIN
             c->rs_blob = g_rootsig_reg[ri].blob;
             c->rs_size = g_rootsig_reg[ri].size;
         }
-    if (!c->rs_blob || sm2_rootsig_parse(c->rs_blob, c->rs_size, &c->rs))
+    if (!c->rs_blob)
     {
-        log_msg("capture: %016llx: root signature %p unknown or unparsable", (unsigned long long)hash, c->root.rs);
+        log_msg("capture: %016llx: root signature %p was never seen being created (%ld recorded)",
+                (unsigned long long)hash, c->root.rs, (long)g_rootsig_reg_n);
+        goto plain;
+    }
+    if (sm2_rootsig_parse(c->rs_blob, c->rs_size, &c->rs))
+    {
+        static volatile LONG dumped;
+
+        log_msg("capture: %016llx: can't parse root signature %p (%zu bytes)", (unsigned long long)hash, c->root.rs,
+                (size_t)c->rs_size);
+        if (!InterlockedExchange(&dumped, 1))
+            log_blob_hex("capture: root signature blob", c->rs_blob, c->rs_size);
         goto plain;
     }
     c->list = list;
@@ -2472,86 +2602,33 @@ static void capture_dispatch(ID3D12GraphicsCommandList *list, uint64_t hash, UIN
     c->x = x;
     c->y = y;
     c->z = z;
-    for (p = 0; p < c->rs.num_params && p < ROOT_PARAMS; p++)
     {
-        UINT64 val = c->root.val[p];
+        int bi = capture_index(hash), nb = bi >= 0 ? g_cap_nbind[bi] : 0, b;
 
-        if (c->rs.param_type[p] == SM2_RS_TABLE && val)
+        if (nb <= 0)
         {
-            uint32_t n = sm2_rootsig_table_size(&c->rs, p, 32);
-            LONG hi, hn = g_heap_count < MAX_TRACKED_HEAPS ? g_heap_count : MAX_TRACKED_HEAPS;
-
-            for (hi = 0; hi < hn; hi++)
-            {
-                struct heap_rec *h = &g_heaps[hi];
-
-                if (!h->gpu || val < h->gpu || val >= h->gpu + h->num * h->inc)
-                    continue;
-                for (k = 0; k < n && (val - h->gpu) / h->inc + k < h->num && c->nviews < CAPTURE_MAX_VIEWS; k++)
-                {
-                    const struct view_rec *r = &h->recs[(val - h->gpu) / h->inc + k];
-                    struct cap_view *v = &c->v[c->nviews++];
-
-                    v->param = p;
-                    v->slot = k;
-                    v->kind = r->kind;
-                    v->dim = r->dim;
-                    v->format = r->format;
-                    v->num = r->num;
-                    v->stride = r->stride;
-                    v->flags = r->flags;
-                    v->first = r->first;
-                    v->heap_type = r->heap_type;
-                    v->res_id = (uint64_t)(UINT_PTR)r->res;
-                    v->va = r->va;
-                    if (r->kind == 3 && r->va)
-                    {
-                        ID3D12Resource *res;
-                        UINT64 res_va, width;
-
-                        if (find_res_by_va(r->va, &res, &res_va, &width))
-                        {
-                            v->res = res;
-                            v->res_width = width;
-                            v->res_id = (uint64_t)(UINT_PTR)res;
-                            cap_add_buffer(c, v, r->va - res_va, r->num, &total);
-                        }
-                    }
-                    else if ((r->kind == 1 || r->kind == 2) && r->dim == 1 && r->res)
-                    {
-                        unsigned int es = r->stride ? r->stride : (r->flags & 1) ? 4 : sm2_format_size(r->format);
-
-                        v->res = r->res;
-                        v->res_width = r->width;
-                        if (es)
-                            cap_add_buffer(c, v, r->first * es, (UINT64)r->num * es, &total);
-                        v->has_after = r->kind == 2 && v->byte_len;
-                        if (v->has_after)
-                            total += (v->byte_len + 255) & ~255ull;
-                    }
-                }
-                break;
-            }
+            log_msg("capture: %016llx: the shader's resource list is unknown", (unsigned long long)hash);
+            goto plain;
         }
-        else if (c->rs.param_type[p] >= SM2_RS_CBV && val && c->nviews < CAPTURE_MAX_VIEWS)
+        for (b = 0; b < nb; b++)
         {
-            struct cap_view *v = &c->v[c->nviews++];
-            ID3D12Resource *res;
-            UINT64 res_va, width;
+            const struct sm2_binding *sb = &g_cap_bind[bi][b];
+            uint32_t cls = sb->type == 2 ? 2 : sb->type >= 3 && sb->type <= 5 ? 0 : sb->type >= 6 ? 1 : 3, reg;
+            uint32_t last = sb->hi == 0xffffffffu || sb->hi - sb->lo > 7 ? sb->lo + 7 : sb->hi;
 
-            v->param = p;
-            v->slot = 0xffffffffu;
-            v->kind = c->rs.param_type[p] == SM2_RS_CBV ? 3 : c->rs.param_type[p] == SM2_RS_SRV ? 1 : 2;
-            v->va = val;
-            if (find_res_by_va(val, &res, &res_va, &width))
+            if (cls == 3)
+                continue;
+            for (reg = sb->lo; reg <= last && c->nviews < CAPTURE_MAX_VIEWS; reg++)
             {
-                v->res = res;
-                v->res_width = width;
-                v->res_id = (uint64_t)(UINT_PTR)res;
-                cap_add_buffer(c, v, val - res_va, v->kind == 3 ? 65536 : (16u << 20), &total);
-                v->has_after = v->kind == 2 && v->byte_len;
-                if (v->has_after)
-                    total += (v->byte_len + 255) & ~255ull;
+                uint32_t param, slot;
+
+                if (sm2_rootsig_locate(&c->rs, cls, sb->space, reg, &param, &slot) || param >= ROOT_PARAMS)
+                {
+                    log_msg("capture: %016llx: register %c%u space %u not in the root signature",
+                            (unsigned long long)hash, "tub"[cls], reg, sb->space);
+                    continue;
+                }
+                capture_add_view(c, param, slot, &total);
             }
         }
     }
@@ -2621,6 +2698,13 @@ plain:
     orig(list, x, y, z);
     if (c)
         capture_free(c);
+    /* let a failed capture be tried again a few times */
+    {
+        int bi = capture_index(hash);
+
+        if (bi >= 0 && InterlockedIncrement(&g_cap_fail[bi]) < 3)
+            InterlockedDecrement(&g_cap_count[bi]);
+    }
 }
 
 static void capture_write(struct cap_pending *c)

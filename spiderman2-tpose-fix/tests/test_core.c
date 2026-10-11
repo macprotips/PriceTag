@@ -252,6 +252,60 @@ static void test_ziva_config(void)
     CHECK(cfg.ziva_level_rva == 1);
 }
 
+static void put32(uint8_t *p, uint32_t v)
+{
+    memcpy(p, &v, 4);
+}
+
+static void test_capture_parsers(void)
+{
+    /* root signature 1.1: [0] table { SRV unbounded t0 space0 @0 }, [1] 4 constants b0,
+     * [2] table { UAV u0 @5 }, [3] root CBV b2 space0 */
+    uint8_t rs[512] = {0}, dxbc[256] = {0};
+    struct sm2_rootsig r;
+    struct sm2_binding b[8];
+    uint32_t param, slot;
+
+    put32(rs, 2); put32(rs + 4, 4); put32(rs + 8, 24);
+    put32(rs + 24, 0); put32(rs + 32, 100);            /* table -> 100 */
+    put32(rs + 36, 1); put32(rs + 44, 120);            /* constants -> 120 */
+    put32(rs + 48, 0); put32(rs + 56, 140);            /* table -> 140 */
+    put32(rs + 60, 2); put32(rs + 68, 160);            /* CBV -> 160 */
+    put32(rs + 100, 1); put32(rs + 104, 200);
+    put32(rs + 200, 0); put32(rs + 204, 0xffffffff); put32(rs + 208, 0); put32(rs + 212, 0); put32(rs + 220, 0);
+    put32(rs + 120, 0); put32(rs + 124, 0); put32(rs + 128, 4);
+    put32(rs + 140, 1); put32(rs + 144, 240);
+    put32(rs + 240, 1); put32(rs + 244, 1); put32(rs + 248, 0); put32(rs + 252, 0); put32(rs + 260, 5);
+    put32(rs + 160, 2); put32(rs + 164, 0);
+    CHECK(!sm2_rootsig_parse(rs, sizeof(rs), &r));
+    CHECK(r.num_params == 4 && r.num_ranges == 2 && r.param_num[1] == 4);
+    CHECK(!sm2_rootsig_locate(&r, 0, 0, 12, &param, &slot) && param == 0 && slot == 12);
+    CHECK(!sm2_rootsig_locate(&r, 1, 0, 0, &param, &slot) && param == 2 && slot == 5);
+    CHECK(!sm2_rootsig_locate(&r, 2, 0, 2, &param, &slot) && param == 3 && slot == 0xffffffffu);
+    CHECK(sm2_rootsig_locate(&r, 1, 0, 1, &param, &slot) == -1);
+    put32(rs, 3);                                       /* 1.2 parses like 1.1 */
+    CHECK(!sm2_rootsig_parse(rs, sizeof(rs), &r) && r.num_ranges == 2);
+    put32(rs, 9);
+    CHECK(sm2_rootsig_parse(rs, sizeof(rs), &r) == -1);
+
+    /* DXBC with one PSV0 part: 4-byte runtime info, two 24-byte bindings */
+    memcpy(dxbc, "DXBC", 4);
+    put32(dxbc + 24, sizeof(dxbc));
+    put32(dxbc + 28, 1);
+    put32(dxbc + 32, 36);
+    memcpy(dxbc + 36, "PSV0", 4);
+    put32(dxbc + 40, 4 + 4 + 4 + 4 + 48);
+    put32(dxbc + 44, 4);                                /* info size */
+    put32(dxbc + 52, 2);                                /* resource count */
+    put32(dxbc + 56, 24);                               /* bind info size */
+    put32(dxbc + 60, 3); put32(dxbc + 64, 0); put32(dxbc + 68, 11); put32(dxbc + 72, 11);
+    put32(dxbc + 84, 6); put32(dxbc + 88, 0); put32(dxbc + 92, 0); put32(dxbc + 96, 0);
+    CHECK(sm2_shader_bindings(dxbc, sizeof(dxbc), b, 8) == 2);
+    CHECK(b[0].type == 3 && b[0].lo == 11 && b[1].type == 6 && b[1].hi == 0);
+    CHECK(sm2_shader_bindings(dxbc, 40, b, 8) == -1);
+    CHECK(sm2_format_size(41) == 4 && sm2_format_size(62) == 1 && sm2_format_size(2) == 16 && sm2_format_size(0) == 0);
+}
+
 int main(void)
 {
     test_hash();
@@ -261,6 +315,7 @@ int main(void)
     test_rootsig_samplers();
     test_config();
     test_ziva_config();
+    test_capture_parsers();
     if (failures)
     {
         printf("%d failure(s)\n", failures);

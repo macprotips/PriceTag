@@ -41,16 +41,17 @@ static ID3D12Resource *buffer(D3D12_HEAP_TYPE heap, UINT64 size, D3D12_RESOURCE_
 int main(int argc, char **argv)
 {
     HRESULT (WINAPI *create_device)(IUnknown *, D3D_FEATURE_LEVEL, REFIID, void **);
-    HRESULT (WINAPI *serialize)(const D3D12_ROOT_SIGNATURE_DESC *, D3D_ROOT_SIGNATURE_VERSION, ID3DBlob **, ID3DBlob **);
-    D3D12_DESCRIPTOR_RANGE ranges[2] = {
-        { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 13, 0, 0, 0 },
-        { D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0, 0, 13 },
-    };
-    D3D12_ROOT_PARAMETER param = {0};
-    D3D12_ROOT_SIGNATURE_DESC rsd = {0};
+    HRESULT (WINAPI *serialize)(const D3D12_VERSIONED_ROOT_SIGNATURE_DESC *, ID3DBlob **, ID3DBlob **);
+    /* bindless-style, like the game: an unbounded SRV table, root constants, and the UAV in
+     * a second table at offset 5 (root signature 1.1) */
+    D3D12_DESCRIPTOR_RANGE1 srvs = { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, UINT_MAX, 0, 0,
+            D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE | D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE, 0 };
+    D3D12_DESCRIPTOR_RANGE1 uavs = { D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE, 5 };
+    D3D12_ROOT_PARAMETER1 params[3] = {{0}};
+    D3D12_VERSIONED_ROOT_SIGNATURE_DESC rsd = {0};
     D3D12_COMPUTE_PIPELINE_STATE_DESC pd = {0};
     D3D12_COMMAND_QUEUE_DESC qd = {0};
-    D3D12_DESCRIPTOR_HEAP_DESC hd = { D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 14, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE };
+    D3D12_DESCRIPTOR_HEAP_DESC hd = { D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 32, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE };
     struct { UINT slot; DXGI_FORMAT format; UINT64 first; UINT num; } views[6] = {
         { 0, DXGI_FORMAT_R32_FLOAT, 0, 1024 },      /* t0: inputs */
         { 1, DXGI_FORMAT_R32_UINT, 1100, THREADS },    /* t1: record per thread */
@@ -134,13 +135,20 @@ int main(int argc, char **argv)
     create_device = (void *)GetProcAddress(d3d12, "D3D12CreateDevice");
     if (!create_device || FAILED(create_device(NULL, D3D_FEATURE_LEVEL_11_0, &IID_ID3D12Device, (void **)&device)))
         return printf("FAIL: no device\n"), 1;
-    param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    param.DescriptorTable.NumDescriptorRanges = 2;
-    param.DescriptorTable.pDescriptorRanges = ranges;
-    rsd.NumParameters = 1;
-    rsd.pParameters = &param;
-    serialize = (void *)GetProcAddress(d3d12, "D3D12SerializeRootSignature");
-    if (!serialize || FAILED(serialize(&rsd, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &err))
+    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    params[0].DescriptorTable.NumDescriptorRanges = 1;
+    params[0].DescriptorTable.pDescriptorRanges = &srvs;
+    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[1].Constants.ShaderRegister = 0;
+    params[1].Constants.Num32BitValues = 4;
+    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    params[2].DescriptorTable.NumDescriptorRanges = 1;
+    params[2].DescriptorTable.pDescriptorRanges = &uavs;
+    rsd.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    rsd.Desc_1_1.NumParameters = 3;
+    rsd.Desc_1_1.pParameters = params;
+    serialize = (void *)GetProcAddress(d3d12, "D3D12SerializeVersionedRootSignature");
+    if (!serialize || FAILED(serialize(&rsd, &blob, &err))
             || FAILED(ID3D12Device_CreateRootSignature(device, 0, ID3D10Blob_GetBufferPointer(blob),
                     ID3D10Blob_GetBufferSize(blob), &IID_ID3D12RootSignature, (void **)&rs)))
         return printf("FAIL: root signature\n"), 1;
@@ -193,7 +201,7 @@ int main(int argc, char **argv)
     }
     {
         D3D12_UNORDERED_ACCESS_VIEW_DESC uv = {0};
-        D3D12_CPU_DESCRIPTOR_HANDLE h = { cpu.ptr + 13 * (SIZE_T)inc };
+        D3D12_CPU_DESCRIPTOR_HANDLE h = { cpu.ptr + 25 * (SIZE_T)inc };   /* table 2 at 20, u0 at +5 */
 
         uv.Format = DXGI_FORMAT_R32_FLOAT;
         uv.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
@@ -204,7 +212,14 @@ int main(int argc, char **argv)
     ID3D12GraphicsCommandList_SetDescriptorHeaps(list, 1, &heap);
     ID3D12GraphicsCommandList_SetComputeRootSignature(list, rs);
     ID3D12GraphicsCommandList_SetPipelineState(list, pso);
-    ID3D12GraphicsCommandList_SetComputeRootDescriptorTable(list, 0, gpu);
+    {
+        D3D12_GPU_DESCRIPTOR_HANDLE uav_table = { gpu.ptr + 20 * (UINT64)inc };
+        UINT consts[4] = { 1, 2, 3, 4 };
+
+        ID3D12GraphicsCommandList_SetComputeRootDescriptorTable(list, 0, gpu);
+        ID3D12GraphicsCommandList_SetComputeRoot32BitConstants(list, 1, 4, consts, 0);
+        ID3D12GraphicsCommandList_SetComputeRootDescriptorTable(list, 2, uav_table);
+    }
     ID3D12GraphicsCommandList_Dispatch(list, THREADS / 64, 1, 1);
     ID3D12GraphicsCommandList_Close(list);
     ID3D12CommandQueue_ExecuteCommandLists(queue, 1, (ID3D12CommandList **)&list);
