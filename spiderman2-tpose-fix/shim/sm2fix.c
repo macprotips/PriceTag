@@ -26,6 +26,14 @@
 _Static_assert(sizeof(void *) == 8, "Spider-Man 2 is a 64-bit game; build for x86_64");
 _Static_assert(sizeof(D3D12_SHADER_BYTECODE) == 16, "stream CS subobject layout");
 _Static_assert(sizeof(D3D12_CACHED_PIPELINE_STATE) == 16, "stream cached PSO layout");
+_Static_assert(sizeof(D3D12_STREAM_OUTPUT_DESC) == 32, "stream layout table");
+_Static_assert(sizeof(D3D12_BLEND_DESC) == 328, "stream layout table");
+_Static_assert(sizeof(D3D12_RASTERIZER_DESC) == 44, "stream layout table");
+_Static_assert(sizeof(D3D12_DEPTH_STENCIL_DESC) == 52, "stream layout table");
+_Static_assert(sizeof(D3D12_DEPTH_STENCIL_DESC1) == 56, "stream layout table");
+_Static_assert(sizeof(D3D12_INPUT_LAYOUT_DESC) == 16, "stream layout table");
+_Static_assert(sizeof(DXGI_FORMAT) * 8 + sizeof(UINT) == 36, "stream layout table");
+_Static_assert(sizeof(D3D12_VIEW_INSTANCING_DESC) == 24, "stream layout table");
 
 #define VT_INDEX(vtbl_type, member) (offsetof(vtbl_type, member) / sizeof(void *))
 
@@ -34,7 +42,8 @@ static HMODULE g_self, g_real;
 static FILE *g_log;
 static SRWLOCK g_lock = SRWLOCK_INIT;
 static INIT_ONCE g_init_once = INIT_ONCE_STATIC_INIT;
-static volatile LONG64 g_barriers, g_target_psos;
+static volatile LONG64 g_barriers, g_target_psos, g_dispatches, g_indirect, g_submits[4], g_waits,
+        g_wait_timeouts, g_pso_failures, g_fence_signals, g_fence_waits;
 
 /* ------------------------------------------------------------------------ logging */
 
@@ -283,7 +292,7 @@ static BOOL list_needs_barrier(void *list)
 
     AcquireSRWLockShared(&g_lock);
     e = find_list_locked(list, FALSE);
-    if (g_cfg.mode == SM2_MODE_ALL)
+    if (g_cfg.mode >= SM2_MODE_ALL)
         ret = !e || e->type != D3D12_COMMAND_LIST_TYPE_BUNDLE;
     else
         ret = e && e->target_bound && e->type != D3D12_COMMAND_LIST_TYPE_BUNDLE;
@@ -319,6 +328,82 @@ static void note_compute_shader(void *pso, const void *code, size_t size, const 
         log_msg("TARGET shader %016llx created via %s -> pso %p (barrier will be forced after its dispatches)",
                 (unsigned long long)hash, how, pso);
     }
+}
+
+/* ------------------------------------------------------------- diagnostics */
+
+static BOOL readable(const void *p, size_t size)
+{
+    MEMORY_BASIC_INFORMATION info;
+    const uint8_t *cur = p, *end = (const uint8_t *)p + size;
+
+    if (!p || !size || size > 64 * 1024 * 1024)
+        return FALSE;
+    while (cur < end)
+    {
+        if (!VirtualQuery(cur, &info, sizeof(info)) || info.State != MEM_COMMIT
+                || (info.Protect & (PAGE_NOACCESS | PAGE_GUARD)))
+            return FALSE;
+        cur = (const uint8_t *)info.BaseAddress + info.RegionSize;
+    }
+    return TRUE;
+}
+
+/* Saves shader bytecode to sm2fix-dumps\<hash>_<stage>.dxil so it can be disassembled. */
+static void dump_shader(const char *stage, const void *code, size_t size)
+{
+    static volatile LONG dumps;
+    WCHAR dir[MAX_PATH], path[MAX_PATH];
+    uint64_t hash;
+    FILE *f;
+
+    if (!readable(code, size))
+    {
+        log_msg("  %s: bytecode %p (%zu bytes) not readable", stage, code, size);
+        return;
+    }
+    hash = sm2_shader_hash(code, size);
+    log_msg("  %s shader %016llx (%zu bytes)", stage, (unsigned long long)hash, size);
+    if (InterlockedIncrement(&dumps) > 200)
+        return;
+    path_next_to_self(dir, MAX_PATH, L"sm2fix-dumps");
+    CreateDirectoryW(dir, NULL);
+    _snwprintf(path, MAX_PATH, L"%ls\\%016llx_%hs.dxil", dir, (unsigned long long)hash, stage);
+    path[MAX_PATH - 1] = 0;
+    if ((f = _wfopen(path, L"wb")))
+    {
+        fwrite(code, 1, size, f);
+        fclose(f);
+    }
+}
+
+static const char *stage_name(uint32_t type)
+{
+    static const char *names[] = {"rs", "vs", "ps", "ds", "hs", "gs", "cs"};
+
+    if (type < ARRAYSIZE(names))
+        return names[type];
+    return type == 24 ? "as" : type == 25 ? "ms" : "unknown";
+}
+
+static void dump_stream_shader(void *ctx, uint32_t type, const void *code, size_t len)
+{
+    if (code && len)
+        dump_shader(stage_name(type), code, len);
+}
+
+static void log_hex(const char *what, const void *data, UINT size)
+{
+    char buf[64 * 3 + 1];
+    const uint8_t *p = data;
+    UINT i, n = size < 64 ? size : 64;
+
+    if (!readable(data, size ? size : 1))
+        return;
+    for (i = 0; i < n; i++)
+        sprintf(buf + i * 3, "%02x ", p[i]);
+    buf[n * 3] = 0;
+    log_msg("%s: %s%s", what, buf, size > 64 ? "..." : "");
 }
 
 /* ---------------------------------------------------------- command list hooks */
@@ -373,6 +458,7 @@ static void STDMETHODCALLTYPE hk_list_Dispatch(ID3D12GraphicsCommandList *list, 
             = orig_fn(list, CL_IDX(Dispatch));
 
     orig(list, x, y, z);
+    InterlockedIncrement64(&g_dispatches);
 
     if (g_cfg.mode != SM2_MODE_OFF && list_needs_barrier(list))
     {
@@ -393,8 +479,31 @@ static void STDMETHODCALLTYPE hk_list_Dispatch(ID3D12GraphicsCommandList *list, 
     }
 }
 
+static void STDMETHODCALLTYPE hk_list_ExecuteIndirect(ID3D12GraphicsCommandList *list,
+        ID3D12CommandSignature *signature, UINT max_count, ID3D12Resource *args, UINT64 args_offset,
+        ID3D12Resource *count_buffer, UINT64 count_offset)
+{
+    void (STDMETHODCALLTYPE *orig)(ID3D12GraphicsCommandList *, ID3D12CommandSignature *, UINT, ID3D12Resource *,
+            UINT64, ID3D12Resource *, UINT64) = orig_fn(list, CL_IDX(ExecuteIndirect));
+
+    orig(list, signature, max_count, args, args_offset, count_buffer, count_offset);
+    InterlockedIncrement64(&g_indirect);
+
+    /* Indirect dispatches skip Dispatch(), so cover them too in the diagnostic modes. */
+    if (g_cfg.mode >= SM2_MODE_ALL && list_needs_barrier(list))
+    {
+        D3D12_RESOURCE_BARRIER barrier;
+
+        memset(&barrier, 0, sizeof(barrier));
+        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+        list->lpVtbl->ResourceBarrier(list, 1, &barrier);
+        InterlockedIncrement64(&g_barriers);
+    }
+}
+
 static void hook_command_list_vtable(void *list)
 {
+    hook_slot(list, CL_IDX(ExecuteIndirect), (void *)hk_list_ExecuteIndirect, "CommandList::ExecuteIndirect");
     hook_slot(list, CL_IDX(Release), (void *)hk_list_Release, "CommandList::Release");
     hook_slot(list, CL_IDX(Reset), (void *)hk_list_Reset, "CommandList::Reset");
     hook_slot(list, CL_IDX(ClearState), (void *)hk_list_ClearState, "CommandList::ClearState");
@@ -440,6 +549,12 @@ static HRESULT STDMETHODCALLTYPE hk_dev_CreateComputePipelineState(ID3D12Device 
 
     if (SUCCEEDED(hr) && desc && pso && *pso)
         note_compute_shader(*pso, desc->CS.pShaderBytecode, desc->CS.BytecodeLength, "CreateComputePipelineState");
+    else if (FAILED(hr) && desc)
+    {
+        InterlockedIncrement64(&g_pso_failures);
+        log_msg("FAILED CreateComputePipelineState hr=%#lx", (unsigned long)hr);
+        dump_shader("cs", desc->CS.pShaderBytecode, desc->CS.BytecodeLength);
+    }
     return hr;
 }
 
@@ -461,6 +576,14 @@ static HRESULT STDMETHODCALLTYPE hk_dev_CreatePipelineState(ID3D12Device2 *devic
             note_compute_shader(*pso, code, size, "CreatePipelineState");
         else if (r == SM2_STREAM_UNKNOWN || r == SM2_STREAM_MALFORMED)
             log_msg("warning: could not parse pipeline stream (%d) for pso %p", (int)r, *pso);
+    }
+    else if (FAILED(hr) && desc)
+    {
+        InterlockedIncrement64(&g_pso_failures);
+        log_msg("FAILED CreatePipelineState hr=%#lx", (unsigned long)hr);
+        if (sm2_stream_for_each_shader(desc->pPipelineStateSubobjectStream, desc->SizeInBytes,
+                dump_stream_shader, NULL) < 0)
+            log_msg("  (stream has a subobject type sm2fix can't size; some shaders not dumped)");
     }
     return hr;
 }
@@ -497,6 +620,208 @@ static HRESULT STDMETHODCALLTYPE hk_dev_CreateCommandList1(ID3D12Device4 *device
     return hr;
 }
 
+static HRESULT STDMETHODCALLTYPE hk_dev_CreateGraphicsPipelineState(ID3D12Device *device,
+        const D3D12_GRAPHICS_PIPELINE_STATE_DESC *desc, REFIID riid, void **pso)
+{
+    HRESULT (STDMETHODCALLTYPE *orig)(ID3D12Device *, const D3D12_GRAPHICS_PIPELINE_STATE_DESC *, REFIID, void **)
+            = orig_fn(device, DEV_IDX(CreateGraphicsPipelineState));
+    HRESULT hr = orig(device, desc, riid, pso);
+
+    if (FAILED(hr) && desc)
+    {
+        InterlockedIncrement64(&g_pso_failures);
+        log_msg("FAILED CreateGraphicsPipelineState hr=%#lx", (unsigned long)hr);
+        if (desc->VS.BytecodeLength) dump_shader("vs", desc->VS.pShaderBytecode, desc->VS.BytecodeLength);
+        if (desc->HS.BytecodeLength) dump_shader("hs", desc->HS.pShaderBytecode, desc->HS.BytecodeLength);
+        if (desc->DS.BytecodeLength) dump_shader("ds", desc->DS.pShaderBytecode, desc->DS.BytecodeLength);
+        if (desc->GS.BytecodeLength) dump_shader("gs", desc->GS.pShaderBytecode, desc->GS.BytecodeLength);
+        if (desc->PS.BytecodeLength) dump_shader("ps", desc->PS.pShaderBytecode, desc->PS.BytecodeLength);
+    }
+    return hr;
+}
+
+static HRESULT STDMETHODCALLTYPE hk_dev_CreateRootSignature(ID3D12Device *device, UINT node_mask,
+        const void *blob, SIZE_T size, REFIID riid, void **out)
+{
+    HRESULT (STDMETHODCALLTYPE *orig)(ID3D12Device *, UINT, const void *, SIZE_T, REFIID, void **)
+            = orig_fn(device, DEV_IDX(CreateRootSignature));
+    HRESULT hr = orig(device, node_mask, blob, size, riid, out);
+
+    if (FAILED(hr))
+        log_msg("FAILED CreateRootSignature hr=%#lx (%zu bytes)", (unsigned long)hr, (size_t)size);
+    return hr;
+}
+
+/* Logs what the game asks the GPU layer about and what it is told. If M5 and M1-M4
+ * report different answers, the game may pick a different (broken) path. */
+static HRESULT STDMETHODCALLTYPE hk_dev_CheckFeatureSupport(ID3D12Device *device, D3D12_FEATURE feature,
+        void *data, UINT size)
+{
+    static volatile LONG seen[128];
+    HRESULT (STDMETHODCALLTYPE *orig)(ID3D12Device *, D3D12_FEATURE, void *, UINT)
+            = orig_fn(device, DEV_IDX(CheckFeatureSupport));
+    HRESULT hr = orig(device, feature, data, size);
+    char what[64];
+
+    if ((unsigned int)feature < ARRAYSIZE(seen) && InterlockedIncrement(&seen[feature]) <= 4)
+    {
+        snprintf(what, sizeof(what), "feature %d (%u bytes) hr=%#lx", (int)feature, size, (unsigned long)hr);
+        log_hex(what, data, size);
+    }
+    return hr;
+}
+
+static HRESULT STDMETHODCALLTYPE hk_dev_CreateCommandSignature(ID3D12Device *device,
+        const D3D12_COMMAND_SIGNATURE_DESC *desc, ID3D12RootSignature *root, REFIID riid, void **out)
+{
+    static volatile LONG logged;
+    HRESULT (STDMETHODCALLTYPE *orig)(ID3D12Device *, const D3D12_COMMAND_SIGNATURE_DESC *, ID3D12RootSignature *,
+            REFIID, void **) = orig_fn(device, DEV_IDX(CreateCommandSignature));
+    HRESULT hr = orig(device, desc, root, riid, out);
+
+    if (desc && InterlockedIncrement(&logged) <= 64)
+    {
+        char types[128] = "";
+        UINT i;
+
+        for (i = 0; i < desc->NumArgumentDescs && i < 16; i++)
+            snprintf(types + strlen(types), sizeof(types) - strlen(types), "%d ", (int)desc->pArgumentDescs[i].Type);
+        log_msg("CreateCommandSignature stride=%u args=[ %s] hr=%#lx", desc->ByteStride, types, (unsigned long)hr);
+    }
+    return hr;
+}
+
+/* ---------------------------------------------------------------- queue hooks */
+
+#define Q_IDX(m) VT_INDEX(ID3D12CommandQueueVtbl, m)
+
+struct queue_state
+{
+    void *queue;
+    D3D12_COMMAND_LIST_TYPE type;
+    ID3D12Fence *fence;
+    UINT64 value;
+};
+
+static struct queue_state g_queues[64];
+
+static struct queue_state *find_queue(void *queue)
+{
+    unsigned int i;
+
+    for (i = 0; i < ARRAYSIZE(g_queues); i++)
+    {
+        if (g_queues[i].queue == queue)
+            return &g_queues[i];
+    }
+    return NULL;
+}
+
+static void STDMETHODCALLTYPE hk_queue_ExecuteCommandLists(ID3D12CommandQueue *queue, UINT count,
+        ID3D12CommandList *const *lists)
+{
+    void (STDMETHODCALLTYPE *orig)(ID3D12CommandQueue *, UINT, ID3D12CommandList *const *)
+            = orig_fn(queue, Q_IDX(ExecuteCommandLists));
+    HRESULT (STDMETHODCALLTYPE *signal)(ID3D12CommandQueue *, ID3D12Fence *, UINT64)
+            = orig_fn(queue, Q_IDX(Signal));
+    struct queue_state *q;
+    ID3D12Fence *fence = NULL;
+    UINT64 value = 0;
+
+    orig(queue, count, lists);
+
+    AcquireSRWLockExclusive(&g_lock);
+    if ((q = find_queue(queue)))
+    {
+        InterlockedIncrement64(&g_submits[q->type & 3]);
+        if (q->fence)
+        {
+            fence = q->fence;
+            value = ++q->value;
+        }
+    }
+    ReleaseSRWLockExclusive(&g_lock);
+
+    /* MAX mode: don't let the next submission (on any queue) start until this one has
+     * finished on the GPU. Removes every cross-queue and CPU/GPU race, at a big FPS cost.
+     * The timeout keeps us from deadlocking on work that waits for a later CPU signal. */
+    if (g_cfg.mode == SM2_MODE_MAX && fence && signal && SUCCEEDED(signal(queue, fence, value)))
+    {
+        if (ID3D12Fence_GetCompletedValue(fence) < value)
+        {
+            HANDLE event = CreateEventW(NULL, FALSE, FALSE, NULL);
+
+            if (event && SUCCEEDED(ID3D12Fence_SetEventOnCompletion(fence, value, event))
+                    && WaitForSingleObject(event, 250) == WAIT_TIMEOUT)
+            {
+                LONG64 n = InterlockedIncrement64(&g_wait_timeouts);
+
+                if (n == 1 || !(n & (n - 1)))
+                    log_msg("serialize wait timed out (%lld so far)", (long long)n);
+            }
+            if (event)
+                CloseHandle(event);
+        }
+        InterlockedIncrement64(&g_waits);
+    }
+}
+
+static HRESULT STDMETHODCALLTYPE hk_queue_Signal(ID3D12CommandQueue *queue, ID3D12Fence *fence, UINT64 value)
+{
+    HRESULT (STDMETHODCALLTYPE *orig)(ID3D12CommandQueue *, ID3D12Fence *, UINT64) = orig_fn(queue, Q_IDX(Signal));
+
+    InterlockedIncrement64(&g_fence_signals);
+    return orig(queue, fence, value);
+}
+
+static HRESULT STDMETHODCALLTYPE hk_queue_Wait(ID3D12CommandQueue *queue, ID3D12Fence *fence, UINT64 value)
+{
+    HRESULT (STDMETHODCALLTYPE *orig)(ID3D12CommandQueue *, ID3D12Fence *, UINT64) = orig_fn(queue, Q_IDX(Wait));
+
+    InterlockedIncrement64(&g_fence_waits);
+    return orig(queue, fence, value);
+}
+
+static HRESULT STDMETHODCALLTYPE hk_dev_CreateCommandQueue(ID3D12Device *device, const D3D12_COMMAND_QUEUE_DESC *desc,
+        REFIID riid, void **out)
+{
+    static const char *types[] = {"direct", "bundle", "compute", "copy"};
+    HRESULT (STDMETHODCALLTYPE *orig)(ID3D12Device *, const D3D12_COMMAND_QUEUE_DESC *, REFIID, void **)
+            = orig_fn(device, DEV_IDX(CreateCommandQueue));
+    HRESULT hr = orig(device, desc, riid, out);
+    ID3D12Fence *fence = NULL;
+    unsigned int i;
+
+    if (FAILED(hr) || !desc || !out || !*out)
+        return hr;
+
+    log_msg("CreateCommandQueue type=%s priority=%d flags=%#x -> %p",
+            (unsigned int)desc->Type < 4 ? types[desc->Type] : "?", desc->Priority, desc->Flags, *out);
+    hook_slot(*out, Q_IDX(ExecuteCommandLists), (void *)hk_queue_ExecuteCommandLists, "Queue::ExecuteCommandLists");
+    hook_slot(*out, Q_IDX(Signal), (void *)hk_queue_Signal, "Queue::Signal");
+    hook_slot(*out, Q_IDX(Wait), (void *)hk_queue_Wait, "Queue::Wait");
+
+    if (g_cfg.mode == SM2_MODE_MAX)
+        device->lpVtbl->CreateFence(device, 0, D3D12_FENCE_FLAG_NONE, &IID_ID3D12Fence, (void **)&fence);
+
+    AcquireSRWLockExclusive(&g_lock);
+    for (i = 0; i < ARRAYSIZE(g_queues); i++)
+    {
+        if (!g_queues[i].queue)
+        {
+            g_queues[i].queue = *out;
+            g_queues[i].type = desc->Type;
+            g_queues[i].fence = fence;
+            fence = NULL;
+            break;
+        }
+    }
+    ReleaseSRWLockExclusive(&g_lock);
+    if (fence)
+        ID3D12Fence_Release(fence);
+    return hr;
+}
+
 static void hook_device_object(void *obj)
 {
     static const struct
@@ -522,6 +847,13 @@ static void hook_device_object(void *obj)
         hook_slot(dev, DEV_IDX(CreateComputePipelineState), (void *)hk_dev_CreateComputePipelineState,
                 "Device::CreateComputePipelineState");
         hook_slot(dev, DEV_IDX(CreateCommandList), (void *)hk_dev_CreateCommandList, "Device::CreateCommandList");
+        hook_slot(dev, DEV_IDX(CreateGraphicsPipelineState), (void *)hk_dev_CreateGraphicsPipelineState,
+                "Device::CreateGraphicsPipelineState");
+        hook_slot(dev, DEV_IDX(CreateRootSignature), (void *)hk_dev_CreateRootSignature, "Device::CreateRootSignature");
+        hook_slot(dev, DEV_IDX(CheckFeatureSupport), (void *)hk_dev_CheckFeatureSupport, "Device::CheckFeatureSupport");
+        hook_slot(dev, DEV_IDX(CreateCommandSignature), (void *)hk_dev_CreateCommandSignature,
+                "Device::CreateCommandSignature");
+        hook_slot(dev, DEV_IDX(CreateCommandQueue), (void *)hk_dev_CreateCommandQueue, "Device::CreateCommandQueue");
         if (iids[i].version >= 2)
             hook_slot(dev, DEV_IDX(CreatePipelineState), (void *)hk_dev_CreatePipelineState,
                     "Device::CreatePipelineState");
@@ -545,7 +877,7 @@ static HRESULT (WINAPI *p_D3D12GetInterface)(REFCLSID, REFIID, void **);
 
 static BOOL CALLBACK init_once(INIT_ONCE *once, void *param, void **context)
 {
-    static const char *mode_names[] = {"off", "hash", "all"};
+    static const char *mode_names[] = {"off", "hash", "all", "max"};
     WCHAR path[MAX_PATH];
     unsigned int i;
 
@@ -680,6 +1012,12 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, void *reserved)
     {
         fprintf(g_log, "exit: %lld forced barriers, %lld target PSOs\n",
                 (long long)g_barriers, (long long)g_target_psos);
+        fprintf(g_log, "exit: dispatches=%lld execute_indirect=%lld pso_failures=%lld\n",
+                (long long)g_dispatches, (long long)g_indirect, (long long)g_pso_failures);
+        fprintf(g_log, "exit: submits direct=%lld compute=%lld copy=%lld; fence signals=%lld waits=%lld;"
+                " serialize waits=%lld timeouts=%lld\n",
+                (long long)g_submits[0], (long long)g_submits[2], (long long)g_submits[3],
+                (long long)g_fence_signals, (long long)g_fence_waits, (long long)g_waits, (long long)g_wait_timeouts);
         fclose(g_log);
         g_log = NULL;
     }

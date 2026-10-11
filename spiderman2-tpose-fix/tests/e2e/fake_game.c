@@ -23,6 +23,7 @@ int main(int argc, char **argv)
 {
     HRESULT (WINAPI *create_device)(IUnknown *, D3D_FEATURE_LEVEL, REFIID, void **);
     void (*get_counts)(LONG *, LONG *, LONG *);
+    void (*mock_get_queue)(LONG *, LONG *, LONG *);
     const char *mode = argc > 1 ? argv[1] : "hash";
     ID3D12PipelineState *pso_target, *pso_other, *pso_stream;
     ID3D12GraphicsCommandList *list, *bundle;
@@ -85,6 +86,7 @@ int main(int argc, char **argv)
     ID3D12GraphicsCommandList_Dispatch(list, 1, 1, 1);           /* nothing bound   */
     ID3D12GraphicsCommandList_SetPipelineState(list, pso_stream);
     ID3D12GraphicsCommandList_Dispatch(list, 1, 1, 1);           /* target via stream PSO */
+    ID3D12GraphicsCommandList_ExecuteIndirect(list, NULL, 1, NULL, 0, NULL, 0); /* indirect */
     ID3D12GraphicsCommandList_SetPipelineState(bundle, pso_target);
     ID3D12GraphicsCommandList_Dispatch(bundle, 1, 1, 1);         /* bundle: never   */
 
@@ -94,10 +96,48 @@ int main(int argc, char **argv)
     CHECK(other == 0);
     if (!strcmp(mode, "hash"))
         CHECK(uav == 3);
-    else if (!strcmp(mode, "all"))
-        CHECK(uav == 5);
+    else if (!strcmp(mode, "all") || !strcmp(mode, "max"))
+        CHECK(uav == 6); /* 5 dispatches + 1 ExecuteIndirect; never the bundle */
     else
         CHECK(uav == 0);
+
+    /* Diagnostics: failing graphics PSOs get logged + dumped, features logged, queues hooked. */
+    {
+        static const char vs[] = "vertex-shader-that-fails", ps[] = "pixel-shader-that-fails";
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC gdesc;
+        D3D12_FEATURE_DATA_D3D12_OPTIONS opts;
+        D3D12_COMMAND_QUEUE_DESC qdesc;
+        ID3D12CommandQueue *queue = NULL;
+        ID3D12PipelineState *gpso = NULL;
+        LONG signals, executes, indirect;
+        char dump[128];
+        int i;
+
+        memset(&gdesc, 0, sizeof(gdesc));
+        gdesc.VS.pShaderBytecode = vs;
+        gdesc.VS.BytecodeLength = sizeof(vs);
+        gdesc.PS.pShaderBytecode = ps;
+        gdesc.PS.BytecodeLength = sizeof(ps);
+        CHECK(FAILED(ID3D12Device4_CreateGraphicsPipelineState(device, &gdesc, &IID_ID3D12PipelineState, (void **)&gpso)));
+        snprintf(dump, sizeof(dump), "sm2fix-dumps\\%016llx_vs.dxil",
+                (unsigned long long)sm2_shader_hash(vs, sizeof(vs)));
+        CHECK(GetFileAttributesA(dump) != INVALID_FILE_ATTRIBUTES);
+
+        CHECK(SUCCEEDED(ID3D12Device4_CheckFeatureSupport(device, D3D12_FEATURE_D3D12_OPTIONS, &opts, sizeof(opts))));
+
+        memset(&qdesc, 0, sizeof(qdesc));
+        qdesc.Type = D3D12_COMMAND_LIST_TYPE_COMPUTE;
+        CHECK(SUCCEEDED(ID3D12Device4_CreateCommandQueue(device, &qdesc, &IID_ID3D12CommandQueue, (void **)&queue)));
+        for (i = 0; i < 3; i++)
+            ID3D12CommandQueue_ExecuteCommandLists(queue, 1, (ID3D12CommandList *const *)&list);
+        mock_get_queue = (void *)GetProcAddress(mock, "mock_get_queue_counts");
+        mock_get_queue(&signals, &executes, &indirect);
+        printf("queue: executes=%ld shim_signals=%ld indirect=%ld\n", executes, signals, indirect);
+        CHECK(executes == 3);
+        CHECK(indirect == 1);
+        /* MAX mode signals its own fence after every submission and waits for it. */
+        CHECK(signals == (!strcmp(mode, "max") ? 3 : 0));
+    }
 
     ID3D12GraphicsCommandList_Release(list);
     ID3D12GraphicsCommandList_Release(bundle);

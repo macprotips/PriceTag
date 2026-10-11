@@ -93,6 +93,85 @@ enum sm2_stream_result sm2_stream_find_cs(const void *stream, size_t size,
     return found ? SM2_STREAM_COMPUTE : SM2_STREAM_NO_CS;
 }
 
+/* Inner payload size/alignment of every subobject type (64-bit), for walking full
+ * graphics streams. Sizes of the types mingw's d3d12.h knows are static-asserted
+ * in sm2fix.c; the newer ones (26-28) are from the Agility SDK headers. */
+static int inner_layout(uint32_t type, size_t *size, size_t *align)
+{
+    static const struct { uint16_t size, align; } table[] =
+    {
+        [0]  = {8, 8},    /* root signature pointer */
+        [1]  = {16, 8}, [2] = {16, 8}, [3] = {16, 8}, [4] = {16, 8}, [5] = {16, 8}, [6] = {16, 8},
+        [7]  = {32, 8},   /* D3D12_STREAM_OUTPUT_DESC */
+        [8]  = {328, 4},  /* D3D12_BLEND_DESC */
+        [9]  = {4, 4},    /* sample mask */
+        [10] = {44, 4},   /* D3D12_RASTERIZER_DESC */
+        [11] = {52, 4},   /* D3D12_DEPTH_STENCIL_DESC */
+        [12] = {16, 8},   /* D3D12_INPUT_LAYOUT_DESC */
+        [13] = {4, 4}, [14] = {4, 4},
+        [15] = {36, 4},   /* D3D12_RT_FORMAT_ARRAY */
+        [16] = {4, 4},
+        [17] = {8, 4},    /* DXGI_SAMPLE_DESC */
+        [18] = {4, 4},
+        [19] = {16, 8},   /* D3D12_CACHED_PIPELINE_STATE */
+        [20] = {4, 4},
+        [21] = {56, 4},   /* D3D12_DEPTH_STENCIL_DESC1 */
+        [22] = {24, 8},   /* D3D12_VIEW_INSTANCING_DESC */
+        [24] = {16, 8}, [25] = {16, 8},  /* AS, MS */
+        [26] = {60, 4},   /* D3D12_DEPTH_STENCIL_DESC2 */
+        [27] = {44, 4},   /* D3D12_RASTERIZER_DESC1 */
+        [28] = {40, 4},   /* D3D12_RASTERIZER_DESC2 */
+    };
+
+    if (type >= sizeof(table) / sizeof(table[0]) || !table[type].size)
+        return 0;
+    *size = table[type].size;
+    *align = table[type].align;
+    return 1;
+}
+
+size_t sm2_stream_subobject_size(uint32_t type)
+{
+    size_t size, align, offset;
+
+    if (!inner_layout(type, &size, &align))
+        return 0;
+    offset = (4 + align - 1) & ~(align - 1);
+    return (offset + size + 7) & ~(size_t)7;
+}
+
+int sm2_stream_for_each_shader(const void *stream, size_t size,
+        void (*fn)(void *ctx, uint32_t type, const void *code, size_t len), void *ctx)
+{
+    const uint8_t *base = stream;
+    size_t offset = 0;
+    int count = 0;
+
+    if (!stream)
+        return -1;
+    while (offset + sizeof(uint32_t) <= size)
+    {
+        uint32_t type;
+        size_t sub_size;
+
+        memcpy(&type, base + offset, sizeof(type));
+        if (!(sub_size = sm2_stream_subobject_size(type)) || size - offset < sub_size)
+            return -1;
+        if ((type >= 1 && type <= 6) || type == 24 || type == 25)
+        {
+            const void *code;
+            uint64_t length;
+
+            memcpy(&code, base + offset + 8, sizeof(code));
+            memcpy(&length, base + offset + 16, sizeof(length));
+            fn(ctx, type, code, (size_t)length);
+        }
+        offset += sub_size;
+        count++;
+    }
+    return count;
+}
+
 void sm2_config_defaults(struct sm2_config *cfg)
 {
     memset(cfg, 0, sizeof(*cfg));
@@ -142,6 +221,8 @@ int sm2_config_set(struct sm2_config *cfg, const char *key, const char *value)
             cfg->mode = SM2_MODE_OFF;
         else if (key_equals(value, "all"))
             cfg->mode = SM2_MODE_ALL;
+        else if (key_equals(value, "max"))
+            cfg->mode = SM2_MODE_MAX;
         else
             cfg->mode = SM2_MODE_HASH;
         return 0;

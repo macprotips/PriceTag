@@ -28,11 +28,19 @@ enum sm2_stream_result
 enum sm2_stream_result sm2_stream_find_cs(const void *stream, size_t size,
         const void **cs_code, size_t *cs_size);
 
+/* Byte size of one stream subobject of `type` (header + padding + payload), 0 if unknown. */
+size_t sm2_stream_subobject_size(uint32_t type);
+/* Calls fn for every shader subobject (VS, PS, DS, HS, GS, CS, AS, MS). Returns the number
+ * of subobjects walked, or -1 if the stream has a type we can't size. */
+int sm2_stream_for_each_shader(const void *stream, size_t size,
+        void (*fn)(void *ctx, uint32_t type, const void *code, size_t len), void *ctx);
+
 enum sm2_mode
 {
     SM2_MODE_OFF = 0,   /* pass-through, only logs */
     SM2_MODE_HASH,      /* barrier after dispatches of the listed shaders (default) */
     SM2_MODE_ALL,       /* barrier after every compute dispatch (diagnostic) */
+    SM2_MODE_MAX,       /* ALL + wait for the GPU after every queue submission (diagnostic, slow) */
 };
 
 #define SM2_MAX_HASHES 32

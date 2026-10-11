@@ -65,6 +65,7 @@ wine_reg() {
 
 if [[ $UNINSTALL -eq 1 ]]; then
     rm -f "$GAME_DIR/d3d12.dll" "$GAME_DIR/sm2fix.ini" "$GAME_DIR/sm2fix.log"
+    rm -rf "$GAME_DIR/sm2fix-dumps"
     [[ -f "$GAME_DIR/d3d12.dll.sm2fix-backup" ]] && mv "$GAME_DIR/d3d12.dll.sm2fix-backup" "$GAME_DIR/d3d12.dll"
     wine_reg delete "$REG_KEY" /v d3d12 /f >/dev/null 2>&1 || true
     echo "Removed sm2fix."

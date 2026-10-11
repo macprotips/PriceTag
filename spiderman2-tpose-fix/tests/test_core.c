@@ -77,6 +77,61 @@ static void test_stream_graphics_and_errors(void)
     CHECK(sm2_stream_find_cs(NULL, 0, &code, &size) == SM2_STREAM_MALFORMED);
 }
 
+static int walked;
+static const void *walked_code[4];
+static uint32_t walked_type[4];
+
+static void on_shader(void *ctx, uint32_t type, const void *code, size_t len)
+{
+    (void)ctx;
+    (void)len;
+    if (walked < 4)
+    {
+        walked_type[walked] = type;
+        walked_code[walked] = code;
+    }
+    walked++;
+}
+
+static void test_stream_walk_graphics(void)
+{
+    /* root sig, VS, PS, blend (332 -> 336), rasterizer (48), RT formats (40), sample desc (16) */
+    uint8_t stream[16 + 24 + 24 + 336 + 48 + 40 + 16];
+    static const char vs[] = "vs", ps[] = "ps";
+    struct sub_bytecode sb;
+    uint32_t type;
+    size_t off = 0;
+
+    CHECK(sm2_stream_subobject_size(0) == 16);
+    CHECK(sm2_stream_subobject_size(6) == 24);
+    CHECK(sm2_stream_subobject_size(8) == 336);
+    CHECK(sm2_stream_subobject_size(10) == 48);
+    CHECK(sm2_stream_subobject_size(15) == 40);
+    CHECK(sm2_stream_subobject_size(17) == 16);
+    CHECK(sm2_stream_subobject_size(22) == 32);
+    CHECK(sm2_stream_subobject_size(23) == 0);
+    CHECK(sm2_stream_subobject_size(99) == 0);
+
+    memset(stream, 0, sizeof(stream));
+    type = 0; memcpy(stream + off, &type, 4); off += 16;
+    sb.type = 1; sb.pad = 0; sb.code = vs; sb.size = sizeof(vs); memcpy(stream + off, &sb, 24); off += 24;
+    sb.type = 2; sb.code = ps; sb.size = sizeof(ps); memcpy(stream + off, &sb, 24); off += 24;
+    type = 8; memcpy(stream + off, &type, 4); off += 336;
+    type = 10; memcpy(stream + off, &type, 4); off += 48;
+    type = 15; memcpy(stream + off, &type, 4); off += 40;
+    type = 17; memcpy(stream + off, &type, 4); off += 16;
+    CHECK(off == sizeof(stream));
+
+    walked = 0;
+    CHECK(sm2_stream_for_each_shader(stream, sizeof(stream), on_shader, NULL) == 7);
+    CHECK(walked == 2);
+    CHECK(walked_type[0] == 1 && walked_code[0] == vs);
+    CHECK(walked_type[1] == 2 && walked_code[1] == ps);
+
+    type = 99; memcpy(stream + 16, &type, 4);
+    CHECK(sm2_stream_for_each_shader(stream, sizeof(stream), on_shader, NULL) == -1);
+}
+
 static void test_config(void)
 {
     struct sm2_config cfg;
@@ -102,6 +157,7 @@ static void test_config(void)
     CHECK(strcmp(cfg.real_d3d12, "C:\\\\x\\\\d3d12.dll") == 0);
 
     CHECK(sm2_config_set(&cfg, "mode", "off") == 0 && cfg.mode == SM2_MODE_OFF);
+    CHECK(sm2_config_set(&cfg, "mode", "MAX") == 0 && cfg.mode == SM2_MODE_MAX);
     CHECK(sm2_config_set(&cfg, "mode", "hash") == 0 && cfg.mode == SM2_MODE_HASH);
     CHECK(sm2_config_set(&cfg, "nope", "1") == -1);
 }
@@ -111,6 +167,7 @@ int main(void)
     test_hash();
     test_stream_compute();
     test_stream_graphics_and_errors();
+    test_stream_walk_graphics();
     test_config();
     if (failures)
     {

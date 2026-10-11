@@ -16,9 +16,11 @@ export WINEPREFIX="${WINEPREFIX:-$PWD/build/wineprefix}" WINEDEBUG=-all
 export WINEDLLOVERRIDES="d3d12=n,b"
 cd "$OUT"
 status=0
-for mode in hash all off; do
+for mode in hash all max off; do
+    rm -rf sm2fix-dumps
     wine fake_game.exe "$mode" || status=1
+    cp sm2fix.log "sm2fix-$mode.log"
 done
-echo "--- sm2fix.log (last run) ---"
-cat sm2fix.log
+echo "--- sm2fix.log (max run) ---"
+cat sm2fix-max.log
 exit $status

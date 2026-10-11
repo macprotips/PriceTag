@@ -163,104 +163,120 @@ current_mode() {
     fi
 }
 
+mode_label() {
+    case "$1" in
+        max) echo "Test #3 deep test" ;;
+        all) echo "Test #1 barrier fix" ;;
+        hash) echo "barrier fix, fast version" ;;
+        off) echo "log only" ;;
+        *) echo "$1" ;;
+    esac
+}
+
+ds_off() {
+    local f
+    for f in dstorage.dll dstoragecore.dll; do
+        [ -f "$GAME_DIR/$f" ] && mv "$GAME_DIR/$f" "$GAME_DIR/$f.sm2fix-off"
+    done
+}
+ds_on() {
+    local f
+    for f in dstorage.dll dstoragecore.dll; do
+        [ -f "$GAME_DIR/$f.sm2fix-off" ] && mv "$GAME_DIR/$f.sm2fix-off" "$GAME_DIR/$f"
+    done
+}
+
 say ""
 say "Found it: $GAME_DIR"
 [ "$KIND" != Other ] && say "Bottle:   $KIND \"$NAME\""
 DS_OFF=0
-[ -f "$GAME_DIR/dstorage.dll.sm2fix-off" ] || [ -f "$GAME_DIR/dstoragecore.dll.sm2fix-off" ] && DS_OFF=1
+{ [ -f "$GAME_DIR/dstorage.dll.sm2fix-off" ] || [ -f "$GAME_DIR/dstoragecore.dll.sm2fix-off" ]; } && DS_OFF=1
 MODE_NOW="$(current_mode)"
 if [ -n "$MODE_NOW" ]; then
-    say "The fix is installed (mode: $MODE_NOW)."
+    say "Currently installed: $(mode_label "$MODE_NOW")"
 else
-    say "The fix is not installed yet."
+    say "Currently installed: nothing"
 fi
 [ $DS_OFF -eq 1 ] && say "DirectStorage is turned OFF (test #2)."
 
 say ""
 say "What do you want to do?"
-say "  1) Test #1: barrier fix (start here)"
-say "  2) It worked! Switch to the faster version"
-say "  3) Faster version brought the T-pose back: go back to the safe version"
-say "  4) Save my log to the Desktop (to send for help)"
-say "  5) Remove the barrier fix"
-say "  6) Test #2: turn OFF DirectStorage (also removes test #1)"
-say "  7) Turn DirectStorage back ON (undo test #2)"
-say "  8) Quit"
+say "  1) Test #3: deep test  <-- do this one"
+say "  2) Save my results to the Desktop (to send for help)"
+say "  3) Remove everything (back to normal)"
+say ""
+say "  Older tests:"
+say "  4) Test #1: barrier fix"
+say "  5) Test #2: DirectStorage off"
+say "  6) A test fixed it! Switch to the faster version"
+say "  7) Quit"
 read -r -p "Type a number and press Return: " action
 say ""
 
 case "$action" in
-    1|3)
-        bash "$INSTALLER" "${ARGS[@]}" --mode all || pause_exit 1
+    1)
+        ds_on
+        rm -rf "$GAME_DIR/sm2fix-dumps"
+        bash "$INSTALLER" "${ARGS[@]}" --mode max || pause_exit 1
         say ""
         line
-        say "Done! Now:"
-        say "  1. Start Spider-Man 2 the usual way."
-        say "  2. Go somewhere characters used to T-pose."
-        say "  3. Fixed? Run this again and pick 2 for better performance."
-        say "     Still broken? Run this again and pick 4, then send me the file."
+        say "Deep test installed. The game will run SLOWER than usual. That's"
+        say "expected: it makes the GPU finish each job before starting the next."
+        say "  1. Start Spider-Man 2 and play for 2-3 minutes where characters"
+        say "     T-pose (a cutscene is perfect). Note whether they still T-pose."
+        say "  2. Quit the game normally."
+        say "  3. Run this again and pick 2. Send me what it saves."
         line
         ;;
     2)
-        bash "$INSTALLER" "${ARGS[@]}" --mode hash || pause_exit 1
-        say ""
-        say "Switched to the faster version. If the T-pose comes back, run this"
-        say "again and pick 3."
-        ;;
-    4)
         if [ -f "$GAME_DIR/sm2fix.log" ]; then
-            OUT="$HOME/Desktop/sm2fix-log-$(date +%Y%m%d-%H%M).txt"
+            STAMP="$(date +%Y%m%d-%H%M)"
+            OUT="$HOME/Desktop/sm2fix-log-$STAMP.txt"
             {
                 echo "bottle: $KIND / $NAME"
                 echo "mode: $(current_mode)"
                 echo "mac: $(sysctl -n machdep.cpu.brand_string 2>/dev/null) / macOS $(sw_vers -productVersion 2>/dev/null)"
-                echo "game folder has dstorage: $(ls "$GAME_DIR" | grep -ci dstorage)"
+                echo "crossover: $(defaults read /Applications/CrossOver.app/Contents/Info CFBundleShortVersionString 2>/dev/null)"
+                echo "game folder has dstorage: $(ls "$GAME_DIR" | grep -c '^dstorage.*\.dll$')"
                 echo "----"
                 cat "$GAME_DIR/sm2fix.log"
             } > "$OUT"
             say "Saved: $OUT"
+            if [ -d "$GAME_DIR/sm2fix-dumps" ] && [ -n "$(ls "$GAME_DIR/sm2fix-dumps" 2>/dev/null)" ]; then
+                ZIP="$HOME/Desktop/sm2fix-shaders-$STAMP.zip"
+                (cd "$GAME_DIR" && zip -qr "$ZIP" sm2fix-dumps)
+                say "Saved: $ZIP"
+                say "Send me BOTH files."
+            fi
             open -R "$OUT" 2>/dev/null
         else
-            say "No log yet. Install the fix (option 1) and play the game first."
-            say "If you already did, the game didn't load the fix. Send me a"
+            say "No results yet. Pick 1, play the game, quit it, then pick 2."
+            say "If you already did, the game didn't load the test. Send me a"
             say "screenshot of this window."
         fi
         ;;
-    5)
+    3)
         bash "$INSTALLER" "${ARGS[@]}" --uninstall
+        ds_on
+        say "DirectStorage is ON. Everything is back to normal."
+        ;;
+    4)
+        ds_on
+        bash "$INSTALLER" "${ARGS[@]}" --mode all || pause_exit 1
+        say ""
+        say "Test #1 installed. Play, quit, then run this again and pick 2."
+        ;;
+    5)
+        [ -n "$MODE_NOW" ] && bash "$INSTALLER" "${ARGS[@]}" --uninstall >/dev/null 2>&1
+        ds_off
+        say "Test #2: DirectStorage is OFF (other tests removed)."
+        say "Play, then tell me if characters still T-pose."
+        say "Pick 3 any time to undo."
         ;;
     6)
-        if [ -n "$MODE_NOW" ]; then
-            bash "$INSTALLER" "${ARGS[@]}" --uninstall >/dev/null 2>&1
-            say "Removed test #1 so this test is clean."
-        fi
-        n=0
-        for f in dstorage.dll dstoragecore.dll; do
-            if [ -f "$GAME_DIR/$f" ]; then
-                mv "$GAME_DIR/$f" "$GAME_DIR/$f.sm2fix-off" && n=$((n + 1))
-            fi
-        done
-        if [ $n -gt 0 ] || [ $DS_OFF -eq 1 ]; then
-            say ""
-            line
-            say "DirectStorage is OFF. The game now unpacks its data on the CPU."
-            say "Loading may be a little slower; that's expected."
-            say "  1. Start Spider-Man 2 and go where characters used to T-pose."
-            say "  2. Tell me: fixed or not?"
-            say "  3. Either way you can undo this any time with option 7."
-            line
-        else
-            say "No DirectStorage files found in the game folder, nothing to turn off."
-        fi
-        ;;
-    7)
-        n=0
-        for f in dstorage.dll dstoragecore.dll; do
-            if [ -f "$GAME_DIR/$f.sm2fix-off" ]; then
-                mv "$GAME_DIR/$f.sm2fix-off" "$GAME_DIR/$f" && n=$((n + 1))
-            fi
-        done
-        if [ $n -gt 0 ]; then say "DirectStorage is back ON."; else say "DirectStorage was already ON."; fi
+        bash "$INSTALLER" "${ARGS[@]}" --mode hash || pause_exit 1
+        say ""
+        say "Switched to the faster version."
         ;;
     *)
         say "Nothing changed."

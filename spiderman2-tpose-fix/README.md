@@ -21,7 +21,24 @@ That's it. To undo everything, run the file and pick **5**.
 | Date | Mac | Test | Result |
 | --- | --- | --- | --- |
 | 2026-10-10 | M3 Max, macOS 27.0.1, CrossOver, game on external drive | #1 barrier fix, `mode = all` (361,019 barriers injected) | **Still T-poses.** A missing barrier inside a command list is ruled out. |
-| next | | #2 DirectStorage off (menu option 6) | pending |
+| 2026-10-10 | same | #2 DirectStorage off | **Still T-poses.** DirectStorage GPU decompression is ruled out. |
+| next | | #3 deep test (`mode = max`): wait for the GPU after every submission, plus logging of failed shaders and feature queries | pending |
+
+**Current thinking.** Rosetta translates CPU code the same way on every Apple chip,
+M5 included, so a Rosetta bug would hit M5 too. What changes on M5 is the GPU: a new
+Metal family (Apple10). So the remaining suspects are:
+
+1. **A race between GPU queues, or between the CPU and the GPU.** Test #1 only
+   covered races inside one command list. Test #3's `max` mode forces each
+   submission to finish before the next one starts. If the T-pose goes away, it's
+   a sync bug, and we can narrow it to the specific queue.
+2. **A shader that D3DMetal can't build on Apple7–9 GPUs** (for example skinning
+   that needs a feature only Apple10 has). The game might then skip skinning and
+   draw the bind pose. Test #3 logs every failed pipeline and saves its shader
+   bytecode to `sm2fix-dumps/` so it can be disassembled.
+3. **A different code path chosen from feature queries.** The log records every
+   `CheckFeatureSupport` answer. If M5 reports a feature that M1–M4 don't, we can
+   try spoofing the answer.
 
 ---
 
@@ -172,7 +189,7 @@ there.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `mode` | `hash` | `hash`: barrier only after the listed shaders. `all`: barrier after every compute dispatch. `off`: log only. |
+| `mode` | `hash` | `hash`: barrier only after the listed shaders. `all`: barrier after every compute dispatch, including `ExecuteIndirect`. `max`: `all`, plus wait for the GPU after every queue submission (slow, diagnostic only). `off`: log only. |
 | `hashes` | `324071d329f05ccc` | Comma-separated hex shader hashes. Uses the vkd3d-proton hash, so its quirk-table entries work as-is. |
 | `log_shaders` | `0` | `1` writes every compute shader hash to `sm2fix.log`. |
 | `real_d3d12` | *(empty)* | Path to the real `d3d12.dll`. Empty means `system32\d3d12.dll`. |
@@ -195,8 +212,11 @@ Environment variables `SM2FIX_MODE`, `SM2FIX_HASHES`, `SM2FIX_LOG_SHADERS` and
 * It tracks which pipeline is bound on each command list. After a `Dispatch`
   with a target pipeline, it records the UAV barrier. It never records one in
   bundles, because D3D12 forbids barriers there.
-* Known gaps: dispatches through `ExecuteIndirect`, and devices created through
-  `ID3D12DeviceFactory`. The log warns if the game uses the factory.
+* Diagnostics, always on: failed pipeline and root-signature creation (failing
+  shaders are dumped to `sm2fix-dumps/`), `CheckFeatureSupport` answers, command
+  signatures, queue types, and counters at exit.
+* Known gap: devices created through `ID3D12DeviceFactory`. The log warns if the
+  game uses the factory.
 
 ## Development
 
