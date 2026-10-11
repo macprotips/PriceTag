@@ -20,6 +20,9 @@ for mode in hash all max off; do
     rm -rf sm2fix-dumps
     wine fake_game.exe "$mode" || status=1
     cp sm2fix.log "sm2fix-$mode.log"
+    if [[ $mode != off ]] && ! grep -q "skin launcher (first calls): calls=1 with-requests=1 blocked-by-flag=1 .*+30(requests)=41 .*jobsys flag(+24)=7" sm2fix.log; then
+        echo "FAIL: skin probe ($mode)"; grep -i "skin" sm2fix.log; status=1
+    fi
     if [[ $mode != all && $mode != max ]] && ! grep -q "timestamp x3 .*t0=1000 deltas(us): 600.0 1000.0" sm2fix.log; then
         echo "FAIL: query tracing ($mode)"; grep -i "quer\|timestamp" sm2fix.log; status=1
     fi

@@ -29,7 +29,8 @@ for variant in no-crossover crossover; do
     out() { grep -q "$1" "$TMP/out"; }
 
     echo "== $variant"
-    run 1;  check "1 test#11 fake timestamps"      eval 'ini fake_timestamps 1 && ini trace_queries 1 && [ -f "$G/d3d12.dll" ]'
+    run 1;  check "1 test#12 skin probe"           eval 'ini probe_skin 1 && ini profile 1 && [ -f "$G/d3d12.dll" ]'
+    run 16; check "16 test#11 fake timestamps"     eval 'ini fake_timestamps 1 && ini probe_skin 0'
     run 15; check "15 test#10 tracer only"         eval 'ini trace_queries 1 && ini fake_timestamps 0'
     run 6;  check "6 test#1 barrier fix"           eval 'ini mode all'
     run 5;  check "5 test#3 deep test"             eval 'ini mode max'

@@ -164,6 +164,10 @@ current_mode() {
 }
 
 mode_label() {
+    if grep -q '^probe_skin = 1' "$GAME_DIR/sm2fix.ini" 2>/dev/null; then
+        echo "Test #12 skinning probe"
+        return
+    fi
     if grep -q '^fake_timestamps = 1' "$GAME_DIR/sm2fix.ini" 2>/dev/null; then
         echo "Test #11 real GPU clock (timestamp fix)"
         return
@@ -229,7 +233,7 @@ fi
 
 say ""
 say "What do you want to do?"
-say "  1) Test #11: real GPU clock (timestamp fix)  <-- do this one"
+say "  1) Test #12: skinning probe (looks inside the game)  <-- do this one"
 say "  2) Test #9: Rosetta instruction check (done: Rosetta is fine)"
 say "  3) Save my results to the Desktop (to send for help)"
 say "  4) Remove everything (back to normal)"
@@ -245,13 +249,15 @@ say "  12) Test #5: sampler fix"
 say "  13) Test #7: game sees 8 CPU cores"
 say "  14) Test #8: slow loading"
 say "  15) Test #10: GPU query tracer"
+say "  16) Test #11: real GPU clock"
 say "  10) Quit"
 read -r -p "Type a number and press Return: " action
 say ""
 
 # Map the new menu numbers onto the handlers below.
 case "$action" in
-    1) action=t11 ;;
+    1) action=t12 ;;
+    16) action=t11 ;;
     15) action=t10 ;;
     2) action=t9 ;;
     14) action=t8 ;;
@@ -269,6 +275,20 @@ case "$action" in
 esac
 
 case "$action" in
+    t12)
+        ds_on
+        rm -rf "$GAME_DIR/sm2fix-dumps"
+        bash "$INSTALLER" "${ARGS[@]}" --mode off --profile --probe-skin || pause_exit 1
+        say ""
+        line
+        say "Test #12 installed. It watches the game's own code that decides whether"
+        say "to animate characters each frame, and logs why it says no."
+        say "  1. Start the game, load your save, play ~2 minutes near people."
+        say "     Switch suits once."
+        say "  2. Quit from the in-game menu."
+        say "  3. Run this again, pick 3, and send me the log."
+        line
+        ;;
     t11)
         ds_on
         rm -rf "$GAME_DIR/sm2fix-dumps"

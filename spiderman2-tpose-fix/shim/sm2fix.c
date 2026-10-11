@@ -104,6 +104,9 @@ static void load_config(void)
         {"SM2FIX_PSO_DELAY_MS", "pso_delay_ms"},
         {"SM2FIX_TRACE_QUERIES", "trace_queries"},
         {"SM2FIX_FAKE_TIMESTAMPS", "fake_timestamps"},
+        {"SM2FIX_PROBE_SKIN", "probe_skin"},
+        {"SM2FIX_PROBE_SKIN_RVA", "probe_skin_rva"},
+        {"SM2FIX_PROBE_JOBSYS_RVA", "probe_jobsys_rva"},
     };
     WCHAR path[MAX_PATH];
     char value[1024];
@@ -1646,6 +1649,101 @@ HRESULT WINAPI sm2_D3D12GetInterface(REFCLSID clsid, REFIID riid, void **out)
     return p_D3D12GetInterface ? p_D3D12GetInterface(clsid, riid, out) : E_NOINTERFACE;
 }
 
+/* ------------------------------------------------------------ skin probe */
+
+/* Static analysis of Spider-Man2.exe (build with launcher bytes below) found the
+ * per-frame CPU skin-job launcher at RVA 0x2b42560 (called once per frame with the
+ * skinning manager, a global at RVA 0xbf60300). It launches skin jobs only if
+ *   - the job-system flag at RVA 0xc2ca194 is 0, and
+ *   - the request count at manager+0x30 is non-zero.
+ * This probe redirects the launcher's first 15 bytes (three register saves) to log
+ * those values, then runs the original code. It only patches if the bytes match. */
+#define SKIN_MANAGER_RVA  0xbf60300
+static const uint8_t skin_launcher_bytes[15] = {
+    0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18,
+};
+
+static void (*g_skin_trampoline)(void *, void *, void *, void *);
+static volatile LONG64 g_skin_calls, g_skin_with_requests, g_skin_flag_blocked;
+static volatile LONG g_skin_last_tick, g_skin_logged;
+static uint8_t *g_game_base;
+
+static void log_skin_state(const uint8_t *mgr, const char *why)
+{
+    const uint32_t *m = (const uint32_t *)mgr;
+    const uint32_t *js = (const uint32_t *)(g_game_base + g_cfg.probe_jobsys_rva);
+
+    if (!readable(mgr, 0x80))
+        return;
+    if (!readable(js, 0x40))
+        js = (const uint32_t *)"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
+    log_msg("skin launcher (%s): calls=%lld with-requests=%lld blocked-by-flag=%lld | mgr=%p +08=%u +0c=%u +10=%u"
+            " +14=%u +30(requests)=%d +38=%u +3c=%u +48=%u +50=%u +54=%u +78(frames)=%u | jobsys flag(+24)=%u"
+            " jobsys: %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x",
+            why, (long long)g_skin_calls, (long long)g_skin_with_requests, (long long)g_skin_flag_blocked,
+            (const void *)mgr, m[2], m[3], m[4], m[5], (int)m[12], m[14], m[15], m[18], m[20], m[21], m[30],
+            js[9], js[0], js[1], js[2], js[3], js[4], js[5], js[6], js[7], js[8], js[10]);
+}
+
+static void hk_skin_launcher(void *mgr, void *a2, void *a3, void *a4)
+{
+    const uint8_t *m = mgr;
+    LONG now, last;
+
+    InterlockedIncrement64(&g_skin_calls);
+    if (m && readable(m, 0x80))
+    {
+        if (*(const int32_t *)(m + 0x30) > 0)
+            InterlockedIncrement64(&g_skin_with_requests);
+        if (readable(g_game_base + g_cfg.probe_jobsys_rva + 0x24, 4)
+                && *(const uint32_t *)(g_game_base + g_cfg.probe_jobsys_rva + 0x24))
+            InterlockedIncrement64(&g_skin_flag_blocked);
+        if (InterlockedIncrement(&g_skin_logged) <= 5)
+            log_skin_state(m, "first calls");
+        now = (LONG)GetTickCount();
+        last = g_skin_last_tick;
+        if (now - last > 3000 && InterlockedCompareExchange(&g_skin_last_tick, now, last) == last)
+            log_skin_state(m, "periodic");
+    }
+    g_skin_trampoline(mgr, a2, a3, a4);
+}
+
+static void install_skin_probe(void)
+{
+    uint8_t *target, *tramp;
+    DWORD old;
+
+    g_game_base = (uint8_t *)GetModuleHandleA(NULL);
+    target = g_game_base + g_cfg.probe_skin_rva;
+    if (!readable(target, 15) || memcmp(target, skin_launcher_bytes, 15))
+    {
+        log_msg("probe_skin: launcher bytes don't match this game build, not patching");
+        return;
+    }
+    if (!(tramp = VirtualAlloc(NULL, 4096, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE)))
+        return;
+    /* trampoline: original 15 bytes, then mov rax, target+15; jmp rax */
+    memcpy(tramp, target, 15);
+    tramp[15] = 0x48; tramp[16] = 0xb8;
+    *(uint64_t *)(tramp + 17) = (uint64_t)(target + 15);
+    tramp[25] = 0xff; tramp[26] = 0xe0;
+    g_skin_trampoline = (void *)tramp;
+    FlushInstructionCache(GetCurrentProcess(), tramp, 27);
+
+    if (!VirtualProtect(target, 15, PAGE_EXECUTE_READWRITE, &old))
+        return;
+    /* mov rax, hk_skin_launcher; jmp rax; nop x3 (rax is free at function entry) */
+    {
+        uint8_t patch[15] = {0x48, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xe0, 0x90, 0x90, 0x90};
+        *(uint64_t *)(patch + 2) = (uint64_t)hk_skin_launcher;
+        memcpy(target, patch, 15);
+    }
+    VirtualProtect(target, 15, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), target, 15);
+    log_msg("probe_skin: hooked skin launcher at %p (manager global at %p)", (void *)target,
+            (void *)(g_game_base + SKIN_MANAGER_RVA));
+}
+
 BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, void *reserved)
 {
     if (reason == DLL_PROCESS_ATTACH)
@@ -1665,10 +1763,15 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, void *reserved)
         if (g_cfg.cpu_count)
             log_msg("cpu_count=%u: patched %u imports of the game", g_cfg.cpu_count,
                     sm2_install_cpu_limit(g_cfg.cpu_count));
+        if (g_cfg.probe_skin)
+            install_skin_probe();
     }
     else if (reason == DLL_PROCESS_DETACH && g_log)
     {
         g_exiting = TRUE;
+        if (g_skin_trampoline)
+            fprintf(g_log, "exit: skin launcher calls=%lld with-requests=%lld blocked-by-flag=%lld\n",
+                    (long long)g_skin_calls, (long long)g_skin_with_requests, (long long)g_skin_flag_blocked);
         if (g_cfg.profile)
             log_profile("exit", 40);
         fprintf(g_log, "exit: %lld forced barriers, %lld target PSOs\n",

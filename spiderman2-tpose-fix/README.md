@@ -33,6 +33,19 @@ That's it. To undo everything, run the file and pick **5**.
 | 2026-10-10 | same | #9 Rosetta instruction check | **Rosetta is conformant.** All FMA/F16C/AVX/AVX2/SSE4/BMI tests match Intel bit-for-bit in all MXCSR modes. `rcpps`/`rsqrtps` match Intel's exact values (within spec). All atomics, split-line `lock xadd`, `cmpxchg16b` and TSO litmus tests pass. Only `dpps` differs, and only in *which* NaN encoding it returns when inputs are NaN (Intel's default-NaN vs propagated payload): harmless, and AMD differs from Intel there too. CPU translation is ruled out. |
 | 2026-10-10 | same | #10 `trace_queries = 1` | **Found a broken GPU clock.** D3DMetal answers `GetTimestampFrequency` with **60 Hz**, and **every resolved timestamp is 0**, across ~15,000 timestamp queries in a few minutes (1M-entry timestamp and occlusion query heaps). Occlusion results look normal (small non-zero sample counts). Skinning still 0 dispatches. |
 | 2026-10-10 | same | #11 `fake_timestamps = 1` | Emulation worked: 16,163 resolves answered with sane QPC times (1–80 µs deltas, 10 MHz). **Still T-poses**, skinning still 0. The broken clock is a real D3DMetal bug (see `APPLE-FEEDBACK.md`), but it isn't this one's cause. |
+| next | | #12 `probe_skin = 1`: inline hook on the game's per-frame CPU skin-job launcher, logging its gate values | pending |
+
+**Static analysis of the skinning scheduler.** Code cross-references from the
+`ModelSkinJobFunc` and `Skinning Fence` strings lead to the per-frame skin-job
+launcher at RVA `0x2b42560`. It's called once per frame from RVA `0x2c78460` with
+the skinning manager (a global at RVA `0xbf60300`). It launches CPU skin jobs
+(`ModelSkinJobFunc`) only when the job-system flag at RVA `0xc2ca194` (the struct at
+`0xc2ca170` + `0x24`) is zero and the request count at manager+`0x30` is non-zero.
+Otherwise it just clears bit `0x10` on every pending entry. Test #12 patches the
+launcher's first 15 bytes (three register saves, verified byte-for-byte before
+patching) with a jump to a logger, then runs the original code through a
+trampoline. It logs the request count, the flag and the manager state at first
+calls and every 3 s.
 
 **Why the clock matters.** Apple GPUs before M5 can't sample timestamps at arbitrary
 points in a command stream, so D3DMetal appears to stub D3D12 timestamps out on
@@ -318,6 +331,7 @@ there.
 | `dump_compute` | `0` | `1` saves every compute shader to `sm2fix-dumps\`. |
 | `dump_graphics` | `0` | `1` saves every vertex/mesh shader to `sm2fix-dumps\`. |
 | `profile` | `0` | `1` counts dispatches per compute shader (by hash) and logs the top ones every 20 s and at exit, always including skinning shader `3d50acdb571dce22`. |
+| `probe_skin` | `0` | `1` hooks the game's skin-job launcher (only if its bytes match the analysed build) and logs requests, the job-system gate flag and manager state. `probe_skin_rva`/`probe_jobsys_rva` override the addresses. |
 | `fake_timestamps` | `0` | `1` answers timestamp queries in the shim: QPC frequency, QPC time recorded at each `EndQuery(TIMESTAMP)`, written into the game's mapped resolve buffer; also `GetClockCalibration`. |
 | `trace_queries` | `0` | `1` logs query heaps, query counts, timestamp frequency and calibration, and periodically decodes the values the game reads back (timestamp deltas in µs, occlusion counts, pipeline statistics). |
 | `pso_delay_ms` | `0` | Sleep this long in every pipeline creation, to imitate a cold shader cache (slow first boot). |

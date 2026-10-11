@@ -17,6 +17,14 @@ static int failures;
 static const char target_shader[] = "pretend-this-is-the-DXIL-of-the-racy-shader";
 static const char other_shader[] = "some-unrelated-compute-shader";
 
+/* Stand-in for the game's skin-job launcher: same first 15 bytes (three register saves),
+ * then mgr[0x34] = mgr[0x30] + 1 so the test can see the original code still ran. */
+__asm__(".text\n.globl skin_launcher_test\nskin_launcher_test:\n"
+        "  movq %rbx, 8(%rsp)\n  movq %rbp, 16(%rsp)\n  movq %rsi, 24(%rsp)\n"
+        "  movl 0x30(%rcx), %eax\n  addl $1, %eax\n  movl %eax, 0x34(%rcx)\n  ret\n");
+void skin_launcher_test(void *mgr);
+static uint32_t g_fake_jobsys[32];
+
 struct sub_ptr { UINT type; UINT pad; void *p; };
 struct sub_bytecode { UINT type; UINT pad; const void *code; UINT64 size; };
 
@@ -45,6 +53,15 @@ int main(int argc, char **argv)
     SetEnvironmentVariableA("SM2FIX_SPOOF", "sm65, no_int64,no_fp16");
     SetEnvironmentVariableA("SM2FIX_DUMP_COMPUTE", "1");
     SetEnvironmentVariableA("SM2FIX_PROFILE", "1");
+    {
+        char rva[32];
+        snprintf(rva, sizeof(rva), "%llx", (unsigned long long)((uint8_t *)skin_launcher_test - (uint8_t *)GetModuleHandleA(NULL)));
+        SetEnvironmentVariableA("SM2FIX_PROBE_SKIN_RVA", rva);
+        snprintf(rva, sizeof(rva), "%llx", (unsigned long long)((uint8_t *)g_fake_jobsys - (uint8_t *)GetModuleHandleA(NULL)));
+        SetEnvironmentVariableA("SM2FIX_PROBE_JOBSYS_RVA", rva);
+        SetEnvironmentVariableA("SM2FIX_PROBE_SKIN", !strcmp(mode, "off") ? "0" : "1");
+        g_fake_jobsys[9] = 7; /* the gate flag at +0x24 */
+    }
     SetEnvironmentVariableA("SM2FIX_TRACE_QUERIES", "1");
     /* all/max runs: mock behaves like D3DMetal (60 Hz, zero timestamps) and the shim fakes */
     SetEnvironmentVariableA("SM2FIX_FAKE_TIMESTAMPS", (!strcmp(mode, "all") || !strcmp(mode, "max")) ? "1" : "0");
@@ -60,6 +77,21 @@ int main(int argc, char **argv)
         return 1;
     }
     create_device = (void *)GetProcAddress(shim, "D3D12CreateDevice");
+
+    /* Skin probe: the hooked function must still do its job, and the hook must count it. */
+    {
+        uint32_t mgr[64] = {0};
+        int k;
+
+        mgr[12] = 41;   /* +0x30 requests */
+        for (k = 0; k < 3; k++)
+            skin_launcher_test(mgr);
+        printf("skin probe: original ran -> mgr[0x34]=%u (want 42), first byte now %#x\n", mgr[13],
+                *(uint8_t *)skin_launcher_test);
+        CHECK(mgr[13] == 42);
+        CHECK(!strcmp(mode, "off") ? *(uint8_t *)skin_launcher_test == 0x48 && ((uint8_t *)skin_launcher_test)[1] == 0x89
+                                   : ((uint8_t *)skin_launcher_test)[1] == 0xb8);
+    }
 
     /* CPU-count override: everything the game can ask must report <= 2 processors. */
     {
