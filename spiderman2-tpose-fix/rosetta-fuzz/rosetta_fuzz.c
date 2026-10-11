@@ -222,6 +222,31 @@ static uint64_t fnv(uint64_t h, const void *p, size_t n)
 }
 
 static struct state *g_s;
+#define FAULT_HANG 0x484e4147u
+static struct result *g_res;
+static volatile LONG g_next, g_current = -1, g_hangs;
+static void run_one(unsigned int t, unsigned int k, unsigned int env, struct state *in, struct result *r);
+
+static DWORD WINAPI worker_main(void *arg)
+{
+    unsigned int t, k, env;
+
+    for (t = (unsigned int)g_next; t < NTESTS; t++)
+    {
+        g_current = (LONG)t;
+        if (getenv("FUZZ_TRACE"))
+        {
+            fprintf(stderr, "test %u %s\n", t, form_text[t]);
+            fflush(stderr);
+        }
+        for (env = 0; env < NENVS; env++)
+            for (k = 0; k < NINPUTS; k++)
+                if (!test_dropped[t])
+                    run_one(t, k, env, NULL, &g_res[((size_t)t * NENVS + env) * NINPUTS + k]);
+    }
+    g_next = NTESTS;
+    return 0;
+}
 
 static void run_one(unsigned int t, unsigned int k, unsigned int env, struct state *in, struct result *r)
 {
@@ -277,6 +302,16 @@ int main(int argc, char **argv)
     }
     g_exec = VirtualAlloc(NULL, sizeof(test_code) + 4096, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
     memcpy(g_exec, test_code, sizeof(test_code));
+    if (getenv("FUZZ_SIMULATE_HANG"))       /* self-test of the watchdog: test N spins forever */
+    {
+        unsigned int h = (unsigned int)atoi(getenv("FUZZ_SIMULATE_HANG"));
+
+        if (h < NTESTS && test_off[h + 1] - test_off[h] >= 2)
+        {
+            g_exec[test_off[h]] = 0xeb;
+            g_exec[test_off[h] + 1] = 0xfe;
+        }
+    }
     FlushInstructionCache(GetCurrentProcess(), g_exec, sizeof(test_code));
     /* fixed address, so pointer-like results (lea) don't depend on where memory lands */
     g_s = VirtualAlloc((void *)0x10000000, 65536, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
@@ -284,17 +319,42 @@ int main(int argc, char **argv)
         g_s = VirtualAlloc(NULL, 65536, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     AddVectoredExceptionHandler(1, on_fault);
 
-    for (t = 0; t < NTESTS; t++)
+    /* A worker thread runs the tests; if one instruction doesn't come back within a few
+     * seconds (seen under Rosetta), it is marked HANG and a new worker takes over. */
+    g_res = res;
+    g_next = 0;
+    while (g_next < NTESTS)
     {
-        if (getenv("FUZZ_TRACE"))
+        HANDLE worker = CreateThread(NULL, 1 << 20, worker_main, NULL, 0, NULL);
+        LONG last = -1;
+        DWORD since = GetTickCount();
+
+        for (;;)
         {
-            fprintf(stderr, "test %u %s\n", t, form_text[t]);
-            fflush(stderr);
+            if (WaitForSingleObject(worker, 200) == WAIT_OBJECT_0)
+                break;
+            if (g_current != last)
+            {
+                last = g_current;
+                since = GetTickCount();
+            }
+            else if (GetTickCount() - since > 5000 && last >= 0)
+            {
+                size_t i;
+
+                TerminateThread(worker, 1);
+                WaitForSingleObject(worker, 2000);
+                for (i = 0; i < (size_t)NENVS * NINPUTS; i++)
+                    res[(size_t)last * NENVS * NINPUTS + i].fault = FAULT_HANG;
+                fprintf(stderr, "test %ld (%s) hangs, skipping it\n", (long)last, form_text[last]);
+                g_hangs++;
+                g_next = last + 1;
+                break;
+            }
         }
-        for (env = 0; env < NENVS; env++)
-            for (k = 0; k < NINPUTS; k++)
-                if (!test_dropped[t])
-                    run_one(t, k, env, NULL, &res[((size_t)t * NENVS + env) * NINPUTS + k]);
+        CloseHandle(worker);
+        if (g_hangs > 50)
+            break;
     }
 
     if (generate)
@@ -345,7 +405,9 @@ int main(int argc, char **argv)
                 else if (a->mxcsr != b->mxcsr)
                     mx++;
             }
-        if (d || fl || mx || fa)
+        if (res[(size_t)t * NENVS * NINPUTS].fault == FAULT_HANG)
+            fprintf(rep, "HANG test %u: %s (game uses it %ux): didn't finish within 5 s\n", t, form_text[t], form_count[t]);
+        else if (d || fl || mx || fa)
             fprintf(rep, "MISMATCH test %u: %-48s game uses it %ux | data %u, flags %u, mxcsr %u, faults %u (of %u)\n",
                     t, form_text[t], form_count[t], d, fl, mx, fa, NINPUTS * NENVS);
         data_bad += d != 0;

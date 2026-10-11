@@ -17,16 +17,16 @@
 16	or r32,i32	3429	or eax, 0xffffffff	83c8ff
 17	xor r32,r32	294073	xor edi, edi	33ff
 18	movzx r32,m8	80928	movzx eax, byte ptr [r15 + 0x40]	0fb60568084e0c
-19	lea r64,m64	1212440	lea rcx, [rsp + 0x20]	488d4c2420
-20	mov r32,m32	318744	mov eax, dword ptr [r15 + 0x40]	8b05b88bc208
-21	cmovne r32,r32	2580	cmovne ecx, edx	0f45ca
-22	mov m8,r8	62759	mov byte ptr [r15 + 0x40], cl	880df3074e0c
-23	mov r8,r8	70	mov al, cl	8ac1
-24	mov r8,m8	72	mov al, byte ptr [r15 + 0x40]	8a05d3074e0c
-25	movsxd r64,r32	59161	movsxd rbp, ecx	4863e9
-26	cmp m64,i64	31517	cmp qword ptr [r15 + 0x40], 0	4983bcedf80b4e0c00
-27	cmp m8,i8	67693	cmp byte ptr [r15 + 0x40], 0	803d61074e0c00
-28	mov m8,i8	60856	mov byte ptr [r15 + 0x40], 1	c60536074e0c01
+19	mov r32,m32	318744	mov eax, dword ptr [r15 + 0x40]	8b05b88bc208
+20	cmovne r32,r32	2580	cmovne ecx, edx	0f45ca
+21	mov m8,r8	62759	mov byte ptr [r15 + 0x40], cl	880df3074e0c
+22	mov r8,r8	70	mov al, cl	8ac1
+23	mov r8,m8	72	mov al, byte ptr [r15 + 0x40]	8a05d3074e0c
+24	movsxd r64,r32	59161	movsxd rbp, ecx	4863e9
+25	cmp m64,i64	31517	cmp qword ptr [r15 + 0x40], 0	4983bcedf80b4e0c00
+26	cmp m8,i8	67693	cmp byte ptr [r15 + 0x40], 0	803d61074e0c00
+27	mov m8,i8	60856	mov byte ptr [r15 + 0x40], 1	c60536074e0c01
+28	lea r64,m64	1212440	lea rcx, [rax + rax*2]	488d0c40
 29	cmp m8,r8	14711	cmp byte ptr [r15 + 0x40], bl	42389c26180c4e0c
 30	lea r32,m32	63188	lea eax, [r14 - 3]	418d46fd
 31	cmp m64,r64	10247	cmp qword ptr [r15 + 0x40], r14	4c393597f64d0c

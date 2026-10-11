@@ -421,7 +421,12 @@ case "$action" in
         rm -f "$TDIR/fuzz-report.txt"
         for TRY in "winemac.drv=d" ""; do
             (cd "$TDIR" && WINEDEBUG=-all WINEDLLOVERRIDES="$TRY" "${RUN[@]}" rosetta_fuzz.exe check golden.bin \
-                fuzz-report.txt) > "$TDIR/wine-output.txt" 2>&1
+                fuzz-report.txt) > "$TDIR/wine-output.txt" 2>&1 &
+            FPID=$!
+            # never wait more than 10 minutes
+            for _ in $(seq 600); do kill -0 "$FPID" 2>/dev/null || break; sleep 1; done
+            kill "$FPID" 2>/dev/null
+            wait "$FPID" 2>/dev/null
             grep -q "^RESULT" "$TDIR/fuzz-report.txt" 2>/dev/null && break
             [ -n "$TRY" ] && say "First attempt didn't finish, trying again with the normal Wine setup..."
         done

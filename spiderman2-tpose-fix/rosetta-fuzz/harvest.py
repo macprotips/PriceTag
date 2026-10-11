@@ -81,7 +81,7 @@ for b, e in funcs:
             continue
         s = insn.op_str
         if mn == 'lea':
-            if 'rip' in s:
+            if 'rip' in s or 'rsp' in s or 'esp' in s:
                 continue
         else:
             s = re.sub(r'\[[^\]]*\]', '[r15 + 0x40]', s)
