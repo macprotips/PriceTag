@@ -179,25 +179,75 @@ static int create_root_signature(void)
 }
 
 /* Runs one shader over the inputs; returns the output (SKIN_OUT_VERTS * 4 words) or NULL. */
-static uint32_t *run_shader(const void *code, size_t code_size, const struct skin_inputs *in)
+/* How the buffers are laid out and bound. The game's engine binds views into big pooled
+ * buffers at offsets, so besides the plain layout the check tries the same data at
+ * non-zero FirstElement offsets, and packed into one shared buffer. */
+enum layout
 {
+    LAYOUT_PLAIN = 0,       /* one buffer per input, views start at element 0 */
+    LAYOUT_OFFSETS,         /* one buffer per input, views start at an offset */
+    LAYOUT_SHARED_UPLOAD,   /* all inputs in one upload-heap buffer, views at offsets */
+    LAYOUT_SHARED_DEFAULT,  /* same, copied into a default-heap (GPU-only) buffer */
+    LAYOUT_COUNT
+};
+static const char *const layout_names[LAYOUT_COUNT] = {
+    "plain buffers", "views at offsets", "one shared upload buffer", "one shared GPU-only buffer",
+};
+
+struct input_desc
+{
+    const void *data;
+    UINT64 size;
+    DXGI_FORMAT format;
+    UINT stride;            /* element size in bytes (structured stride, or 4 for typed/raw) */
+    UINT srv_stride;        /* StructureByteStride for the view (0 if not structured) */
+    D3D12_BUFFER_SRV_FLAGS flags;
+    UINT pad_elems;         /* element offset used by the offset layouts */
+};
+
+static void transition(ID3D12GraphicsCommandList *list, ID3D12Resource *res, D3D12_RESOURCE_STATES from,
+        D3D12_RESOURCE_STATES to)
+{
+    D3D12_RESOURCE_BARRIER barrier = {0};
+
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition.pResource = res;
+    barrier.Transition.StateBefore = from;
+    barrier.Transition.StateAfter = to;
+    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    ID3D12GraphicsCommandList_ResourceBarrier(list, 1, &barrier);
+}
+
+/* Runs one shader over the inputs; returns the output (SKIN_OUT_VERTS * 4 words) or NULL. */
+static uint32_t *run_shader(const void *code, size_t code_size, const struct skin_inputs *in, enum layout layout)
+{
+    struct input_desc inputs[5] = {
+        /* slot order matches the root signature: t0, t1, t2, t97, t101 */
+        { in->bones, sizeof(in->bones), DXGI_FORMAT_UNKNOWN, 64, 64, D3D12_BUFFER_SRV_FLAG_NONE, 37 },
+        { in->data, sizeof(in->data), DXGI_FORMAT_R32_UINT, 4, 0, D3D12_BUFFER_SRV_FLAG_NONE, 1000 },
+        { in->entries, sizeof(in->entries), DXGI_FORMAT_UNKNOWN, 32, 32, D3D12_BUFFER_SRV_FLAG_NONE, 5 },
+        { in->raw, sizeof(in->raw), DXGI_FORMAT_R32_TYPELESS, 4, 0, D3D12_BUFFER_SRV_FLAG_RAW, 256 },
+        { in->inst, sizeof(in->inst), DXGI_FORMAT_UNKNOWN, 64, 64, D3D12_BUFFER_SRV_FLAG_NONE, 3 },
+    };
+    const UINT out_pad = (layout == LAYOUT_PLAIN) ? 0 : 123;   /* uint4 elements before the output */
     D3D12_COMPUTE_PIPELINE_STATE_DESC pd = {0};
     D3D12_DESCRIPTOR_HEAP_DESC hd = { D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 6, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE };
     D3D12_SHADER_RESOURCE_VIEW_DESC sv;
     D3D12_UNORDERED_ACCESS_VIEW_DESC uv = {0};
     D3D12_CPU_DESCRIPTOR_HANDLE cpu;
-    D3D12_RESOURCE_BARRIER barrier = {0};
     ID3D12PipelineState *pso = NULL;
     ID3D12DescriptorHeap *heap = NULL;
     ID3D12CommandAllocator *alloc = NULL;
     ID3D12GraphicsCommandList *list = NULL;
     ID3D12Fence *fence = NULL;
-    ID3D12Resource *bones, *data, *entries, *raw, *inst, *output, *readback;
-    UINT inc;
+    ID3D12Resource *res[5] = {0}, *shared_upload = NULL, *shared_gpu = NULL, *output, *readback;
+    UINT64 first[5], shared_size = 0, out_size = ((UINT64)SKIN_OUT_VERTS + out_pad) * 16;
+    UINT inc, i;
     HANDLE event;
     HRESULT hr;
     uint32_t *result = NULL;
     void *map;
+
     pd.pRootSignature = root_sig;
     pd.CS.pShaderBytecode = code;
     pd.CS.BytecodeLength = code_size;
@@ -206,16 +256,50 @@ static uint32_t *run_shader(const void *code, size_t code_size, const struct ski
         out("FAILED CreateComputePipelineState hr=%#lx\n", (unsigned long)hr);
         return NULL;
     }
-    bones = upload(in->bones, sizeof(in->bones));
-    data = upload(in->data, sizeof(in->data));
-    entries = upload(in->entries, sizeof(in->entries));
-    raw = upload(in->raw, sizeof(in->raw));
-    inst = upload(in->inst, sizeof(in->inst));
-    output = make_buffer(D3D12_HEAP_TYPE_DEFAULT, (UINT64)SKIN_OUT_VERTS * 16, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+
+    /* Place the inputs. first[i] is each view's FirstElement. */
+    for (i = 0; i < 5; i++)
+    {
+        UINT64 pad = layout == LAYOUT_PLAIN ? 0 : (UINT64)inputs[i].pad_elems * inputs[i].stride;
+
+        if (layout == LAYOUT_PLAIN || layout == LAYOUT_OFFSETS)
+        {
+            uint8_t *tmp = calloc(1, pad + inputs[i].size);
+
+            memcpy(tmp + pad, inputs[i].data, inputs[i].size);
+            res[i] = upload(tmp, pad + inputs[i].size);
+            free(tmp);
+            first[i] = pad / inputs[i].stride;
+        }
+        else
+        {
+            /* shared: each input starts at a 64 KiB boundary plus its own pad */
+            shared_size = (shared_size + 0xffff) & ~(UINT64)0xffff;
+            first[i] = (shared_size + pad) / inputs[i].stride;
+            shared_size += pad + inputs[i].size;
+        }
+    }
+    if (layout == LAYOUT_SHARED_UPLOAD || layout == LAYOUT_SHARED_DEFAULT)
+    {
+        uint8_t *tmp = calloc(1, shared_size);
+
+        for (i = 0; i < 5; i++)
+            memcpy(tmp + first[i] * inputs[i].stride, inputs[i].data, inputs[i].size);
+        shared_upload = upload(tmp, shared_size);
+        free(tmp);
+        if (layout == LAYOUT_SHARED_DEFAULT)
+            shared_gpu = make_buffer(D3D12_HEAP_TYPE_DEFAULT, shared_size, D3D12_RESOURCE_FLAG_NONE,
+                    D3D12_RESOURCE_STATE_COPY_DEST);
+        for (i = 0; i < 5; i++)
+            res[i] = shared_gpu ? shared_gpu : shared_upload;
+    }
+    output = make_buffer(D3D12_HEAP_TYPE_DEFAULT, out_size, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    readback = make_buffer(D3D12_HEAP_TYPE_READBACK, (UINT64)SKIN_OUT_VERTS * 16, D3D12_RESOURCE_FLAG_NONE,
-            D3D12_RESOURCE_STATE_COPY_DEST);
-    if (!bones || !data || !entries || !raw || !inst || !output || !readback)
+    readback = make_buffer(D3D12_HEAP_TYPE_READBACK, out_size, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST);
+    for (i = 0; i < 5; i++)
+        if (!res[i])
+            output = NULL;
+    if (!output || !readback || (layout == LAYOUT_SHARED_DEFAULT && !shared_gpu))
     {
         out("FAILED to create buffers\n");
         return NULL;
@@ -225,22 +309,24 @@ static uint32_t *run_shader(const void *code, size_t code_size, const struct ski
         return out("FAILED CreateDescriptorHeap\n"), NULL;
     inc = ID3D12Device_GetDescriptorHandleIncrementSize(device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     heap->lpVtbl->GetCPUDescriptorHandleForHeapStart(heap, &cpu);
+    for (i = 0; i < 5; i++)
+    {
+        D3D12_CPU_DESCRIPTOR_HANDLE h = cpu;
 
-#define SRV(res, fmt, n, stride, flags, slot) do { \
-        memset(&sv, 0, sizeof(sv)); \
-        sv.Format = fmt; sv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER; \
-        sv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING; \
-        sv.Buffer.NumElements = n; sv.Buffer.StructureByteStride = stride; sv.Buffer.Flags = flags; \
-        { D3D12_CPU_DESCRIPTOR_HANDLE h_ = cpu; h_.ptr += (SIZE_T)(slot) * inc; \
-          ID3D12Device_CreateShaderResourceView(device, res, &sv, h_); } } while (0)
-    SRV(bones, DXGI_FORMAT_UNKNOWN, SKIN_BONES, 64, D3D12_BUFFER_SRV_FLAG_NONE, 0);
-    SRV(data, DXGI_FORMAT_R32_UINT, SKIN_DATA_WORDS, 0, D3D12_BUFFER_SRV_FLAG_NONE, 1);
-    SRV(entries, DXGI_FORMAT_UNKNOWN, SKIN_GROUPS, 32, D3D12_BUFFER_SRV_FLAG_NONE, 2);
-    SRV(raw, DXGI_FORMAT_R32_TYPELESS, SKIN_RAW_WORDS, 0, D3D12_BUFFER_SRV_FLAG_RAW, 3);
-    SRV(inst, DXGI_FORMAT_UNKNOWN, SKIN_INST_RECORDS, 64, D3D12_BUFFER_SRV_FLAG_NONE, 4);
-#undef SRV
+        memset(&sv, 0, sizeof(sv));
+        sv.Format = inputs[i].format;
+        sv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        sv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        sv.Buffer.FirstElement = first[i];
+        sv.Buffer.NumElements = (UINT)(inputs[i].size / inputs[i].stride);
+        sv.Buffer.StructureByteStride = inputs[i].srv_stride;
+        sv.Buffer.Flags = inputs[i].flags;
+        h.ptr += (SIZE_T)i * inc;
+        ID3D12Device_CreateShaderResourceView(device, res[i], &sv, h);
+    }
     uv.Format = DXGI_FORMAT_R32G32B32A32_UINT;
     uv.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+    uv.Buffer.FirstElement = out_pad;
     uv.Buffer.NumElements = SKIN_OUT_VERTS;
     {
         D3D12_CPU_DESCRIPTOR_HANDLE h = cpu;
@@ -254,6 +340,11 @@ static uint32_t *run_shader(const void *code, size_t code_size, const struct ski
                     &IID_ID3D12GraphicsCommandList, (void **)&list))
             || FAILED(ID3D12Device_CreateFence(device, 0, D3D12_FENCE_FLAG_NONE, &IID_ID3D12Fence, (void **)&fence)))
         return out("FAILED to create the command list\n"), NULL;
+    if (shared_gpu)
+    {
+        ID3D12GraphicsCommandList_CopyResource(list, shared_gpu, shared_upload);
+        transition(list, shared_gpu, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    }
     {
         D3D12_GPU_DESCRIPTOR_HANDLE gpu;
 
@@ -263,12 +354,7 @@ static uint32_t *run_shader(const void *code, size_t code_size, const struct ski
         ID3D12GraphicsCommandList_SetComputeRootDescriptorTable(list, 0, gpu);
     }
     ID3D12GraphicsCommandList_Dispatch(list, SKIN_GROUPS, 1, 1);
-    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    barrier.Transition.pResource = output;
-    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
-    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    ID3D12GraphicsCommandList_ResourceBarrier(list, 1, &barrier);
+    transition(list, output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
     ID3D12GraphicsCommandList_CopyResource(list, readback, output);
     if (FAILED(ID3D12GraphicsCommandList_Close(list)))
         return out("FAILED to close the command list\n"), NULL;
@@ -282,7 +368,7 @@ static uint32_t *run_shader(const void *code, size_t code_size, const struct ski
     if (SUCCEEDED(ID3D12Resource_Map(readback, 0, NULL, &map)))
     {
         result = malloc((size_t)SKIN_OUT_VERTS * 16);
-        memcpy(result, map, (size_t)SKIN_OUT_VERTS * 16);
+        memcpy(result, (uint8_t *)map + (size_t)out_pad * 16, (size_t)SKIN_OUT_VERTS * 16);
         ID3D12Resource_Unmap(readback, 0, NULL);
     }
     return result;
@@ -400,22 +486,36 @@ int main(int argc, char **argv)
     if (FAILED(ID3D12Device_CreateCommandQueue(device, &qd, &IID_ID3D12CommandQueue, (void **)&queue)) || !create_root_signature())
         return 1;
 
-    /* The game's shader, twice (a difference between the two runs means a race). */
+    /* The game's shader, twice in the plain layout (a difference between the two runs
+     * means a race), then in the pooled-buffer layouts the engine uses. */
     for (i = 0; i < 2; i++)
     {
-        uint32_t *got = run_shader(shader, shader_size, &in);
+        uint32_t *got = run_shader(shader, shader_size, &in, LAYOUT_PLAIN);
 
         if (!got)
             return 1;
-        all_ok &= compare(i ? "game shader, run 2" : "game shader, run 1", got, ref, &in);
+        all_ok &= compare(i ? "game shader, plain buffers, run 2" : "game shader, plain buffers, run 1", got, ref, &in);
         if (!first)
             first = got;
         else
             out("run 1 and run 2 %s\n", memcmp(first, got, (size_t)SKIN_OUT_VERTS * 16) ? "DIFFER (non-deterministic)" : "are identical");
     }
-    out("RESULT: %s\n", all_ok ? "the game's skinning shader matches the reference on this GPU"
-                               : "the game's skinning shader gives WRONG results on this GPU");
-    /* Candidate replacements. */
+    for (i = LAYOUT_OFFSETS; i < LAYOUT_COUNT; i++)
+    {
+        uint32_t *got = run_shader(shader, shader_size, &in, (enum layout)i);
+        char label[96];
+        int ok;
+
+        snprintf(label, sizeof(label), "game shader, %s", layout_names[i]);
+        ok = got && compare(label, got, ref, &in);
+        if (!got)
+            out("%s: could not run\n", label);
+        out("RESULT (%s): %s\n", layout_names[i], ok ? "matches the reference" : "WRONG");
+        all_ok &= ok;
+    }
+    out("RESULT: %s\n", all_ok ? "the game's skinning shader matches the reference on this GPU in every layout"
+                               : "the game's skinning shader gives WRONG results on this GPU (see the layouts above)");
+    /* Candidate replacements (plain layout). */
     for (i = 4; i < argc; i++)
     {
         size_t n;
@@ -427,7 +527,7 @@ int main(int argc, char **argv)
             out("%s: can't read\n", argv[i]);
             continue;
         }
-        if ((got = run_shader(alt, n, &in)))
+        if ((got = run_shader(alt, n, &in, LAYOUT_PLAIN)))
             out("RESULT (%s): %s\n", argv[i], compare(argv[i], got, ref, &in) ? "matches the reference" : "WRONG");
         else
             out("RESULT (%s): could not run\n", argv[i]);

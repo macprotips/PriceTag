@@ -31,6 +31,13 @@ static uint32_t g_fake_jobsys[32];
 int32_t fake_render_budgets[28] = {100, 200, 300, 16};
 uint32_t fake_skinning_sb[8];
 int32_t fake_skin_count = 5, fake_skin_seen;
+void (*fake_dispatch_cb)(void);   /* called from inside the stand-in dispatch function */
+static ID3D12GraphicsCommandList *g_cb_list;
+static D3D12_GPU_DESCRIPTOR_HANDLE g_cb_table;
+static void bind_table_cb(void)
+{
+    ID3D12GraphicsCommandList_SetComputeRootDescriptorTable(g_cb_list, 1, g_cb_table);
+}
 const char fake_sb_name[] = "SkinningSB";
 uint64_t fake_sb_create(uint32_t *object, const char *name, uint32_t count, uint32_t stride)
 {
@@ -45,6 +52,7 @@ __asm__(".text\n.globl skin_sb_stub_test\nskin_sb_stub_test:\n"
         ".globl skin_dispatch_test\nskin_dispatch_test:\n"
         "  .byte 0x4c, 0x8b, 0xdc, 0x56, 0x41, 0x57, 0x48, 0x81, 0xec, 0xc8, 0x00, 0x00, 0x00\n"
         "  movslq fake_skin_count(%rip), %rsi\n  movl %esi, fake_skin_seen(%rip)\n"
+        "  movq fake_dispatch_cb(%rip), %rax\n  testq %rax, %rax\n  jz 1f\n  call *%rax\n1:\n"
         "  addq $0xc8, %rsp\n  popq %r15\n  popq %rsi\n  ret\n");
 uint64_t skin_sb_stub_test(void);
 void skin_dispatch_test(void);
@@ -225,6 +233,37 @@ int main(int argc, char **argv)
             &IID_ID3D12GraphicsCommandList, (void **)&list)));
     CHECK(SUCCEEDED(ID3D12Device4_CreateCommandList1(device, 0, D3D12_COMMAND_LIST_TYPE_BUNDLE,
             D3D12_COMMAND_LIST_FLAG_NONE, &IID_ID3D12GraphicsCommandList, (void **)&bundle)));
+
+    /* Descriptor tracking (probe_skin): an SRV created in a CPU heap, copied into a
+     * shader-visible heap, then bound as a table inside the skin dispatch function. */
+    {
+        D3D12_DESCRIPTOR_HEAP_DESC hd = { D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 16, D3D12_DESCRIPTOR_HEAP_FLAG_NONE };
+        D3D12_SHADER_RESOURCE_VIEW_DESC sv = {0};
+        D3D12_CPU_DESCRIPTOR_HANDLE cpu, vis_cpu;
+        ID3D12DescriptorHeap *cpu_heap, *vis_heap;
+        void *(*readback)(void) = (void *)GetProcAddress(mock, "mock_get_readback_resource");
+
+        CHECK(SUCCEEDED(ID3D12Device4_CreateDescriptorHeap(device, &hd, &IID_ID3D12DescriptorHeap, (void **)&cpu_heap)));
+        hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+        CHECK(SUCCEEDED(ID3D12Device4_CreateDescriptorHeap(device, &hd, &IID_ID3D12DescriptorHeap, (void **)&vis_heap)));
+        cpu_heap->lpVtbl->GetCPUDescriptorHandleForHeapStart(cpu_heap, &cpu);
+        vis_heap->lpVtbl->GetCPUDescriptorHandleForHeapStart(vis_heap, &vis_cpu);
+        vis_heap->lpVtbl->GetGPUDescriptorHandleForHeapStart(vis_heap, &g_cb_table);
+        sv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        sv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        sv.Buffer.FirstElement = 7;
+        sv.Buffer.NumElements = 10;
+        sv.Buffer.StructureByteStride = 64;
+        cpu.ptr += 3 * 32;
+        ID3D12Device4_CreateShaderResourceView(device, readback(), &sv, cpu);
+        vis_cpu.ptr += 2 * 32;
+        ID3D12Device4_CopyDescriptorsSimple(device, 1, vis_cpu, cpu, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        g_cb_table.ptr += 2 * 32;
+        g_cb_list = list;
+        fake_dispatch_cb = bind_table_cb;
+        skin_dispatch_test();
+        fake_dispatch_cb = NULL;
+    }
 
     ID3D12GraphicsCommandList_SetPipelineState(list, pso_target);
     ID3D12GraphicsCommandList_Dispatch(list, 1, 1, 1);           /* target          */

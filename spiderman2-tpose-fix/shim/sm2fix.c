@@ -654,9 +654,15 @@ static void rootsig_remember(void *obj, const void *blob, SIZE_T size)
 }
 
 /* Up to 80 lines of root-binding detail for the first skin dispatches with work. */
+static volatile LONG g_view_window_log;   /* this skin window is a periodic snapshot */
+
 static BOOL win_root_log(void)
 {
-    return in_skin_window() && g_win_root_lines < 80 && InterlockedIncrement(&g_win_root_lines) <= 80;
+    if (!in_skin_window())
+        return FALSE;
+    if (g_view_window_log)
+        return TRUE;
+    return g_win_root_lines < 80 && InterlockedIncrement(&g_win_root_lines) <= 80;
 }
 
 static void log_blob_hex(const char *what, const uint8_t *p, SIZE_T size)
@@ -692,6 +698,8 @@ static void STDMETHODCALLTYPE hk_list_SetComputeRootSignature(ID3D12GraphicsComm
     }
 }
 
+static void log_table_views(UINT index, D3D12_GPU_DESCRIPTOR_HANDLE base);
+
 static void STDMETHODCALLTYPE hk_list_SetComputeRootDescriptorTable(ID3D12GraphicsCommandList *list, UINT index,
         D3D12_GPU_DESCRIPTOR_HANDLE base)
 {
@@ -700,7 +708,10 @@ static void STDMETHODCALLTYPE hk_list_SetComputeRootDescriptorTable(ID3D12Graphi
 
     orig(list, index, base);
     if (win_root_log())
+    {
         log_msg("skin window: root %u = descriptor table %#llx", index, (unsigned long long)base.ptr);
+        log_table_views(index, base);
+    }
 }
 
 static void STDMETHODCALLTYPE hk_list_SetComputeRoot32BitConstants(ID3D12GraphicsCommandList *list, UINT index,
@@ -1729,6 +1740,290 @@ static HRESULT STDMETHODCALLTYPE hk_dev_CreateQueryHeap(ID3D12Device *device, co
     return hr;
 }
 
+/* ------------------------------------------------------- descriptor tracking */
+
+/* With probe_skin, remember what every CBV/SRV/UAV descriptor points at (created or
+ * copied), so the views the skinning shader actually reads can be logged: resource,
+ * GPU address, FirstElement/NumElements/stride/format, buffer size and heap type. */
+struct view_rec
+{
+    void *res;
+    UINT64 va, first, width;
+    UINT num, stride, format, flags;
+    unsigned short kind;        /* 0 none, 1 SRV, 2 UAV, 3 CBV */
+    unsigned short dim;         /* view dimension (1 = buffer) */
+    unsigned int heap_type;     /* D3D12_HEAP_TYPE of the resource, 0 if unknown */
+};
+
+struct heap_rec
+{
+    UINT64 cpu, gpu, num;
+    UINT inc;
+    struct view_rec *recs;
+};
+
+#define MAX_TRACKED_HEAPS 64
+static struct heap_rec g_heaps[MAX_TRACKED_HEAPS];
+static volatile LONG g_heap_count;
+static volatile LONG g_view_logs;
+
+static struct view_rec *view_at_cpu(SIZE_T cpu)
+{
+    LONG i, n = g_heap_count < MAX_TRACKED_HEAPS ? g_heap_count : MAX_TRACKED_HEAPS;
+
+    for (i = 0; i < n; i++)
+    {
+        struct heap_rec *h = &g_heaps[i];
+
+        if (h->recs && cpu >= h->cpu && cpu < h->cpu + h->num * h->inc && !((cpu - h->cpu) % h->inc))
+            return &h->recs[(cpu - h->cpu) / h->inc];
+    }
+    return NULL;
+}
+
+static void fill_resource_info(struct view_rec *r, ID3D12Resource *res)
+{
+    D3D12_HEAP_PROPERTIES props;
+    D3D12_HEAP_FLAGS flags;
+    D3D12_RESOURCE_DESC desc;
+
+    r->res = res;
+    r->va = r->width = 0;
+    r->heap_type = 0;
+    if (!res)
+        return;
+    res->lpVtbl->GetDesc(res, &desc);
+    r->width = desc.Width;
+    if (desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
+        r->va = res->lpVtbl->GetGPUVirtualAddress(res);
+    if (SUCCEEDED(res->lpVtbl->GetHeapProperties(res, &props, &flags)))
+        r->heap_type = props.Type;
+}
+
+static HRESULT STDMETHODCALLTYPE hk_dev_CreateDescriptorHeap(ID3D12Device *device, const D3D12_DESCRIPTOR_HEAP_DESC *desc,
+        REFIID riid, void **out)
+{
+    HRESULT (STDMETHODCALLTYPE *orig)(ID3D12Device *, const D3D12_DESCRIPTOR_HEAP_DESC *, REFIID, void **)
+            = orig_fn(device, DEV_IDX(CreateDescriptorHeap));
+    HRESULT hr = orig(device, desc, riid, out);
+
+    if (SUCCEEDED(hr) && desc && desc->Type == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV && out && *out)
+    {
+        ID3D12DescriptorHeap *heap = NULL;
+        LONG i;
+
+        if (SUCCEEDED(((IUnknown *)*out)->lpVtbl->QueryInterface((IUnknown *)*out, &IID_ID3D12DescriptorHeap,
+                (void **)&heap)) && heap)
+        {
+            D3D12_CPU_DESCRIPTOR_HANDLE cpu;
+            D3D12_GPU_DESCRIPTOR_HANDLE gpu = {0};
+            struct view_rec *recs = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, (SIZE_T)desc->NumDescriptors * sizeof(*recs));
+
+            heap->lpVtbl->GetCPUDescriptorHandleForHeapStart(heap, &cpu);
+            if (desc->Flags & D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE)
+                heap->lpVtbl->GetGPUDescriptorHandleForHeapStart(heap, &gpu);
+            heap->lpVtbl->Release(heap);
+            if (recs && (i = InterlockedIncrement(&g_heap_count) - 1) < MAX_TRACKED_HEAPS)
+            {
+                g_heaps[i].inc = device->lpVtbl->GetDescriptorHandleIncrementSize(device, desc->Type);
+                g_heaps[i].cpu = cpu.ptr;
+                g_heaps[i].gpu = gpu.ptr;
+                g_heaps[i].num = desc->NumDescriptors;
+                g_heaps[i].recs = recs;
+                if (desc->Flags & D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE)
+                    log_msg("descriptor heap: %u shader-visible CBV/SRV/UAV descriptors, cpu %#llx gpu %#llx, increment %u",
+                            desc->NumDescriptors, (unsigned long long)cpu.ptr, (unsigned long long)gpu.ptr, g_heaps[i].inc);
+            }
+            else if (recs)
+                HeapFree(GetProcessHeap(), 0, recs);
+        }
+    }
+    return hr;
+}
+
+static void STDMETHODCALLTYPE hk_dev_CreateShaderResourceView(ID3D12Device *device, ID3D12Resource *res,
+        const D3D12_SHADER_RESOURCE_VIEW_DESC *desc, D3D12_CPU_DESCRIPTOR_HANDLE handle)
+{
+    void (STDMETHODCALLTYPE *orig)(ID3D12Device *, ID3D12Resource *, const D3D12_SHADER_RESOURCE_VIEW_DESC *,
+            D3D12_CPU_DESCRIPTOR_HANDLE) = orig_fn(device, DEV_IDX(CreateShaderResourceView));
+    struct view_rec *r;
+
+    orig(device, res, desc, handle);
+    if ((r = view_at_cpu(handle.ptr)))
+    {
+        memset(r, 0, sizeof(*r));
+        r->kind = 1;
+        fill_resource_info(r, res);
+        if (desc)
+        {
+            r->dim = (unsigned short)desc->ViewDimension;
+            r->format = desc->Format;
+            if (desc->ViewDimension == D3D12_SRV_DIMENSION_BUFFER)
+            {
+                r->first = desc->Buffer.FirstElement;
+                r->num = desc->Buffer.NumElements;
+                r->stride = desc->Buffer.StructureByteStride;
+                r->flags = desc->Buffer.Flags;
+            }
+        }
+    }
+}
+
+static void STDMETHODCALLTYPE hk_dev_CreateUnorderedAccessView(ID3D12Device *device, ID3D12Resource *res,
+        ID3D12Resource *counter, const D3D12_UNORDERED_ACCESS_VIEW_DESC *desc, D3D12_CPU_DESCRIPTOR_HANDLE handle)
+{
+    void (STDMETHODCALLTYPE *orig)(ID3D12Device *, ID3D12Resource *, ID3D12Resource *,
+            const D3D12_UNORDERED_ACCESS_VIEW_DESC *, D3D12_CPU_DESCRIPTOR_HANDLE)
+            = orig_fn(device, DEV_IDX(CreateUnorderedAccessView));
+    struct view_rec *r;
+
+    orig(device, res, counter, desc, handle);
+    if ((r = view_at_cpu(handle.ptr)))
+    {
+        memset(r, 0, sizeof(*r));
+        r->kind = 2;
+        fill_resource_info(r, res);
+        if (desc)
+        {
+            r->dim = (unsigned short)desc->ViewDimension;
+            r->format = desc->Format;
+            if (desc->ViewDimension == D3D12_UAV_DIMENSION_BUFFER)
+            {
+                r->first = desc->Buffer.FirstElement;
+                r->num = desc->Buffer.NumElements;
+                r->stride = desc->Buffer.StructureByteStride;
+                r->flags = desc->Buffer.Flags;
+            }
+        }
+    }
+}
+
+static void STDMETHODCALLTYPE hk_dev_CreateConstantBufferView(ID3D12Device *device,
+        const D3D12_CONSTANT_BUFFER_VIEW_DESC *desc, D3D12_CPU_DESCRIPTOR_HANDLE handle)
+{
+    void (STDMETHODCALLTYPE *orig)(ID3D12Device *, const D3D12_CONSTANT_BUFFER_VIEW_DESC *, D3D12_CPU_DESCRIPTOR_HANDLE)
+            = orig_fn(device, DEV_IDX(CreateConstantBufferView));
+    struct view_rec *r;
+
+    orig(device, desc, handle);
+    if ((r = view_at_cpu(handle.ptr)))
+    {
+        memset(r, 0, sizeof(*r));
+        r->kind = 3;
+        if (desc)
+        {
+            r->va = desc->BufferLocation;
+            r->num = desc->SizeInBytes;
+        }
+    }
+}
+
+static void copy_view_recs(SIZE_T dst, SIZE_T src, UINT count)
+{
+    UINT i;
+
+    for (i = 0; i < count; i++)
+    {
+        struct view_rec *d = view_at_cpu(dst), *s = view_at_cpu(src);
+
+        if (d)
+        {
+            if (s)
+                *d = *s;
+            else
+                memset(d, 0, sizeof(*d));
+        }
+        /* all CBV/SRV/UAV heaps share one increment */
+        dst += g_heaps[0].inc;
+        src += g_heaps[0].inc;
+    }
+}
+
+static void STDMETHODCALLTYPE hk_dev_CopyDescriptorsSimple(ID3D12Device *device, UINT count,
+        D3D12_CPU_DESCRIPTOR_HANDLE dst, D3D12_CPU_DESCRIPTOR_HANDLE src, D3D12_DESCRIPTOR_HEAP_TYPE type)
+{
+    void (STDMETHODCALLTYPE *orig)(ID3D12Device *, UINT, D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_CPU_DESCRIPTOR_HANDLE,
+            D3D12_DESCRIPTOR_HEAP_TYPE) = orig_fn(device, DEV_IDX(CopyDescriptorsSimple));
+
+    orig(device, count, dst, src, type);
+    if (type == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV && g_heap_count)
+        copy_view_recs(dst.ptr, src.ptr, count);
+}
+
+static void STDMETHODCALLTYPE hk_dev_CopyDescriptors(ID3D12Device *device, UINT dst_count,
+        const D3D12_CPU_DESCRIPTOR_HANDLE *dst_starts, const UINT *dst_sizes, UINT src_count,
+        const D3D12_CPU_DESCRIPTOR_HANDLE *src_starts, const UINT *src_sizes, D3D12_DESCRIPTOR_HEAP_TYPE type)
+{
+    void (STDMETHODCALLTYPE *orig)(ID3D12Device *, UINT, const D3D12_CPU_DESCRIPTOR_HANDLE *, const UINT *, UINT,
+            const D3D12_CPU_DESCRIPTOR_HANDLE *, const UINT *, D3D12_DESCRIPTOR_HEAP_TYPE)
+            = orig_fn(device, DEV_IDX(CopyDescriptors));
+    UINT di = 0, si = 0, doff = 0, soff = 0;
+
+    orig(device, dst_count, dst_starts, dst_sizes, src_count, src_starts, src_sizes, type);
+    if (type != D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV || !g_heap_count)
+        return;
+    /* walk both range lists one descriptor at a time (NULL sizes mean 1 each) */
+    while (di < dst_count && si < src_count)
+    {
+        UINT dsize = dst_sizes ? dst_sizes[di] : 1, ssize = src_sizes ? src_sizes[si] : 1;
+
+        if (doff >= dsize) { di++; doff = 0; continue; }
+        if (soff >= ssize) { si++; soff = 0; continue; }
+        copy_view_recs(dst_starts[di].ptr + (SIZE_T)doff * g_heaps[0].inc,
+                src_starts[si].ptr + (SIZE_T)soff * g_heaps[0].inc, 1);
+        doff++;
+        soff++;
+    }
+}
+
+static void log_table_views(UINT index, D3D12_GPU_DESCRIPTOR_HANDLE base)
+{
+    static const char *const kinds[] = { "empty", "SRV", "UAV", "CBV" };
+    LONG i, n = g_heap_count < MAX_TRACKED_HEAPS ? g_heap_count : MAX_TRACKED_HEAPS;
+    UINT k;
+
+    if (!g_view_window_log && InterlockedIncrement(&g_view_logs) > 12)
+        return;
+    for (i = 0; i < n; i++)
+    {
+        struct heap_rec *h = &g_heaps[i];
+
+        if (!h->gpu || base.ptr < h->gpu || base.ptr >= h->gpu + h->num * h->inc)
+            continue;
+        for (k = 0; k < 6 && (base.ptr - h->gpu) / h->inc + k < h->num; k++)
+        {
+            const struct view_rec *r = &h->recs[(base.ptr - h->gpu) / h->inc + k];
+
+            log_msg("skin window:   root %u [%u] %s dim=%u res=%p va=%#llx width=%llu heap=%u first=%llu num=%u"
+                    " stride=%u format=%u flags=%#x", index, k, kinds[r->kind < 4 ? r->kind : 0], r->dim, r->res,
+                    (unsigned long long)r->va, (unsigned long long)r->width, r->heap_type,
+                    (unsigned long long)r->first, r->num, r->stride, r->format, r->flags);
+            /* CPU-visible buffers (upload heap): show the first 32 words the view covers */
+            if (r->res && r->dim == 1 && r->heap_type == D3D12_HEAP_TYPE_UPLOAD && (r->kind == 1 || r->kind == 2))
+            {
+                UINT64 off = r->first * (r->stride ? r->stride : 4);
+                D3D12_RANGE none = {0, 0};
+                void *map = NULL;
+
+                if (off + 128 <= r->width && SUCCEEDED(((ID3D12Resource *)r->res)->lpVtbl->Map(r->res, 0, &none, &map))
+                        && map)
+                {
+                    const uint32_t *w = (const uint32_t *)((uint8_t *)map + off);
+                    char line[32 * 9 + 1];
+                    unsigned int j;
+
+                    for (j = 0; j < 32; j++)
+                        sprintf(line + j * 9, "%08x ", w[j]);
+                    log_msg("skin window:     data: %s", line);
+                    ((ID3D12Resource *)r->res)->lpVtbl->Unmap(r->res, 0, &none);
+                }
+            }
+        }
+        return;
+    }
+    log_msg("skin window:   root %u: table not in a tracked heap", index);
+}
+
 static void hook_device_object(void *obj)
 {
     static const struct
@@ -1764,6 +2059,19 @@ static void hook_device_object(void *obj)
         hook_slot(dev, DEV_IDX(CreateCommandSignature), (void *)hk_dev_CreateCommandSignature,
                 "Device::CreateCommandSignature");
         hook_slot(dev, DEV_IDX(CreateCommandQueue), (void *)hk_dev_CreateCommandQueue, "Device::CreateCommandQueue");
+        if (g_cfg.probe_skin)
+        {
+            hook_slot(dev, DEV_IDX(CreateDescriptorHeap), (void *)hk_dev_CreateDescriptorHeap, "Device::CreateDescriptorHeap");
+            hook_slot(dev, DEV_IDX(CreateShaderResourceView), (void *)hk_dev_CreateShaderResourceView,
+                    "Device::CreateShaderResourceView");
+            hook_slot(dev, DEV_IDX(CreateUnorderedAccessView), (void *)hk_dev_CreateUnorderedAccessView,
+                    "Device::CreateUnorderedAccessView");
+            hook_slot(dev, DEV_IDX(CreateConstantBufferView), (void *)hk_dev_CreateConstantBufferView,
+                    "Device::CreateConstantBufferView");
+            hook_slot(dev, DEV_IDX(CopyDescriptorsSimple), (void *)hk_dev_CopyDescriptorsSimple,
+                    "Device::CopyDescriptorsSimple");
+            hook_slot(dev, DEV_IDX(CopyDescriptors), (void *)hk_dev_CopyDescriptors, "Device::CopyDescriptors");
+        }
         if (iids[i].version >= 2)
             hook_slot(dev, DEV_IDX(CreatePipelineState), (void *)hk_dev_CreatePipelineState,
                     "Device::CreatePipelineState");
@@ -2171,9 +2479,21 @@ static void hk_skin_dispatch(void *a1, void *a2, void *a3, void *a4)
     last = g_sb_last_tick;
     if (now - last > 3000 && InterlockedCompareExchange(&g_sb_last_tick, now, last) == last)
         log_skin_dispatch("periodic");
+    {
+        static volatile LONG view_last;
+        LONG vl = view_last;
+
+        /* every ~10 s, log the bindings and data of one skin dispatch with work */
+        if (n > 0 && now - vl > 10000 && InterlockedCompareExchange(&view_last, now, vl) == vl)
+        {
+            log_msg("skin window: snapshot (entries queued=%d)", (int)n);
+            g_view_window_log = TRUE;
+        }
+    }
     g_skin_window_tid = GetCurrentThreadId();
     g_dispatch_trampoline(a1, a2, a3, a4);
     g_skin_window_tid = 0;
+    g_view_window_log = FALSE;
     if (n > 0 && !InterlockedExchange(&context_logged, 1))
         log_skin_context();
 }

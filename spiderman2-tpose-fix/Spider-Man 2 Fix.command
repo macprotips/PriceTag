@@ -191,7 +191,7 @@ mode_label() {
         return
     fi
     if grep -q '^probe_skin = 1' "$GAME_DIR/sm2fix.ini" 2>/dev/null; then
-        echo "Test #14 skinning trace"
+        echo "Test #18 skinning inputs trace"
         return
     fi
     if grep -q '^fake_timestamps = 1' "$GAME_DIR/sm2fix.ini" 2>/dev/null; then
@@ -260,7 +260,7 @@ fi
 say ""
 say "What do you want to do?"
 say "  1) Test #16: GPU check of the skinning shader (doesn't start the game)  <-- do this one"
-say "  2) Test #17: corrected skinning shader in the game (possible FIX)"
+say "  2) Test #18: log what the skinning shader reads in the game"
 say "  3) Save my results to the Desktop (to send for help)"
 say "  4) Remove everything (back to normal)"
 say ""
@@ -280,6 +280,7 @@ say "  17) Test #13: bigger skinning buffer (done: budget was fine)"
 say "  18) Test #14: skinning trace (done: the shader does run)"
 say "  19) Test #15: skinning shader off (done: its output is what you see)"
 say "  20) Test #9: Rosetta instruction check (done: Rosetta is fine)"
+say "  21) Test #17: rewritten skinning shader (done: not needed, shader is fine)"
 say "  10) Quit"
 read -r -p "Type a number and press Return: " action
 say ""
@@ -292,7 +293,8 @@ case "$action" in
     18) action=t14 ;;
     16) action=t11 ;;
     15) action=t10 ;;
-    2) action=t17 ;;
+    2) action=t18 ;;
+    21) action=t17 ;;
     20) action=t9 ;;
     14) action=t8 ;;
     13) action=t7 ;;
@@ -382,6 +384,20 @@ case "$action" in
         say "  1. Start the game, load your save, look at Spider-Man and people nearby."
         say "  2. Quit from the in-game menu."
         say "  3. Run this again, pick 3, and send me the log (fixed or not)."
+        line
+        ;;
+    t18)
+        ds_on
+        rm -rf "$GAME_DIR/sm2fix-dumps"
+        bash "$INSTALLER" "${ARGS[@]}" --mode off --profile --probe-skin || pause_exit 1
+        say ""
+        line
+        say "Test #18 installed. The GPU check showed the skinning shader works on your"
+        say "Mac, so the game must be feeding it something different. This logs exactly"
+        say "which buffers it reads, and samples the bone data every ~10 seconds."
+        say "  1. Start the game, load your save, play ~2 minutes near people"
+        say "     (keep moving so the characters animate)."
+        say "  2. Quit from the in-game menu, run this again, pick 3, send the log."
         line
         ;;
     t17)

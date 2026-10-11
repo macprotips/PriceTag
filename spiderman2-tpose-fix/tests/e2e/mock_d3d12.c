@@ -103,14 +103,53 @@ static void STDMETHODCALLTYPE list_ExecuteIndirect(ID3D12GraphicsCommandList *if
 }
 
 /* readback buffer: timestamps 1000, 1600, 2600 ticks at 1 MHz -> deltas 600 us, 1000 us */
-static UINT64 g_readback[16] = {1000, 1600, 2600};
+static UINT64 g_readback[1024] = {1000, 1600, 2600};
 struct resource { ID3D12ResourceVtbl *vtbl; LONG refs; };
 static HRESULT STDMETHODCALLTYPE res_QI(ID3D12Resource *iface, REFIID riid, void **out) { *out = iface; return S_OK; }
 static ULONG STDMETHODCALLTYPE res_AddRef(ID3D12Resource *iface) { return InterlockedIncrement(&((struct resource *)iface)->refs); }
 static ULONG STDMETHODCALLTYPE res_Release(ID3D12Resource *iface) { return InterlockedDecrement(&((struct resource *)iface)->refs); }
 static HRESULT STDMETHODCALLTYPE res_Map(ID3D12Resource *iface, UINT sub, const D3D12_RANGE *range, void **out) { *out = g_readback; return S_OK; }
+static void STDMETHODCALLTYPE res_Unmap(ID3D12Resource *iface, UINT sub, const D3D12_RANGE *range) {}
+static D3D12_RESOURCE_DESC *STDMETHODCALLTYPE res_GetDesc(ID3D12Resource *iface, D3D12_RESOURCE_DESC *ret)
+{
+    memset(ret, 0, sizeof(*ret));
+    ret->Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    ret->Width = 4096;
+    return ret;
+}
+static D3D12_GPU_VIRTUAL_ADDRESS STDMETHODCALLTYPE res_GetGPUVirtualAddress(ID3D12Resource *iface) { return 0xabc000; }
+static HRESULT STDMETHODCALLTYPE res_GetHeapProperties(ID3D12Resource *iface, D3D12_HEAP_PROPERTIES *p, D3D12_HEAP_FLAGS *f)
+{
+    memset(p, 0, sizeof(*p));
+    p->Type = D3D12_HEAP_TYPE_UPLOAD;
+    if (f)
+        *f = D3D12_HEAP_FLAG_NONE;
+    return S_OK;
+}
 static ID3D12ResourceVtbl res_vtbl;
 static struct resource g_resource = {&res_vtbl, 1};
+
+/* ---- descriptor heaps: plain memory, 32-byte descriptors, GPU handles from 0x100000 */
+struct dheap { ID3D12DescriptorHeapVtbl *vtbl; LONG refs; SIZE_T cpu; UINT64 gpu; };
+static HRESULT STDMETHODCALLTYPE dheap_QI(ID3D12DescriptorHeap *iface, REFIID riid, void **out)
+{
+    iface->lpVtbl->AddRef(iface);
+    *out = iface;
+    return S_OK;
+}
+static ULONG STDMETHODCALLTYPE dheap_AddRef(ID3D12DescriptorHeap *iface) { return InterlockedIncrement(&((struct dheap *)iface)->refs); }
+static ULONG STDMETHODCALLTYPE dheap_Release(ID3D12DescriptorHeap *iface) { return InterlockedDecrement(&((struct dheap *)iface)->refs); }
+static D3D12_CPU_DESCRIPTOR_HANDLE *STDMETHODCALLTYPE dheap_GetCPU(ID3D12DescriptorHeap *iface, D3D12_CPU_DESCRIPTOR_HANDLE *ret)
+{
+    ret->ptr = ((struct dheap *)iface)->cpu;
+    return ret;
+}
+static D3D12_GPU_DESCRIPTOR_HANDLE *STDMETHODCALLTYPE dheap_GetGPU(ID3D12DescriptorHeap *iface, D3D12_GPU_DESCRIPTOR_HANDLE *ret)
+{
+    ret->ptr = ((struct dheap *)iface)->gpu;
+    return ret;
+}
+static ID3D12DescriptorHeapVtbl dheap_vtbl;
 void *mock_get_readback_resource(void) { return &g_resource; }
 
 static void STDMETHODCALLTYPE list_EndQuery(ID3D12GraphicsCommandList *iface, ID3D12QueryHeap *h, D3D12_QUERY_TYPE t, UINT i) {}
@@ -135,6 +174,8 @@ static HRESULT STDMETHODCALLTYPE queue_GetTimestampFrequency(ID3D12CommandQueue 
 }
 
 static ID3D12GraphicsCommandListVtbl list_vtbl;
+static void STDMETHODCALLTYPE list_SetComputeRootDescriptorTable(ID3D12GraphicsCommandList *iface, UINT i,
+        D3D12_GPU_DESCRIPTOR_HANDLE h) {}
 
 /* ---- fence: completes asynchronously ~5 ms after a queue signals it, like a GPU */
 struct fence { ID3D12FenceVtbl *vtbl; LONG refs; volatile LONG64 completed; UINT64 wait_value; HANDLE wait_event; };
@@ -232,6 +273,28 @@ static HRESULT STDMETHODCALLTYPE dev_CreatePipelineState(ID3D12Device4 *iface,
     *out = new_object();
     return S_OK;
 }
+static HRESULT STDMETHODCALLTYPE dev_CreateDescriptorHeap(ID3D12Device4 *iface, const D3D12_DESCRIPTOR_HEAP_DESC *desc,
+        REFIID riid, void **out)
+{
+    static UINT64 next_gpu = 0x100000;
+    struct dheap *h = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*h));
+
+    h->vtbl = &dheap_vtbl;
+    h->refs = 1;
+    h->cpu = (SIZE_T)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, (SIZE_T)desc->NumDescriptors * 32 + 32);
+    if (desc->Flags & D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE)
+    {
+        h->gpu = next_gpu;
+        next_gpu += (UINT64)desc->NumDescriptors * 32 + 0x1000;
+    }
+    *out = h;
+    return S_OK;
+}
+static UINT STDMETHODCALLTYPE dev_GetDescriptorHandleIncrementSize(ID3D12Device4 *iface, D3D12_DESCRIPTOR_HEAP_TYPE t) { return 32; }
+static void STDMETHODCALLTYPE dev_CreateShaderResourceView(ID3D12Device4 *iface, ID3D12Resource *r,
+        const D3D12_SHADER_RESOURCE_VIEW_DESC *d, D3D12_CPU_DESCRIPTOR_HANDLE h) {}
+static void STDMETHODCALLTYPE dev_CopyDescriptorsSimple(ID3D12Device4 *iface, UINT n, D3D12_CPU_DESCRIPTOR_HANDLE d,
+        D3D12_CPU_DESCRIPTOR_HANDLE s, D3D12_DESCRIPTOR_HEAP_TYPE t) {}
 static HRESULT STDMETHODCALLTYPE dev_CreateCommandList(ID3D12Device4 *iface, UINT mask, D3D12_COMMAND_LIST_TYPE type,
         ID3D12CommandAllocator *alloc, ID3D12PipelineState *pso, REFIID riid, void **out)
 {
@@ -336,6 +399,10 @@ HRESULT WINAPI mock_D3D12CreateDevice(IUnknown *adapter, D3D_FEATURE_LEVEL level
         dev_vtbl->CreateFence = dev_CreateFence;
         dev_vtbl->CreateSampler = dev_CreateSampler;
         dev_vtbl->CreateQueryHeap = dev_CreateQueryHeap;
+        dev_vtbl->CreateDescriptorHeap = dev_CreateDescriptorHeap;
+        dev_vtbl->GetDescriptorHandleIncrementSize = dev_GetDescriptorHandleIncrementSize;
+        dev_vtbl->CreateShaderResourceView = dev_CreateShaderResourceView;
+        dev_vtbl->CopyDescriptorsSimple = dev_CopyDescriptorsSimple;
         VirtualProtect(dev_vtbl, 4096, PAGE_READONLY, &old);
 
         list_vtbl.QueryInterface = list_QI;
@@ -345,6 +412,7 @@ HRESULT WINAPI mock_D3D12CreateDevice(IUnknown *adapter, D3D_FEATURE_LEVEL level
         list_vtbl.ClearState = list_ClearState;
         list_vtbl.SetPipelineState = list_SetPipelineState;
         list_vtbl.Dispatch = list_Dispatch;
+        list_vtbl.SetComputeRootDescriptorTable = list_SetComputeRootDescriptorTable;
         list_vtbl.ResourceBarrier = list_ResourceBarrier;
         list_vtbl.ExecuteIndirect = list_ExecuteIndirect;
         list_vtbl.EndQuery = list_EndQuery;
@@ -353,6 +421,15 @@ HRESULT WINAPI mock_D3D12CreateDevice(IUnknown *adapter, D3D_FEATURE_LEVEL level
         res_vtbl.AddRef = res_AddRef;
         res_vtbl.Release = res_Release;
         res_vtbl.Map = res_Map;
+        res_vtbl.Unmap = res_Unmap;
+        res_vtbl.GetDesc = res_GetDesc;
+        res_vtbl.GetGPUVirtualAddress = res_GetGPUVirtualAddress;
+        res_vtbl.GetHeapProperties = res_GetHeapProperties;
+        dheap_vtbl.QueryInterface = dheap_QI;
+        dheap_vtbl.AddRef = dheap_AddRef;
+        dheap_vtbl.Release = dheap_Release;
+        dheap_vtbl.GetCPUDescriptorHandleForHeapStart = dheap_GetCPU;
+        dheap_vtbl.GetGPUDescriptorHandleForHeapStart = dheap_GetGPU;
 
         fence_vtbl.QueryInterface = fence_QI;
         fence_vtbl.AddRef = fence_AddRef;

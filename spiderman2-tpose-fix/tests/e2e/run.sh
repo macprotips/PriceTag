@@ -27,7 +27,7 @@ for mode in hash all max off; do
     if [[ $mode == hash ]] && ! { grep -q "RenderBudgets (SkinningSB about to be created): ModelInstMax=100 ModelSkinInstMax=200 ModelSkinSubsetMax=300 ModelSkinGroupMax=16 " sm2fix.log \
             && grep -q "skin_budget: raising ModelSkinGroupMax 16 -> 65536" sm2fix.log \
             && grep -q "SkinningSB created: ok=1 capacity=65536 entries, stride=32 (ModelSkinGroupMax was 16)" sm2fix.log \
-            && grep -q "exit: skin dispatch calls=3 with-work=3 over-capacity=0 capacity=65536" sm2fix.log; }; then
+            && grep -q "exit: skin dispatch calls=4 with-work=4 over-capacity=0 capacity=65536" sm2fix.log; }; then
         echo "FAIL: skin budget ($mode)"; grep -i "skin" sm2fix.log; status=1
     fi
     if [[ $mode == all || $mode == max ]] && ! { grep -q "SkinningSB created: ok=1 capacity=16 entries" sm2fix.log \
@@ -36,6 +36,12 @@ for mode in hash all max off; do
     fi
     if [[ $mode == hash ]] && ! grep -q "replace_skinning: created the replacement skinning pipeline: hr=0" sm2fix.log; then
         echo "FAIL: replace_skinning ($mode)"; grep -i "replace" sm2fix.log; status=1
+    fi
+    if [[ $mode != off ]] && ! grep -q "skin window:   root 1 \[0\] SRV dim=1 res=.* va=0xabc000 width=4096 heap=2 first=7 num=10 stride=64" sm2fix.log; then
+        echo "FAIL: descriptor tracking ($mode)"; grep -i "skin window\|descriptor heap" sm2fix.log; status=1
+    fi
+    if [[ $mode != off ]] && ! grep -q "skin window:     data: [0-9a-f]\{8\} " sm2fix.log; then
+        echo "FAIL: upload-buffer data dump ($mode)"; grep -i "skin window" sm2fix.log; status=1
     fi
     if [[ $mode == off ]] && awk '/new launch/{buf=""} {buf=buf $0 "\n"} END{printf "%s", buf}' sm2fix.log | grep -q "SkinningSB\|skin dispatch"; then
         echo "FAIL: skin hooks active in off mode"; status=1
