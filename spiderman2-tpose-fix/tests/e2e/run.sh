@@ -55,6 +55,9 @@ for mode in hash all max off; do
     if [[ $mode != off ]] && ! grep -q "force_anim: scanned .*AnimUpdateLODPrius=1 AnimControllerComponentPrius=1 SimpleAnimComponentPrius=[0-9]*, 3 changed now" sm2fix.log; then
         echo "FAIL: force_anim ($mode)"; grep -i "force_anim" sm2fix.log; status=1
     fi
+    if [[ $mode != off ]] && ! grep -q "readbacks: \[0\] 4096 bytes, 1 copies (buffer) from src .* (1048576, heap 2): 0.8% non-zero" sm2fix.log; then
+        echo "FAIL: readback monitor ($mode)"; grep -i "readback" sm2fix.log; status=1
+    fi
     if [[ $mode == off ]] && awk '/new launch/{buf=""} {buf=buf $0 "\n"} END{printf "%s", buf}' sm2fix.log | grep -q "SkinningSB\|skin dispatch"; then
         echo "FAIL: skin hooks active in off mode"; status=1
     fi

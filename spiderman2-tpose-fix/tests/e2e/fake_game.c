@@ -336,6 +336,12 @@ int main(int argc, char **argv)
         vis_cpu.ptr += 2 * 32;
         ID3D12Device4_CopyDescriptorsSimple(device, 1, vis_cpu, cpu, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
         g_cb_table.ptr += 2 * 32;
+        {
+            void *(*rb)(void) = (void *)GetProcAddress(mock, "mock_get_rb_resource");
+
+            /* a GPU->CPU copy the readback monitor should pick up */
+            ID3D12GraphicsCommandList_CopyBufferRegion(list, rb(), 0, readback(), 0, 64);
+        }
         g_cb_list = list;
         fake_dispatch_cb = bind_table_cb;
         skin_dispatch_test();

@@ -903,6 +903,143 @@ static void STDMETHODCALLTYPE hk_list_ExecuteIndirect(ID3D12GraphicsCommandList 
     }
 }
 
+/* ------------------------------------------------------- readback monitor */
+
+/* With probe_skin: every buffer the GPU copies into a READBACK heap is something the CPU
+ * reads back. A D3DMetal bug there (like the all-zero timestamps) would feed the game's
+ * CPU logic bad data. Track each readback destination (with a reference held so it can
+ * be mapped later) and, at each skin snapshot, log how much of it is non-zero and whether
+ * it changed since the last snapshot. */
+#define READBACK_MAX 128
+struct readback_rec
+{
+    ID3D12Resource *dst;
+    ID3D12Resource *src;        /* last source (not referenced) */
+    UINT64 width, src_width;
+    unsigned int src_heap, kind; /* kind: 1 buffer copy, 2 resource copy, 3 texture copy */
+    volatile LONG64 copies;
+    uint64_t last_hash;
+    unsigned int snapshots, changes;
+};
+static struct readback_rec g_readbacks[READBACK_MAX];
+static volatile LONG g_readback_count;
+static SRWLOCK g_readback_lock = SRWLOCK_INIT;
+
+static unsigned int heap_type_of(ID3D12Resource *res)
+{
+    D3D12_HEAP_PROPERTIES props;
+    D3D12_HEAP_FLAGS flags;
+
+    return res && SUCCEEDED(res->lpVtbl->GetHeapProperties(res, &props, &flags)) ? (unsigned int)props.Type : 0;
+}
+
+static void note_readback(ID3D12Resource *dst, ID3D12Resource *src, unsigned int kind)
+{
+    LONG i, n;
+
+    if (!dst || heap_type_of(dst) != D3D12_HEAP_TYPE_READBACK)
+        return;
+    AcquireSRWLockExclusive(&g_readback_lock);
+    n = g_readback_count;
+    for (i = 0; i < n; i++)
+        if (g_readbacks[i].dst == dst)
+            break;
+    if (i == n && n < READBACK_MAX)
+    {
+        D3D12_RESOURCE_DESC desc;
+
+        dst->lpVtbl->AddRef(dst);
+        dst->lpVtbl->GetDesc(dst, &desc);
+        g_readbacks[i].dst = dst;
+        g_readbacks[i].width = desc.Width;
+        g_readback_count = n + 1;
+    }
+    if (i < READBACK_MAX && g_readbacks[i].dst == dst)
+    {
+        struct readback_rec *r = &g_readbacks[i];
+
+        r->kind = kind;
+        if (src && r->src != src)
+        {
+            D3D12_RESOURCE_DESC desc;
+
+            src->lpVtbl->GetDesc(src, &desc);
+            r->src = src;
+            r->src_width = desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER ? desc.Width : desc.Width * desc.Height;
+            r->src_heap = heap_type_of(src);
+        }
+        r->copies++;
+    }
+    ReleaseSRWLockExclusive(&g_readback_lock);
+}
+
+static void log_readbacks(void)
+{
+    LONG i, n = g_readback_count;
+
+    log_msg("readbacks: %ld GPU->CPU buffers seen", (long)n);
+    for (i = 0; i < n; i++)
+    {
+        struct readback_rec *r = &g_readbacks[i];
+        D3D12_RANGE range = {0, (SIZE_T)r->width}, none = {0, 0};
+        const uint8_t *map = NULL;
+        UINT64 len = r->width < (64u << 20) ? r->width : (64u << 20), k, nonzero = 0;
+        uint64_t h = 0xcbf29ce484222325ull;
+
+        if (!r->dst || FAILED(r->dst->lpVtbl->Map(r->dst, 0, &range, (void **)&map)) || !map)
+            continue;
+        for (k = 0; k + 8 <= len; k += 8)
+        {
+            uint64_t v = *(const uint64_t *)(map + k);
+
+            nonzero += v != 0;
+            h = (h ^ v) * 0x100000001b3ull;
+        }
+        r->dst->lpVtbl->Unmap(r->dst, 0, &none);
+        r->snapshots++;
+        if (r->snapshots > 1 && h != r->last_hash)
+            r->changes++;
+        r->last_hash = h;
+        log_msg("readbacks: [%ld] %llu bytes, %lld copies (%s) from src %p (%llu, heap %u): %.1f%% non-zero, changed in %u of %u snapshots",
+                (long)i, (unsigned long long)r->width, (long long)r->copies,
+                r->kind == 1 ? "buffer" : r->kind == 2 ? "resource" : "texture", (void *)r->src,
+                (unsigned long long)r->src_width, r->src_heap, len ? 100.0 * nonzero * 8 / len : 0.0,
+                r->changes, r->snapshots > 1 ? r->snapshots - 1 : 0);
+    }
+}
+
+static void STDMETHODCALLTYPE hk_list_CopyBufferRegion(ID3D12GraphicsCommandList *list, ID3D12Resource *dst,
+        UINT64 dst_off, ID3D12Resource *src, UINT64 src_off, UINT64 n)
+{
+    void (STDMETHODCALLTYPE *orig)(ID3D12GraphicsCommandList *, ID3D12Resource *, UINT64, ID3D12Resource *, UINT64,
+            UINT64) = orig_fn(list, CL_IDX(CopyBufferRegion));
+
+    orig(list, dst, dst_off, src, src_off, n);
+    note_readback(dst, src, 1);
+}
+
+static void STDMETHODCALLTYPE hk_list_CopyResource(ID3D12GraphicsCommandList *list, ID3D12Resource *dst,
+        ID3D12Resource *src)
+{
+    void (STDMETHODCALLTYPE *orig)(ID3D12GraphicsCommandList *, ID3D12Resource *, ID3D12Resource *)
+            = orig_fn(list, CL_IDX(CopyResource));
+
+    orig(list, dst, src);
+    note_readback(dst, src, 2);
+}
+
+static void STDMETHODCALLTYPE hk_list_CopyTextureRegion(ID3D12GraphicsCommandList *list,
+        const D3D12_TEXTURE_COPY_LOCATION *dst, UINT x, UINT y, UINT z, const D3D12_TEXTURE_COPY_LOCATION *src,
+        const D3D12_BOX *box)
+{
+    void (STDMETHODCALLTYPE *orig)(ID3D12GraphicsCommandList *, const D3D12_TEXTURE_COPY_LOCATION *, UINT, UINT, UINT,
+            const D3D12_TEXTURE_COPY_LOCATION *, const D3D12_BOX *) = orig_fn(list, CL_IDX(CopyTextureRegion));
+
+    orig(list, dst, x, y, z, src, box);
+    if (dst && dst->Type == D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT)
+        note_readback(dst->pResource, src ? src->pResource : NULL, 3);
+}
+
 /* --------------------------------------------------------- GPU query tracing */
 
 /* The engine reads GPU answers back on the CPU (timestamps for budgets, occlusion for
@@ -1197,6 +1334,9 @@ static void hook_command_list_vtable(void *list)
     hook_slot(list, CL_IDX(Dispatch), (void *)hk_list_Dispatch, "CommandList::Dispatch");
     if (g_cfg.probe_skin)
     {
+        hook_slot(list, CL_IDX(CopyBufferRegion), (void *)hk_list_CopyBufferRegion, "CommandList::CopyBufferRegion");
+        hook_slot(list, CL_IDX(CopyResource), (void *)hk_list_CopyResource, "CommandList::CopyResource");
+        hook_slot(list, CL_IDX(CopyTextureRegion), (void *)hk_list_CopyTextureRegion, "CommandList::CopyTextureRegion");
         hook_slot(list, CL_IDX(SetComputeRootSignature), (void *)hk_list_SetComputeRootSignature,
                 "CommandList::SetComputeRootSignature");
         hook_slot(list, CL_IDX(SetComputeRootDescriptorTable), (void *)hk_list_SetComputeRootDescriptorTable,
@@ -2740,6 +2880,7 @@ static void hk_skin_dispatch(void *a1, void *a2, void *a3, void *a4)
         {
             log_msg("skin window: snapshot (entries queued=%d)", (int)n);
             g_view_window_log = TRUE;
+            log_readbacks();
         }
     }
     if (InterlockedExchange(&recheck_pending, 0))

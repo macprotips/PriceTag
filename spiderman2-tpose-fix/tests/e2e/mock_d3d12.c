@@ -129,6 +129,26 @@ static HRESULT STDMETHODCALLTYPE res_GetHeapProperties(ID3D12Resource *iface, D3
 static ID3D12ResourceVtbl res_vtbl;
 static struct resource g_resource = {&res_vtbl, 1};
 
+/* a READBACK-heap buffer: 4 KiB, a quarter of it non-zero */
+static UINT64 g_rb_data[512] = {1, 2, 3, 4};
+static HRESULT STDMETHODCALLTYPE rb_Map(ID3D12Resource *iface, UINT sub, const D3D12_RANGE *range, void **out) { *out = g_rb_data; return S_OK; }
+static D3D12_RESOURCE_DESC *STDMETHODCALLTYPE rb_GetDesc(ID3D12Resource *iface, D3D12_RESOURCE_DESC *ret)
+{
+    memset(ret, 0, sizeof(*ret));
+    ret->Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    ret->Width = sizeof(g_rb_data);
+    return ret;
+}
+static HRESULT STDMETHODCALLTYPE rb_GetHeapProperties(ID3D12Resource *iface, D3D12_HEAP_PROPERTIES *p, D3D12_HEAP_FLAGS *f)
+{
+    memset(p, 0, sizeof(*p));
+    p->Type = D3D12_HEAP_TYPE_READBACK;
+    return S_OK;
+}
+static ID3D12ResourceVtbl rb_vtbl;
+static struct resource g_rb_resource = {&rb_vtbl, 1};
+void *mock_get_rb_resource(void) { return &g_rb_resource; }
+
 /* ---- descriptor heaps: plain memory, 32-byte descriptors, GPU handles from 0x100000 */
 struct dheap { ID3D12DescriptorHeapVtbl *vtbl; LONG refs; SIZE_T cpu; UINT64 gpu; };
 static HRESULT STDMETHODCALLTYPE dheap_QI(ID3D12DescriptorHeap *iface, REFIID riid, void **out)
@@ -174,6 +194,8 @@ static HRESULT STDMETHODCALLTYPE queue_GetTimestampFrequency(ID3D12CommandQueue 
 }
 
 static ID3D12GraphicsCommandListVtbl list_vtbl;
+static void STDMETHODCALLTYPE list_CopyBufferRegion(ID3D12GraphicsCommandList *iface, ID3D12Resource *d, UINT64 doff,
+        ID3D12Resource *s, UINT64 soff, UINT64 n) {}
 static void STDMETHODCALLTYPE list_SetComputeRootDescriptorTable(ID3D12GraphicsCommandList *iface, UINT i,
         D3D12_GPU_DESCRIPTOR_HANDLE h) {}
 
@@ -413,6 +435,7 @@ HRESULT WINAPI mock_D3D12CreateDevice(IUnknown *adapter, D3D_FEATURE_LEVEL level
         list_vtbl.SetPipelineState = list_SetPipelineState;
         list_vtbl.Dispatch = list_Dispatch;
         list_vtbl.SetComputeRootDescriptorTable = list_SetComputeRootDescriptorTable;
+        list_vtbl.CopyBufferRegion = list_CopyBufferRegion;
         list_vtbl.ResourceBarrier = list_ResourceBarrier;
         list_vtbl.ExecuteIndirect = list_ExecuteIndirect;
         list_vtbl.EndQuery = list_EndQuery;
@@ -425,6 +448,10 @@ HRESULT WINAPI mock_D3D12CreateDevice(IUnknown *adapter, D3D_FEATURE_LEVEL level
         res_vtbl.GetDesc = res_GetDesc;
         res_vtbl.GetGPUVirtualAddress = res_GetGPUVirtualAddress;
         res_vtbl.GetHeapProperties = res_GetHeapProperties;
+        rb_vtbl = res_vtbl;
+        rb_vtbl.Map = rb_Map;
+        rb_vtbl.GetDesc = rb_GetDesc;
+        rb_vtbl.GetHeapProperties = rb_GetHeapProperties;
         dheap_vtbl.QueryInterface = dheap_QI;
         dheap_vtbl.AddRef = dheap_AddRef;
         dheap_vtbl.Release = dheap_Release;
