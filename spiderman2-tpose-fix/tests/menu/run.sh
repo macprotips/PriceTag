@@ -30,7 +30,8 @@ for variant in no-crossover crossover; do
     out() { grep -q "$1" "$TMP/out"; }
 
     echo "== $variant"
-    run 1;  check "1 test#18 inputs trace"         eval 'ini probe_skin 1 && ini replace_skinning 0 && ini skip_skinning 0 && ini profile 1'
+    run 1;  check "1 test#19 force anim"           eval 'ini force_anim 1 && ini probe_skin 1 && ini skip_skinning 0'
+    run 22; check "22 test#18 inputs trace"        eval 'ini probe_skin 1 && ini replace_skinning 0 && ini skip_skinning 0 && ini profile 1'
     run 21; check "21 test#17 corrected shader"    eval 'ini replace_skinning 1 && ini skip_skinning 0 && [ -f "$G/sm2fix-skinning.dxil" ] && [ -f "$G/d3d12.dll" ]'
     run 4;  check "4 remove takes the shader too"  eval '[ ! -f "$G/sm2fix-skinning.dxil" ] && [ ! -f "$G/d3d12.dll" ]'
     run 19; check "19 test#15 skip skinning"       eval 'ini skip_skinning 1 && ini probe_skin 1 && ini profile 1 && [ -f "$G/d3d12.dll" ]'

@@ -115,6 +115,9 @@ static void load_config(void)
         {"SM2FIX_REPLACE_SKINNING", "replace_skinning"},
         {"SM2FIX_SKINNING_HASH", "skinning_hash"},
         {"SM2FIX_SNAPSHOT_MS", "snapshot_ms"},
+        {"SM2FIX_FORCE_ANIM", "force_anim"},
+        {"SM2FIX_FORCE_ANIM_DELAY_MS", "force_anim_delay_ms"},
+        {"SM2FIX_ANIM_VTBL_RVAS", "anim_vtbl_rvas"},
     };
     WCHAR path[MAX_PATH];
     char value[1024];
@@ -2812,6 +2815,198 @@ static void install_skin_budget(void)
         log_msg("skin_budget: hooked skin dispatch at %p (queued count at %p)", (void *)d, (void *)g_sb.count);
 }
 
+/* ------------------------------------------------------------ force_anim */
+
+/* The game decides per actor whether to evaluate its animation this frame, from data
+ * objects loaded with each asset (layouts from the game's reflection tables):
+ *   AnimUpdateLODPrius            +0x0c RangeBase, +0x10 RangeVisible (float)
+ *   AnimControllerComponentPrius  +0x60 MaxUpdateDistance (0 = always), +0x68 NeverCull,
+ *                                 +0x6a AutoFreezeSkinning (bool)
+ *   SimpleAnimComponentPrius      +0x20 MaxUpdateDistance, +0x24 MaxCulledUpdateDistance
+ * Meshes whose animation isn't evaluated keep identity bone palettes (bind pose). With
+ * force_anim, a background thread finds these objects by their vtable (checked against
+ * the RTTI class name) and sets every one to "always animate, never cull, never freeze". */
+struct anim_class
+{
+    const char *rtti;           /* RTTI type name */
+    uint32_t vtbl_rva;          /* in the analysed build; verified at runtime */
+    void *vtbl;
+    unsigned int found, patched;
+};
+static struct anim_class g_anim_classes[3] = {
+    { ".?AVAnimUpdateLODPrius@@", 0, NULL, 0, 0 },
+    { ".?AVAnimControllerComponentPrius@@", 0, NULL, 0, 0 },
+    { ".?AVSimpleAnimComponentPrius@@", 0, NULL, 0, 0 },
+};
+
+/* vtable[-1] is the RTTI complete-object locator; its type descriptor holds the name */
+static int vtable_has_rtti(const uint8_t *vt, const char *name)
+{
+    const uint8_t *col, *td;
+    size_t len = strlen(name) + 1;
+
+    if (!readable(vt - 8, 8) || !(col = *(const uint8_t *const *)(vt - 8)) || !readable(col, 24))
+        return 0;
+    td = g_game_base + *(const uint32_t *)(col + 12);
+    return readable(td + 0x10, len) && !memcmp(td + 0x10, name, len);
+}
+
+static int finite_range(float f, float lo, float hi)
+{
+    return f == f && f >= lo && f <= hi;
+}
+
+/* Decides the new field values for one object (a copy in o); returns 1 if anything changes. */
+static int patch_anim_object(int cls, uint8_t *o)
+{
+    int c = 0;
+
+    switch (cls)
+    {
+    case 0: /* AnimUpdateLODPrius */
+        if (!finite_range(*(float *)(o + 8), 0, 1e7f) || !finite_range(*(float *)(o + 0xc), 0, 1e7f)
+                || !finite_range(*(float *)(o + 0x10), 0, 1e7f) || o[0x14] > 1)
+            return 0;
+        if (*(float *)(o + 0xc) < 1e6f) { *(float *)(o + 0xc) = 1e6f; c = 1; }
+        if (*(float *)(o + 0x10) < 1e6f) { *(float *)(o + 0x10) = 1e6f; c = 1; }
+        break;
+    case 1: /* AnimControllerComponentPrius */
+        if (!finite_range(*(float *)(o + 0x60), 0, 1e7f) || !finite_range(*(float *)(o + 0x64), 0, 1e7f)
+                || o[0x68] > 1 || o[0x69] > 1 || o[0x6a] > 1)
+            return 0;
+        if (*(float *)(o + 0x60) != 0.0f) { *(float *)(o + 0x60) = 0.0f; c = 1; }
+        if (!o[0x68]) { o[0x68] = 1; c = 1; }
+        if (o[0x6a]) { o[0x6a] = 0; c = 1; }
+        break;
+    case 2: /* SimpleAnimComponentPrius */
+        if (!finite_range(*(float *)(o + 0x20), 0, 1e7f) || !finite_range(*(float *)(o + 0x24), 0, 1e7f)
+                || o[0x28] > 1 || o[0x29] > 1)
+            return 0;
+        if (*(float *)(o + 0x20) != 0.0f) { *(float *)(o + 0x20) = 0.0f; c = 1; }
+        if (*(float *)(o + 0x24) != 0.0f) { *(float *)(o + 0x24) = 0.0f; c = 1; }
+        break;
+    }
+    return c;
+}
+
+static void log_anim_object(int cls, const uint8_t *addr, const uint8_t *o)
+{
+    static volatile LONG shown[3];
+
+    if (InterlockedIncrement(&shown[cls]) > 3)
+        return;
+    if (cls == 0)
+        log_msg("force_anim: AnimUpdateLODPrius %p: PlayAnimBump=%g RangeBase=%g RangeVisible=%g BumpOnActivate=%u",
+                (const void *)addr, *(const float *)(o + 8), *(const float *)(o + 0xc), *(const float *)(o + 0x10), o[0x14]);
+    else if (cls == 1)
+        log_msg("force_anim: AnimControllerComponentPrius %p: MaxUpdateDistance=%g NeverCull=%u BindAfterAnimEnd=%u"
+                " AutoFreezeSkinning=%u", (const void *)addr, *(const float *)(o + 0x60), o[0x68], o[0x69], o[0x6a]);
+    else
+        log_msg("force_anim: SimpleAnimComponentPrius %p: MaxUpdateDistance=%g MaxCulledUpdateDistance=%g",
+                (const void *)addr, *(const float *)(o + 0x20), *(const float *)(o + 0x24));
+}
+
+/* Memory can be freed while we scan, so read through ReadProcessMemory (fails cleanly
+ * instead of faulting) and write through WriteProcessMemory after re-reading. */
+static void scan_anim_objects(void)
+{
+    static uint8_t chunk[(1 << 20) + 0x100];
+    HANDLE self = GetCurrentProcess();
+    MEMORY_BASIC_INFORMATION info;
+    uint8_t *addr = (uint8_t *)0x10000;
+    unsigned int found[3] = {0}, changed = 0, i;
+    SIZE_T scanned = 0;
+    DWORD t0 = GetTickCount();
+
+    while (VirtualQuery(addr, &info, sizeof(info)) == sizeof(info))
+    {
+        uint8_t *base = info.BaseAddress, *next = base + info.RegionSize, *p;
+
+        if (info.State == MEM_COMMIT && info.Type == MEM_PRIVATE && !(info.Protect & (PAGE_GUARD | PAGE_NOACCESS))
+                && (info.Protect & PAGE_READWRITE) && info.RegionSize <= ((SIZE_T)1 << 31))
+        {
+            for (p = base; p < next; p += 1 << 20)
+            {
+                SIZE_T want = (SIZE_T)(next - p) < (1 << 20) + 0x80 ? (SIZE_T)(next - p) : (1 << 20) + 0x80, got = 0;
+                SIZE_T k;
+
+                if (!ReadProcessMemory(self, p, chunk, want, &got) || got < 0x80)
+                    continue;
+                scanned += got;
+                for (k = 0; k + 0x80 <= got && k < (1 << 20); k += 8)
+                {
+                    uint64_t v = *(const uint64_t *)(chunk + k);
+                    int cls;
+
+                    for (cls = 0; cls < 3; cls++)
+                    {
+                        uint8_t obj[0x80];
+
+                        if (!g_anim_classes[cls].vtbl || v != (uint64_t)g_anim_classes[cls].vtbl)
+                            continue;
+                        found[cls]++;
+                        memcpy(obj, chunk + k, sizeof(obj));
+                        log_anim_object(cls, p + k, obj);
+                        if (patch_anim_object(cls, obj))
+                        {
+                            uint8_t now[0x80];
+                            SIZE_T n = 0;
+
+                            /* still the same object? then write the changed fields back */
+                            if (ReadProcessMemory(self, p + k, now, sizeof(now), &n) && n == sizeof(now)
+                                    && *(const uint64_t *)now == v
+                                    && WriteProcessMemory(self, p + k + 8, obj + 8, sizeof(obj) - 8, &n))
+                                changed++;
+                        }
+                    }
+                }
+            }
+        }
+        if (next <= addr)
+            break;
+        addr = next;
+    }
+    for (i = 0; i < 3; i++)
+        g_anim_classes[i].found = found[i];
+    log_msg("force_anim: scanned %llu MB in %lu ms: AnimUpdateLODPrius=%u AnimControllerComponentPrius=%u"
+            " SimpleAnimComponentPrius=%u, %u changed now", (unsigned long long)(scanned >> 20),
+            (unsigned long)(GetTickCount() - t0), found[0], found[1], found[2], changed);
+}
+
+static DWORD WINAPI force_anim_thread(void *arg)
+{
+    unsigned int round = 0;
+
+    Sleep(g_cfg.force_anim_delay_ms);
+    for (;;)
+    {
+        if (g_exiting)
+            return 0;
+        scan_anim_objects();
+        Sleep(++round < 6 ? 10000 : 30000);
+    }
+}
+
+static void install_force_anim(void)
+{
+    int i, ok = 0;
+
+    for (i = 0; i < 3; i++)
+    {
+        uint8_t *vt = g_game_base + g_cfg.anim_vtbl_rva[i];
+
+        if (vtable_has_rtti(vt, g_anim_classes[i].rtti))
+        {
+            g_anim_classes[i].vtbl = vt;
+            ok++;
+        }
+        else
+            log_msg("force_anim: %s vtable not found at the expected place (other game build?)", g_anim_classes[i].rtti);
+    }
+    if (ok && CreateThread(NULL, 0, force_anim_thread, NULL, 0, NULL))
+        log_msg("force_anim: watching for %d animation config classes", ok);
+}
+
 BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, void *reserved)
 {
     if (reason == DLL_PROCESS_ATTACH)
@@ -2836,6 +3031,8 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, void *reserved)
             install_skin_probe();
         if (g_cfg.probe_skin || g_cfg.skin_budget)
             install_skin_budget();
+        if (g_cfg.force_anim)
+            install_force_anim();
     }
     else if (reason == DLL_PROCESS_DETACH && g_log)
     {

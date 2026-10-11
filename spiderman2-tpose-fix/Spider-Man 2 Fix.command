@@ -178,6 +178,10 @@ current_mode() {
 }
 
 mode_label() {
+    if grep -q '^force_anim = 1' "$GAME_DIR/sm2fix.ini" 2>/dev/null; then
+        echo "Test #19 always animate (possible FIX)"
+        return
+    fi
     if grep -q '^replace_skinning = 1' "$GAME_DIR/sm2fix.ini" 2>/dev/null; then
         echo "Test #17 corrected skinning shader"
         return
@@ -259,7 +263,7 @@ fi
 
 say ""
 say "What do you want to do?"
-say "  1) Test #18: play the game and log what the skinning shader reads  <-- do this one"
+say "  1) Test #19: make every character always animate (possible FIX)  <-- do this one"
 say "  2) Test #16: GPU check (done: the shader works on your Mac)"
 say "  3) Save my results to the Desktop (to send for help)"
 say "  4) Remove everything (back to normal)"
@@ -281,13 +285,15 @@ say "  18) Test #14: skinning trace (done: the shader does run)"
 say "  19) Test #15: skinning shader off (done: its output is what you see)"
 say "  20) Test #9: Rosetta instruction check (done: Rosetta is fine)"
 say "  21) Test #17: rewritten skinning shader (done: not needed, shader is fine)"
+say "  22) Test #18: skinning inputs trace (done: some bone sets are never written)"
 say "  10) Quit"
 read -r -p "Type a number and press Return: " action
 say ""
 
 # Map the new menu numbers onto the handlers below.
 case "$action" in
-    1) action=t18 ;;
+    1) action=t19 ;;
+    22) action=t18 ;;
     19) action=t15 ;;
     17) action=t13 ;;
     18) action=t14 ;;
@@ -384,6 +390,20 @@ case "$action" in
         say "  1. Start the game, load your save, look at Spider-Man and people nearby."
         say "  2. Quit from the in-game menu."
         say "  3. Run this again, pick 3, and send me the log (fixed or not)."
+        line
+        ;;
+    t19)
+        ds_on
+        rm -rf "$GAME_DIR/sm2fix-dumps"
+        bash "$INSTALLER" "${ARGS[@]}" --mode off --profile --probe-skin --force-anim || pause_exit 1
+        say ""
+        line
+        say "Test #19 installed. The logs showed the game never computes the bones for"
+        say "some meshes (like that jacket), so they stay in the T-pose. This turns off"
+        say "the game's animation culling for every character, ~20 s after it starts."
+        say "  1. Start the game, load your save, wait ~30 s, look at people nearby."
+        say "  2. Is the T-pose gone (or less)? A screenshot helps."
+        say "  3. Quit from the in-game menu, run this again, pick 3, send the log."
         line
         ;;
     t18)

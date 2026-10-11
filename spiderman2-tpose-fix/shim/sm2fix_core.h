@@ -67,6 +67,9 @@ struct sm2_config
     uint32_t probe_sb_rva;      /* stub that creates the SkinningSB buffer (sized by ModelSkinGroupMax) */
     uint32_t probe_dispatch_rva;/* function that fills SkinningSB and dispatches CS_ModelSkinning */
     uint64_t skinning_hash;     /* CS_ModelSkinning's hash (overridable for tests) */
+    int force_anim;             /* override animation culling/freezing in the game's anim config objects */
+    unsigned int force_anim_delay_ms; /* wait before the first scan */
+    uint32_t anim_vtbl_rva[3];  /* AnimUpdateLOD / AnimControllerComponent / SimpleAnimComponent Prius vtables */
     unsigned int snapshot_ms;   /* probe_skin: period of the binding/palette snapshots */
     int replace_skinning;       /* swap CS_ModelSkinning for sm2fix-skinning.dxil (array-free rewrite) */
     int skip_skinning;          /* diagnostic: drop every Dispatch while CS_ModelSkinning is bound */

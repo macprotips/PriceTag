@@ -69,6 +69,17 @@ __asm__(".text\n.globl skin_sb_stub_test\nskin_sb_stub_test:\n"
 uint64_t skin_sb_stub_test(void);
 void skin_dispatch_test(void);
 
+/* Fake RTTI + vtables for the three animation config classes force_anim looks for. */
+struct fake_td { void *vt; void *spare; char name[48]; };
+struct fake_col { uint32_t sig, off, cd, td_rva, cd_rva, self_rva; };
+static struct fake_td fake_tds[3] = {
+    { NULL, NULL, ".?AVAnimUpdateLODPrius@@" },
+    { NULL, NULL, ".?AVAnimControllerComponentPrius@@" },
+    { NULL, NULL, ".?AVSimpleAnimComponentPrius@@" },
+};
+static struct fake_col fake_cols[3];
+static void *fake_vtables[3][4];    /* [0] = COL pointer, the "vtable" starts at [1] */
+
 struct sub_ptr { UINT type; UINT pad; void *p; };
 struct sub_bytecode { UINT type; UINT pad; const void *code; UINT64 size; };
 
@@ -116,6 +127,23 @@ int main(int argc, char **argv)
     SetEnvironmentVariableA("SM2FIX_SKINNING_HASH", hash);
     SetEnvironmentVariableA("SM2FIX_REPLACE_SKINNING", !strcmp(mode, "hash") ? "1" : "0");
     SetEnvironmentVariableA("SM2FIX_SNAPSHOT_MS", "0");
+    {
+        uint8_t *base = (uint8_t *)GetModuleHandleA(NULL);
+        char rvas[64];
+        int k;
+
+        for (k = 0; k < 3; k++)
+        {
+            fake_cols[k].sig = 1;
+            fake_cols[k].td_rva = (uint32_t)((uint8_t *)&fake_tds[k] - base);
+            fake_vtables[k][0] = &fake_cols[k];
+        }
+        snprintf(rvas, sizeof(rvas), "%x,%x,%x", (unsigned)((uint8_t *)&fake_vtables[0][1] - base),
+                (unsigned)((uint8_t *)&fake_vtables[1][1] - base), (unsigned)((uint8_t *)&fake_vtables[2][1] - base));
+        SetEnvironmentVariableA("SM2FIX_ANIM_VTBL_RVAS", rvas);
+        SetEnvironmentVariableA("SM2FIX_FORCE_ANIM", !strcmp(mode, "off") ? "0" : "1");
+        SetEnvironmentVariableA("SM2FIX_FORCE_ANIM_DELAY_MS", "0");
+    }
     SetEnvironmentVariableA("SM2FIX_TRACE_QUERIES", "1");
     /* all/max runs: mock behaves like D3DMetal (60 Hz, zero timestamps) and the shim fakes */
     SetEnvironmentVariableA("SM2FIX_FAKE_TIMESTAMPS", (!strcmp(mode, "all") || !strcmp(mode, "max")) ? "1" : "0");
@@ -131,6 +159,34 @@ int main(int argc, char **argv)
         return 1;
     }
     create_device = (void *)GetProcAddress(shim, "D3D12CreateDevice");
+
+    /* force_anim: config objects in private memory get "always animate" values. */
+    {
+        uint8_t *objs = VirtualAlloc(NULL, 4096, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        uint8_t *lod = objs + 0x100, *ctrl = objs + 0x200, *simple = objs + 0x300;
+        int tries;
+
+        *(void **)lod = &fake_vtables[0][1];
+        *(float *)(lod + 0xc) = 20.0f;
+        *(float *)(lod + 0x10) = 60.0f;
+        *(void **)ctrl = &fake_vtables[1][1];
+        *(float *)(ctrl + 0x60) = 35.0f;
+        *(float *)(ctrl + 0x64) = 1.0f;
+        ctrl[0x68] = 0;
+        ctrl[0x6a] = 1;
+        *(void **)simple = &fake_vtables[2][1];
+        *(float *)(simple + 0x20) = 50.0f;
+        *(float *)(simple + 0x24) = 10.0f;
+        for (tries = 0; tries < 100 && !(ctrl[0x68] && *(float *)(lod + 0xc) > 1e5f && *(float *)(simple + 0x24) == 0.0f); tries++)
+            Sleep(50);
+        printf("force_anim: RangeBase=%g NeverCull=%u AutoFreeze=%u MaxUpdate=%g Culled=%g\n", *(float *)(lod + 0xc),
+                ctrl[0x68], ctrl[0x6a], *(float *)(ctrl + 0x60), *(float *)(simple + 0x24));
+        if (strcmp(mode, "off"))
+            CHECK(*(float *)(lod + 0xc) >= 1e6f && *(float *)(lod + 0x10) >= 1e6f && ctrl[0x68] == 1 && ctrl[0x6a] == 0
+                    && *(float *)(ctrl + 0x60) == 0.0f && *(float *)(simple + 0x20) == 0.0f && *(float *)(simple + 0x24) == 0.0f);
+        else
+            CHECK(*(float *)(lod + 0xc) == 20.0f && ctrl[0x68] == 0);
+    }
 
     /* Skin probe: the hooked function must still do its job, and the hook must count it. */
     {

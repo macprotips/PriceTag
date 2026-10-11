@@ -183,6 +183,10 @@ void sm2_config_defaults(struct sm2_config *cfg)
     cfg->probe_jobsys_rva = 0xc2ca170;
     cfg->skinning_hash = SM2_DEFAULT_SKINNING_HASH;
     cfg->snapshot_ms = 10000;
+    cfg->force_anim_delay_ms = 20000;
+    cfg->anim_vtbl_rva[0] = 0x5307598;
+    cfg->anim_vtbl_rva[1] = 0x84f7370;
+    cfg->anim_vtbl_rva[2] = 0x84f72f8;
     cfg->probe_sb_rva = 0x2b087c0;
     cfg->probe_dispatch_rva = 0x2b08f00;
 }
@@ -296,6 +300,29 @@ int sm2_config_set(struct sm2_config *cfg, const char *key, const char *value)
     if (key_equals(key, "probe_dispatch_rva"))
     {
         cfg->probe_dispatch_rva = (uint32_t)strtoul(value, NULL, 16);
+        return 0;
+    }
+    if (key_equals(key, "force_anim_delay_ms"))
+    {
+        cfg->force_anim_delay_ms = (unsigned int)strtoul(value, NULL, 10);
+        return 0;
+    }
+    if (key_equals(key, "anim_vtbl_rvas"))
+    {
+        /* three hex RVAs separated by commas */
+        char *end;
+        int k;
+
+        for (k = 0; k < 3 && *value; k++)
+        {
+            cfg->anim_vtbl_rva[k] = (uint32_t)strtoul(value, &end, 16);
+            value = *end == ',' ? end + 1 : end;
+        }
+        return 0;
+    }
+    if (key_equals(key, "force_anim"))
+    {
+        cfg->force_anim = atoi(value) != 0;
         return 0;
     }
     if (key_equals(key, "snapshot_ms"))

@@ -43,7 +43,8 @@ That's it. To undo everything, run the file and pick **4**.
 | 2026-10-11 | same | #18c flags + job queue | **CPU-job theory out.** No queued mesh record has bit 0 set, and the job queue's capacity is 22,528. Identity palettes don't line up with any record flag (some animated ones carry bits 1/2). Still 400–860 identity palettes per frame during play. |
 | 2026-10-11 | same | #18d identity recheck | **Never written, not late.** Every identity palette stayed identity at the 1st, 4th and 16th queue submission after the dispatch was recorded and a frame later (up to ~180 ms). A user screenshot shows the pattern: an NPC on a bench with head, hands and trousers posed (sitting) but his **jacket** in the bind pose. |
 | 2026-10-11 | same | #18e record dumps | The remap-table field doesn't separate them. Sampled identity meshes come from several NPC models with mesh flag word (+0x14) `3`/`1`/`0x11`; sampled animated ones (one big model, likely the player) have `7`. |
-| next | | #18f: histogram identity vs animated over every queued mesh by mesh +0x14 (flags), +0x1c and +0x34 | pending |
+| 2026-10-11 | same | #18f mesh histograms | No mesh flag separates broken from working meshes, but mesh +0x1c (detail level / sub-part) does strongly: ~3% identity at 0, ~40–50% at 5–15. The queueing function (RVA `0x2b41300`) adds a copy job per instance (`instance+0x20` CPU matrices → palette slot `instance+0x1c`), so the identity palettes come from **CPU-side matrices that were never computed**: the game skipped evaluating those instances' animation. |
+| next | | #19 `force_anim = 1`: find every `AnimUpdateLODPrius` (RangeBase/RangeVisible), `AnimControllerComponentPrius` (MaxUpdateDistance, NeverCull, AutoFreezeSkinning) and `SimpleAnimComponentPrius` (MaxUpdateDistance, MaxCulledUpdateDistance) object in memory by vtable (RTTI-checked) and set "always animate, never cull, never freeze" | pending |
 
 **Static analysis of the skinning scheduler.** Code cross-references from the
 `ModelSkinJobFunc` and `Skinning Fence` strings lead to the per-frame skin-job
@@ -381,6 +382,7 @@ there.
 | `dump_compute` | `0` | `1` saves every compute shader to `sm2fix-dumps\`. |
 | `dump_graphics` | `0` | `1` saves every vertex/mesh shader to `sm2fix-dumps\`. |
 | `profile` | `0` | `1` counts dispatches per compute shader (by hash) and logs the top ones every 20 s and at exit, always including skinning shader `3d50acdb571dce22`. |
+| `force_anim` | `0` | `1` scans memory (from ~20 s after start, then every 10–30 s) for the game's animation config objects and turns off animation distance/visibility culling and auto-freezing. Reads/writes go through Read/WriteProcessMemory so freed memory can't crash the game. |
 | `replace_skinning` | `0` | `1` swaps `CS_ModelSkinning` for `sm2fix-skinning.dxil` next to the shim (the installer copies it from `shader-fix/`). |
 | `skip_skinning` | `0` | Diagnostic: `1` drops every `Dispatch` made while `CS_ModelSkinning` is bound. |
 | `skin_budget` | `0` | Raise `RenderBudgets.ModelSkinGroupMax` (the `SkinningSB` capacity, which caps `CS_ModelSkinning` work per frame) to at least this many entries before the game creates the buffer. Also logs the budgets and skin-dispatch calls vs. capacity. `probe_sb_rva`/`probe_dispatch_rva` override the stub and dispatch-function RVAs. |
