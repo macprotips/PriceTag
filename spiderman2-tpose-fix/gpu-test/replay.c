@@ -312,6 +312,29 @@ static uint64_t compare_uav(const struct view *v, const uint8_t *ref, const char
     return bad;
 }
 
+/* Shader feature flags (SFI0); wave ops make results depend on the GPU's wave size. */
+static uint64_t shader_flags(const uint8_t *p, size_t size)
+{
+    uint32_t parts, i, off;
+    uint64_t f = 0;
+
+    if (size < 32)
+        return 0;
+    memcpy(&parts, p + 28, 4);
+    for (i = 0; i < parts && 32 + i * 4 + 4 <= size; i++)
+    {
+        memcpy(&off, p + 32 + i * 4, 4);
+        if (off + 16 <= size && !memcmp(p + off, "SFI0", 4))
+            memcpy(&f, p + off + 8, 8);
+    }
+    return f;
+}
+#define SHADER_WAVE_OPS 0x4000ull
+
+struct summary_entry { uint64_t hash; int result, missing, wave; uint64_t bad; };
+static struct summary_entry summary[4096];
+static int nsummary;
+
 static int replay(const uint8_t *exe, size_t exe_size, const char *path)
 {
     struct capture c;
@@ -328,7 +351,9 @@ static int replay(const uint8_t *exe, size_t exe_size, const char *path)
     D3D12_CPU_DESCRIPTOR_HANDLE cpu0;
     D3D12_GPU_DESCRIPTOR_HANDLE gpu0;
     uint32_t table_start[ROOT_PARAMS] = {0}, table_size[ROOT_PARAMS] = {0}, p, i, j, ng = 0, inc;
-    uint64_t rb_size = 0, *rb_off, bad = 0, uavs = 0;
+    uint64_t rb_size = 0, *rb_off, bad = 0, uavs = 0, flags;
+    ID3D12Resource **ups;
+    int missing = 0, result;
     uint8_t *file, *shader, *map;
     size_t file_size, shader_size;
     HRESULT hr;
@@ -341,18 +366,40 @@ static int replay(const uint8_t *exe, size_t exe_size, const char *path)
     }
     out("  shader %016llx Dispatch(%u, %u, %u), %u views\n", (unsigned long long)c.hash, c.x, c.y, c.z, c.nviews);
     for (i = 0, j = 0; i < c.nviews; i++)
-        j += c.v[i].res_id && !c.v[i].byte_len && c.v[i].kind && (c.v[i].dim == 1 || c.v[i].kind == 3);
+        j += c.v[i].res_id && !c.v[i].byte_len && c.v[i].kind;
     if (j)
-        out("  note: %u views were too big to capture; the replay reads them as empty\n", j);
+        out("  note: %u views (too big, or textures) weren't captured; the replay reads them as empty\n", j);
+    missing = (int)j;
     if (!(shader = find_shader(exe, exe_size, c.hash, &shader_size)))
     {
         out("  FAILED: shader not found in the game executable\n");
         return -1;
     }
+    flags = shader_flags(shader, shader_size);
     if (sm2_rootsig_parse(c.rs_blob, c.rs_size, &rs))
     {
         out("  FAILED: can't parse the root signature\n");
         return -1;
+    }
+    {
+        struct sm2_binding b[64];
+        int nb = sm2_shader_bindings(shader, shader_size, b, 64), k;
+        uint32_t sp, ss;
+
+        for (k = 0, j = 0; k < nb; k++)
+            j += b[k].type == 1 && !sm2_rootsig_locate(&rs, 3, b[k].space, b[k].lo, &sp, &ss);
+    }
+    if (j)
+    {
+        out("  skipped: the shader samples through a sampler table, which the replay doesn't rebuild\n");
+        if (nsummary < 4096)
+        {
+            summary[nsummary].hash = c.hash;
+            summary[nsummary].result = 2;
+            summary[nsummary].missing = -1;
+            nsummary++;
+        }
+        return 2;
     }
     if (FAILED(hr = ID3D12Device_CreateRootSignature(device, 0, c.rs_blob, c.rs_size, &IID_ID3D12RootSignature,
             (void **)&root_sig)))
@@ -421,6 +468,7 @@ static int replay(const uint8_t *exe, size_t exe_size, const char *path)
         return -1;
     }
     bufs = calloc(ng + 1, sizeof(*bufs));
+    ups = calloc(ng + 1, sizeof(*ups));
     rb_off = calloc(ng + 1, sizeof(*rb_off));
     for (j = 0; j < ng; j++)
     {
@@ -437,6 +485,7 @@ static int replay(const uint8_t *exe, size_t exe_size, const char *path)
         }
         memcpy(m, groups[j].data, groups[j].size);
         ID3D12Resource_Unmap(up, 0, NULL);
+        ups[j] = up;
         ID3D12GraphicsCommandList_CopyBufferRegion(list, bufs[j], 0, up, 0, groups[j].size);
         rb_off[j] = rb_size;
         rb_size += groups[j].size;
@@ -602,16 +651,48 @@ static int replay(const uint8_t *exe, size_t exe_size, const char *path)
         uavs++;
     }
     ID3D12Resource_Unmap(readback, 0, NULL);
-    out("  RESULT %016llx: %s (%llu UAVs compared)\n", (unsigned long long)c.hash,
-            !uavs ? "NOTHING TO COMPARE" : bad ? "MAC OUTPUT DIFFERS FROM REFERENCE" : "matches", (unsigned long long)uavs);
-    return uavs ? (bad ? 1 : 0) : -1;
+    result = !uavs ? -1 : !bad ? 0 : missing ? 2 : 1;
+    out("  RESULT %016llx: %s (%llu UAVs compared)%s\n", (unsigned long long)c.hash,
+            result < 0 ? "NOTHING TO COMPARE" : result == 0 ? "matches" : result == 2
+            ? "differs, but the capture is incomplete" : "MAC OUTPUT DIFFERS FROM REFERENCE", (unsigned long long)uavs,
+            flags & SHADER_WAVE_OPS ? " [uses wave ops]" : "");
+    if (nsummary < 4096)
+    {
+        summary[nsummary].hash = c.hash;
+        summary[nsummary].result = result;
+        summary[nsummary].missing = missing;
+        summary[nsummary].wave = !!(flags & SHADER_WAVE_OPS);
+        summary[nsummary].bad = bad;
+        nsummary++;
+    }
+
+    ID3D12Resource_Release(readback);
+    for (j = 0; j < ng; j++)
+    {
+        ID3D12Resource_Release(bufs[j]);
+        ID3D12Resource_Release(ups[j]);
+        free(groups[j].data);
+    }
+    ID3D12DescriptorHeap_Release(heap);
+    ID3D12PipelineState_Release(pso);
+    ID3D12RootSignature_Release(root_sig);
+    ID3D12GraphicsCommandList_Release(list);
+    ID3D12CommandAllocator_Release(alloc);
+    free(groups);
+    free(bufs);
+    free(ups);
+    free(rb_off);
+    free(shader);
+    free(c.v);
+    free(file);
+    return result;
 }
 
 int main(int argc, char **argv)
 {
     HRESULT (WINAPI *create_device)(IUnknown *, D3D_FEATURE_LEVEL, REFIID, void **);
     D3D12_COMMAND_QUEUE_DESC qd = {0};
-    int i, differ = 0, same = 0, failed = 0;
+    int i, differ = 0, same = 0, failed = 0, incomplete = 0;
     size_t exe_size;
     uint8_t *exe;
     HMODULE d3d12;
@@ -646,7 +727,18 @@ int main(int argc, char **argv)
         differ += r == 1;
         same += r == 0;
         failed += r < 0;
+        incomplete += r == 2;
     }
-    out("\nRESULT: %d captures match, %d differ, %d couldn't be replayed\n", same, differ, failed);
+    out("\nShaders whose Mac output differs from the reference:\n");
+    for (i = 0; i < nsummary; i++)
+        if (summary[i].result == 1)
+            out("  %016llx  %llu words%s\n", (unsigned long long)summary[i].hash, (unsigned long long)summary[i].bad,
+                    summary[i].wave ? "  (uses wave ops: may differ legitimately)" : "");
+    out("Differing but incomplete captures (some inputs too big):\n");
+    for (i = 0; i < nsummary; i++)
+        if (summary[i].result == 2)
+            out("  %016llx  %llu words, %d views missing\n", (unsigned long long)summary[i].hash,
+                    (unsigned long long)summary[i].bad, summary[i].missing);
+    out("\nRESULT: %d captures match, %d differ, %d incomplete, %d couldn't be replayed\n", same, differ, incomplete, failed);
     return differ ? 1 : 0;
 }

@@ -126,6 +126,11 @@ static void load_config(void)
         {"SM2FIX_CAPTURE", "capture"},
         {"SM2FIX_CAPTURE_AFTER_MS", "capture_after_ms"},
         {"SM2FIX_CAPTURE_HASHES", "capture_hashes"},
+        {"SM2FIX_CAPTURE_ALL", "capture_all"},
+        {"SM2FIX_CAPTURE_MAX", "capture_max"},
+        {"SM2FIX_CAPTURE_BUDGET_MB", "capture_budget_mb"},
+        {"SM2FIX_CAPTURE_VIEW_MB", "capture_view_mb"},
+        {"SM2FIX_CAPTURE_TOTAL_MB", "capture_total_mb"},
     };
     WCHAR path[MAX_PATH];
     char value[1024];
@@ -2311,9 +2316,7 @@ static void log_table_views(UINT index, D3D12_GPU_DESCRIPTOR_HANDLE base)
  * every UAV's contents just after. gpu-test/replay.exe re-runs the dispatch from that
  * file on another driver, so the Mac's output can be checked against a reference. */
 #define CAPTURE_MAX_VIEWS 128
-#define CAPTURE_SLOTS 16
-#define CAPTURE_VIEW_MAX (32ull << 20)
-#define CAPTURE_TOTAL_MAX (96ull << 20)
+#define CAPTURE_SLOTS 64
 
 struct cap_view
 {
@@ -2340,13 +2343,21 @@ struct cap_pending
 };
 
 static struct cap_pending *volatile g_cap[CAPTURE_SLOTS];
-static struct sm2_binding g_cap_bind[8][32];  /* per capture hash: the resources its shader declares */
-static volatile LONG g_cap_nbind[8];
-static volatile LONG g_cap_fail[8];
-static volatile LONG g_cap_count[8];
-static volatile DWORD g_cap_last[8], g_cap_t0;
+/* Per shader hash: how often it was captured, and the resources its shader declares. */
+#define CAP_TAB 4096
+struct cap_entry
+{
+    uint64_t hash;
+    volatile LONG count, fail, nbind;
+    volatile DWORD last;
+    struct sm2_binding bind[32];
+};
+static struct cap_entry g_cap_tab[CAP_TAB];
+static SRWLOCK g_cap_tab_lock = SRWLOCK_INIT;
+static volatile DWORD g_cap_t0;
 static volatile LONG g_cap_started;
-static volatile LONG g_cap_written;
+static volatile LONG g_cap_written, g_cap_recorded;
+static volatile LONG64 g_cap_bytes;
 
 static void *real_fn(void *obj, unsigned int index)
 {
@@ -2355,37 +2366,73 @@ static void *real_fn(void *obj, unsigned int index)
     return fn ? fn : (*(void ***)obj)[index];
 }
 
-static int capture_index(uint64_t hash)
+static BOOL capture_listed(uint64_t hash)
 {
     unsigned int i;
 
+    if (g_cfg.capture_all)
+        return TRUE;
     for (i = 0; i < g_cfg.capture_hash_count && i < 8; i++)
         if (g_cfg.capture_hashes[i] == hash)
-            return (int)i;
-    return -1;
+            return TRUE;
+    return FALSE;
+}
+
+static struct cap_entry *cap_entry(uint64_t hash, BOOL create)
+{
+    unsigned int i, h = (unsigned int)(hash ^ (hash >> 29)) % CAP_TAB;
+    struct cap_entry *e = NULL;
+
+    if (create)
+        AcquireSRWLockExclusive(&g_cap_tab_lock);
+    else
+        AcquireSRWLockShared(&g_cap_tab_lock);
+    for (i = 0; i < CAP_TAB; i++)
+    {
+        struct cap_entry *t = &g_cap_tab[(h + i) % CAP_TAB];
+
+        if (t->hash == hash)
+        {
+            e = t;
+            break;
+        }
+        if (!t->hash)
+        {
+            if (create)
+            {
+                t->hash = hash;
+                e = t;
+            }
+            break;
+        }
+    }
+    if (create)
+        ReleaseSRWLockExclusive(&g_cap_tab_lock);
+    else
+        ReleaseSRWLockShared(&g_cap_tab_lock);
+    return e;
 }
 
 static void capture_note_shader(uint64_t hash, const void *code, size_t size)
 {
-    int i = capture_index(hash), n;
+    struct cap_entry *e;
+    int n;
 
-    if (i < 0 || g_cap_nbind[i])
+    if (!capture_listed(hash) || !(e = cap_entry(hash, TRUE)) || e->nbind)
         return;
-    n = sm2_shader_bindings(code, size, g_cap_bind[i], 32);
-    g_cap_nbind[i] = n > 0 ? n : -1;
-    log_msg("capture: shader %016llx declares %d resources", (unsigned long long)hash, n);
+    n = sm2_shader_bindings(code, size, e->bind, 32);
+    e->nbind = n > 0 ? n : -1;
+    if (!g_cfg.capture_all)
+        log_msg("capture: shader %016llx declares %d resources", (unsigned long long)hash, n);
 }
 
 static BOOL capture_wanted(uint64_t hash)
 {
     DWORD now = GetTickCount();
-    unsigned int i;
+    struct cap_entry *e;
     LONG n;
 
-    for (i = 0; i < g_cfg.capture_hash_count && i < 8; i++)
-        if (g_cfg.capture_hashes[i] == hash)
-            break;
-    if (i >= g_cfg.capture_hash_count || i >= 8)
+    if (!capture_listed(hash) || !(e = cap_entry(hash, FALSE)))
         return FALSE;
     if (!InterlockedCompareExchange(&g_cap_started, 1, 0))
     {
@@ -2395,16 +2442,58 @@ static BOOL capture_wanted(uint64_t hash)
     }
     if (!g_cap_t0 || (LONG)(now - g_cap_t0) < (LONG)g_cfg.capture_after_ms)
         return FALSE;
-    n = g_cap_count[i];
-    if ((unsigned int)n >= g_cfg.capture || (n && now - g_cap_last[i] < 3000))
+    if (g_cap_recorded >= (LONG)g_cfg.capture_max || g_cap_bytes >= (LONG64)g_cfg.capture_budget_mb << 20)
         return FALSE;
-    if (InterlockedCompareExchange(&g_cap_count[i], n + 1, n) != n)
+    {
+        unsigned int k;
+
+        for (k = 0; k < CAPTURE_SLOTS && g_cap[k]; k++)
+            ;
+        if (k == CAPTURE_SLOTS)
+            return FALSE;       /* wait until earlier captures are saved */
+    }
+    n = e->count;
+    if ((unsigned int)n >= g_cfg.capture || (n && now - e->last < 3000))
         return FALSE;
-    g_cap_last[i] = now;
+    if (InterlockedCompareExchange(&e->count, n + 1, n) != n)
+        return FALSE;
+    e->last = now;
     return TRUE;
 }
 
+static BOOL find_res_by_va_scan(UINT64 va, ID3D12Resource **res, UINT64 *res_va, UINT64 *width);
+
+/* Resources found by GPU address recently: constant buffers mostly live in a few big
+ * upload rings, so this saves rescanning millions of descriptor records. */
+static struct { ID3D12Resource *res; UINT64 va, width; } g_va_cache[64];
+static volatile LONG g_va_cache_next;
+
 static BOOL find_res_by_va(UINT64 va, ID3D12Resource **res, UINT64 *res_va, UINT64 *width)
+{
+    unsigned int c;
+
+    for (c = 0; c < 64; c++)
+    {
+        if (g_va_cache[c].res && va >= g_va_cache[c].va && va < g_va_cache[c].va + g_va_cache[c].width)
+        {
+            *res = g_va_cache[c].res;
+            *res_va = g_va_cache[c].va;
+            *width = g_va_cache[c].width;
+            return TRUE;
+        }
+    }
+    if (find_res_by_va_scan(va, res, res_va, width))
+    {
+        c = (unsigned int)InterlockedIncrement(&g_va_cache_next) % 64;
+        g_va_cache[c].res = *res;
+        g_va_cache[c].va = *res_va;
+        g_va_cache[c].width = *width;
+        return TRUE;
+    }
+    return FALSE;
+}
+
+static BOOL find_res_by_va_scan(UINT64 va, ID3D12Resource **res, UINT64 *res_va, UINT64 *width)
 {
     LONG i, n = g_heap_count < MAX_TRACKED_HEAPS ? g_heap_count : MAX_TRACKED_HEAPS;
     UINT64 k;
@@ -2467,9 +2556,9 @@ static void cap_add_buffer(struct cap_pending *c, struct cap_view *v, UINT64 off
     len += off & 3;
     off &= ~3ull;
     len = (len + 3) & ~3ull;
-    if (off + len > v->res_width)
-        len = (v->res_width - off) & ~3ull;
-    if (len > CAPTURE_VIEW_MAX || *total + len > CAPTURE_TOTAL_MAX)
+    if (off + len > ((v->res_width + 3) & ~3ull))
+        len = (((v->res_width + 3) & ~3ull) - off) & ~3ull;
+    if (len > ((UINT64)g_cfg.capture_view_mb << 20) || *total + len > ((UINT64)g_cfg.capture_total_mb << 20))
         len = 0;
     v->byte_off = off;
     v->byte_len = len;
@@ -2755,7 +2844,8 @@ static void capture_dispatch(ID3D12GraphicsCommandList *list, uint64_t hash, UIN
     c->y = y;
     c->z = z;
     {
-        int bi = capture_index(hash), nb = bi >= 0 ? g_cap_nbind[bi] : 0, b;
+        struct cap_entry *ce = cap_entry(hash, FALSE);
+        int nb = ce ? ce->nbind : 0, b;
 
         if (nb <= 0)
         {
@@ -2764,7 +2854,7 @@ static void capture_dispatch(ID3D12GraphicsCommandList *list, uint64_t hash, UIN
         }
         for (b = 0; b < nb; b++)
         {
-            const struct sm2_binding *sb = &g_cap_bind[bi][b];
+            const struct sm2_binding *sb = &ce->bind[b];
             uint32_t cls = sb->type == 2 ? 2 : sb->type >= 3 && sb->type <= 5 ? 0 : sb->type >= 6 ? 1 : 3, reg;
             uint32_t last = sb->hi == 0xffffffffu || sb->hi - sb->lo > 7 ? sb->lo + 7 : sb->hi;
 
@@ -2877,8 +2967,11 @@ static void capture_dispatch(ID3D12GraphicsCommandList *list, uint64_t hash, UIN
         capture_free(c);
         return;
     }
-    log_msg("capture: recorded %016llx Dispatch(%u, %u, %u) on list %p: %u views, %llu bytes", (unsigned long long)hash,
-            x, y, z, (void *)list, c->nviews, (unsigned long long)total);
+    InterlockedIncrement(&g_cap_recorded);
+    InterlockedAdd64(&g_cap_bytes, (LONG64)total);
+    if (!g_cfg.capture_all || g_cap_recorded <= 3)
+        log_msg("capture: recorded %016llx Dispatch(%u, %u, %u) on list %p: %u views, %llu bytes",
+                (unsigned long long)hash, x, y, z, (void *)list, c->nviews, (unsigned long long)total);
     return;
 
 plain:
@@ -2887,10 +2980,10 @@ plain:
         capture_free(c);
     /* let a failed capture be tried again a few times */
     {
-        int bi = capture_index(hash);
+        struct cap_entry *ce = cap_entry(hash, FALSE);
 
-        if (bi >= 0 && InterlockedIncrement(&g_cap_fail[bi]) < 3)
-            InterlockedDecrement(&g_cap_count[bi]);
+        if (ce && InterlockedIncrement(&ce->fail) < 3)
+            InterlockedDecrement(&ce->count);
     }
 }
 
@@ -2946,8 +3039,8 @@ static void capture_write(struct cap_pending *c)
 #undef W64
     fclose(f);
     c->rb->lpVtbl->Unmap(c->rb, 0, &none);
-    log_msg("capture: saved sm2fix-capture\\%016llx-%u.bin (%u views)", (unsigned long long)c->hash, c->seq, c->nviews);
-    InterlockedIncrement(&g_cap_written);
+    if (InterlockedIncrement(&g_cap_written) <= 8 || !g_cfg.capture_all)
+        log_msg("capture: saved sm2fix-capture\\%016llx-%u.bin (%u views)", (unsigned long long)c->hash, c->seq, c->nviews);
 }
 
 static void capture_after_submit(ID3D12CommandQueue *queue, UINT count, ID3D12CommandList *const *lists)
@@ -4274,6 +4367,9 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, void *reserved)
         if (g_skin_trampoline)
             fprintf(g_log, "exit: skin launcher calls=%lld with-requests=%lld blocked-by-flag=%lld\n",
                     (long long)g_skin_calls, (long long)g_skin_with_requests, (long long)g_skin_flag_blocked);
+        if (g_cfg.capture)
+            fprintf(g_log, "exit: capture recorded=%ld saved=%ld bytes=%lld\n", (long)g_cap_recorded,
+                    (long)g_cap_written, (long long)g_cap_bytes);
         if (g_cfg.skip_skinning)
             fprintf(g_log, "exit: skip_skinning dropped %lld skinning dispatches\n", (long long)g_skin_skipped);
         if (g_cfg.profile)

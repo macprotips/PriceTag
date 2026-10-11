@@ -11,7 +11,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-BOTTLE="" PREFIX="" GAME_DIR="" WINE="" MODE="hash" UNINSTALL=0 SPOOF="" DUMP_COMPUTE=0 DUMP_GRAPHICS=0 MINMAX=keep PROFILE=0 CPU_COUNT=0 PSO_DELAY=0 TRACE_QUERIES=0 FAKE_TS=0 PROBE_SKIN=0 SKIN_BUDGET=0 SKIP_SKINNING=0 REPLACE_SKINNING=0 FORCE_ANIM=0 TRAP_WRITER=0 ZIVA_CPU=auto CAPTURE=0
+BOTTLE="" PREFIX="" GAME_DIR="" WINE="" MODE="hash" UNINSTALL=0 SPOOF="" DUMP_COMPUTE=0 DUMP_GRAPHICS=0 MINMAX=keep PROFILE=0 CPU_COUNT=0 PSO_DELAY=0 TRACE_QUERIES=0 FAKE_TS=0 PROBE_SKIN=0 SKIN_BUDGET=0 SKIP_SKINNING=0 REPLACE_SKINNING=0 FORCE_ANIM=0 TRAP_WRITER=0 ZIVA_CPU=auto CAPTURE=0 CAPTURE_ALL=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -38,6 +38,7 @@ while [[ $# -gt 0 ]]; do
         --trap-writer) TRAP_WRITER=1; shift ;;
         --ziva-cpu) ZIVA_CPU="$2"; shift 2 ;;
         --capture) CAPTURE="$2"; shift 2 ;;
+        --capture-all) CAPTURE=1; CAPTURE_ALL=1; shift ;;
         -h|--help) sed -n 2,12p "$0"; exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 1 ;;
     esac
@@ -114,6 +115,9 @@ if [[ $REPLACE_SKINNING -eq 1 ]]; then
 else
     rm -f "$GAME_DIR/sm2fix-skinning.dxil"
 fi
+# capture of every compute shader: smaller limits so the results stay sendable
+CAPTURE_LIMITS="s/^capture_max = /capture_max = /"
+[ "$CAPTURE_ALL" = 1 ] && CAPTURE_LIMITS="s/^capture_budget_mb = .*/capture_budget_mb = 250/;s/^capture_view_mb = .*/capture_view_mb = 8/;s/^capture_total_mb = .*/capture_total_mb = 16/"
 sed -e "s/^mode = .*/mode = $MODE/" -e "s/^spoof =.*/spoof = $SPOOF/" \
     -e "s/^dump_compute = .*/dump_compute = $DUMP_COMPUTE/" -e "s/^dump_graphics = .*/dump_graphics = $DUMP_GRAPHICS/" \
     -e "s/^minmax = .*/minmax = $MINMAX/" -e "s/^profile = .*/profile = $PROFILE/" \
@@ -124,6 +128,8 @@ sed -e "s/^mode = .*/mode = $MODE/" -e "s/^spoof =.*/spoof = $SPOOF/" \
     -e "s/^replace_skinning = .*/replace_skinning = $REPLACE_SKINNING/" \
     -e "s/^force_anim = .*/force_anim = $FORCE_ANIM/" -e "s/^trap_writer = .*/trap_writer = $TRAP_WRITER/" \
     -e "s/^ziva_cpu = .*/ziva_cpu = $ZIVA_CPU/" -e "s/^capture = .*/capture = $CAPTURE/" \
+    -e "s/^capture_all = .*/capture_all = $CAPTURE_ALL/" \
+    -e "$CAPTURE_LIMITS" \
     "$HERE/shim/sm2fix.ini" > "$GAME_DIR/sm2fix.ini"
 
 if grep -qi 'AppDefaults\\\\Spider-Man2.exe\\\\DllOverrides' "$PREFIX/user.reg" 2>/dev/null \

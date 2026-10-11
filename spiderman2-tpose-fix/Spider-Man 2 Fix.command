@@ -267,7 +267,7 @@ fi
 
 say ""
 say "What do you want to do?"
-say "  1) Test #24: record Ziva face/cloth GPU work  <-- do this one"
+say "  1) Test #25: check EVERY GPU program the game runs  <-- do this one"
 say "  2) Test #16: GPU check (done: the shader works on your Mac)"
 say "  3) Save my results to the Desktop (to send for help)"
 say "  4) Remove everything (back to normal)"
@@ -294,6 +294,7 @@ say "  23) Test #19: always animate (done: didn't help)"
 say "  24) Test #20: GPU readback watch (done: readbacks are fine)"
 say "  25) Test #21: catch the code that animates characters (done: only caught memory clears)"
 say "  26) Test #22: GPU data-format check (done: all 40 formats fine)"
+say "  30) Test #24: record Ziva face/cloth GPU work (done: Ziva GPU math is correct)"
 say "  29) Test #23: Ziva face/cloth code, plain version (done: no change)"
 say "  27) Test #23b: Ziva face/cloth code, SSE4.1 version (done: no change)"
 say "  28) Test #23c: Ziva face/cloth code, AVX2 version (done: no change)"
@@ -303,7 +304,8 @@ say ""
 
 # Map the new menu numbers onto the handlers below.
 case "$action" in
-    1) action=t24 ;;
+    1) action=t25 ;;
+    30) action=t24 ;;
     29) action=t23 ;;
     26) action=t22 ;;
     27) action=t23b ;;
@@ -357,6 +359,23 @@ pick_wine() {
 }
 
 case "$action" in
+    t25)
+        ds_on
+        rm -rf "$GAME_DIR/sm2fix-dumps" "$GAME_DIR/sm2fix-capture"
+        bash "$INSTALLER" "${ARGS[@]}" --mode off --capture-all || pause_exit 1
+        say ""
+        line
+        say "Test #25 installed. Ziva's GPU work turned out to be correct on your Mac."
+        say "This records one job of EVERY GPU compute program the game runs (a few"
+        say "hundred), so I can redo all of them on a reference driver and find any that"
+        say "your Mac gets wrong. The game will freeze for several seconds once, about"
+        say "a minute in, while it records. That's expected."
+        say "  1. Start the game, load your save, and play for ~3 minutes where people"
+        say "     T-pose (walk around near NPCs)."
+        say "  2. Quit from the in-game menu, run this again, pick 3, and send me BOTH"
+        say "     files (the log and the capture zip; the zip can be a few hundred MB)."
+        line
+        ;;
     t24)
         ds_on
         rm -rf "$GAME_DIR/sm2fix-dumps" "$GAME_DIR/sm2fix-capture"

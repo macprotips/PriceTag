@@ -196,6 +196,10 @@ void sm2_config_defaults(struct sm2_config *cfg)
     cfg->ziva_vtbl_rva[1] = 0x5d34e30;
     cfg->ziva_vtbl_rva[2] = 0x5d34dc0;
     cfg->capture_after_ms = 60000;
+    cfg->capture_max = 600;
+    cfg->capture_budget_mb = 600;
+    cfg->capture_view_mb = 32;
+    cfg->capture_total_mb = 96;
     cfg->capture_hash_count = 6;
     cfg->capture_hashes[0] = 0xbd8cf9af848f2800ull;   /* CS_ZivaTensorSkinning */
     cfg->capture_hashes[1] = 0x9485836ba3df2694ull;   /* CS_ZivaKernelFunctions */
@@ -391,6 +395,31 @@ int sm2_config_set(struct sm2_config *cfg, const char *key, const char *value)
     if (key_equals(key, "capture"))
     {
         cfg->capture = (unsigned int)strtoul(value, NULL, 10);
+        return 0;
+    }
+    if (key_equals(key, "capture_all"))
+    {
+        cfg->capture_all = atoi(value) != 0;
+        return 0;
+    }
+    if (key_equals(key, "capture_max"))
+    {
+        cfg->capture_max = (unsigned int)strtoul(value, NULL, 10);
+        return 0;
+    }
+    if (key_equals(key, "capture_budget_mb"))
+    {
+        cfg->capture_budget_mb = (unsigned int)strtoul(value, NULL, 10);
+        return 0;
+    }
+    if (key_equals(key, "capture_view_mb"))
+    {
+        cfg->capture_view_mb = (unsigned int)strtoul(value, NULL, 10);
+        return 0;
+    }
+    if (key_equals(key, "capture_total_mb"))
+    {
+        cfg->capture_total_mb = (unsigned int)strtoul(value, NULL, 10);
         return 0;
     }
     if (key_equals(key, "capture_after_ms"))

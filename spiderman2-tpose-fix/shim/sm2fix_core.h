@@ -86,6 +86,11 @@ struct sm2_config
     unsigned int capture_after_ms; /* only capture this long after the device was created (in game, not menus) */
     unsigned int capture_hash_count;
     uint64_t capture_hashes[8]; /* default: the Ziva RT face/cloth deformation shaders */
+    int capture_all;            /* capture every compute shader (capture times each), not just capture_hashes */
+    unsigned int capture_max;   /* stop after this many captures */
+    unsigned int capture_budget_mb; /* ...or after this much data */
+    unsigned int capture_view_mb;   /* skip a view's data above this size */
+    unsigned int capture_total_mb;  /* per capture: skip further views above this total */
 };
 
 enum sm2_ziva_cpu { SM2_ZIVA_AUTO = 0, SM2_ZIVA_REFERENCE, SM2_ZIVA_SSE41, SM2_ZIVA_AVX2 };

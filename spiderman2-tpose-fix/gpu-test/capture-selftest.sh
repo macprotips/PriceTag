@@ -16,9 +16,9 @@ cp "$VKD/d3d12.dll" "$VKD/d3d12core.dll" "$T/rep/"
 cp "$HERE/capture_demo.exe" "$T/cap/"
 cp "$HERE/replay.exe" "$T/rep/"
 export WINEDLLOVERRIDES="d3d12,d3d12core=n" WINEDEBUG=-all
-(cd "$T/cap" && SM2FIX_REAL_D3D12=real_d3d12.dll SM2FIX_CAPTURE=1 SM2FIX_CAPTURE_AFTER_MS=0 SM2FIX_MODE=off \
+(cd "$T/cap" && SM2FIX_REAL_D3D12=real_d3d12.dll SM2FIX_CAPTURE=1 SM2FIX_CAPTURE_ALL="${CAPTURE_ALL:-0}" SM2FIX_CAPTURE_AFTER_MS=0 SM2FIX_MODE=off \
     xvfb-run -a wine capture_demo.exe "$EXE") | tee "$T/demo"
 grep -q "outputs agree" "$T/demo"
 (cd "$T/rep" && xvfb-run -a wine replay.exe "$EXE" report.txt "$T"/cap/sm2fix-capture/*.bin) | tee "$T/out"
-grep -q "RESULT: 1 captures match, 0 differ, 0 couldn't be replayed" "$T/out"
+grep -q "RESULT: 1 captures match, 0 differ, 0 incomplete, 0 couldn't be replayed" "$T/out"
 echo "capture self-test passed"
