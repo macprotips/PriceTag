@@ -7,6 +7,11 @@ makes the game read that buffer the "raw" way (test #28 below).
 
 ## The easy way: the app
 
+<p>
+<img src="app/screenshots/2-ready-light.png" width="420" alt="The app with the game and bottle found, ready to apply the fix">
+<img src="app/screenshots/3-applied-dark.png" width="420" alt="The app after applying the fix">
+</p>
+
 1. Download **Spider-Man 2 T-Pose Fix** and unzip it.
 2. Open it. The first time, macOS may say it can't check the app (it isn't from the App
    Store or notarized): **right-click** the app > **Open** > **Open**. On newer macOS,
