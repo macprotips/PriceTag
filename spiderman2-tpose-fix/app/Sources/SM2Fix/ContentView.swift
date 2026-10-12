@@ -23,7 +23,7 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 20) {
-                Header()
+                Header(version: model.version)
                 content
                 if let banner = model.banner {
                     BannerView(banner: banner)
@@ -34,10 +34,12 @@ struct ContentView: View {
             .padding(.top, 22)
             .padding(.bottom, Metrics.edge)
 
-            Divider()
-            FooterBar(model: model)
-                .padding(.horizontal, Metrics.edge)
-                .padding(.vertical, 14)
+            if model.game != nil {
+                Divider()
+                FooterBar(model: model)
+                    .padding(.horizontal, Metrics.edge)
+                    .padding(.vertical, 14)
+            }
         }
         .frame(width: Metrics.windowWidth)
         .fixedSize(horizontal: false, vertical: true)
@@ -71,20 +73,40 @@ struct ContentView: View {
 // MARK: - Header
 
 struct Header: View {
+    let version: String
+    @State private var showInfo = false
+
     var body: some View {
-        HStack(spacing: 16) {
+        HStack(alignment: .top, spacing: 16) {
             Image(nsImage: NSApp.applicationIconImage)
                 .resizable()
                 .interpolation(.high)
                 .frame(width: 64, height: 64)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 3) {
+                Spacer(minLength: 0)
                 Text("Spider-Man 2 T-Pose Fix")
                     .font(.system(size: 20, weight: .semibold))
                 Text("Fixes characters stuck in a T-pose in Marvel's Spider-Man 2 on Macs with an M1, M2, M3 or M4 chip.")
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+            .frame(minHeight: 64)
+            Spacer(minLength: 0)
+            Button {
+                showInfo.toggle()
+            } label: {
+                Image(systemName: "info.circle")
+                    .font(.system(size: 16))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.borderless)
+            .help("How it works")
+            .accessibilityLabel("How it works")
+            .popover(isPresented: $showInfo, arrowEdge: .bottom) {
+                AboutFix(version: version)
             }
         }
     }
@@ -143,7 +165,7 @@ struct GameCard: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(GameFinder.folderName)
                     .font(.system(size: 13, weight: .semibold))
-                Text(game.folder.abbreviatedPath)
+                Text(game.folder.deletingLastPathComponent().abbreviatedPath)
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -256,7 +278,7 @@ struct StatusView: View {
 
     private var detail: String? {
         switch status {
-        case .installed?: return "Start the game from CrossOver or Whisky as usual."
+        case .installed?: return "Start the game as usual."
         case .updateAvailable?: return "This app has a newer version of the fix."
         case .testBuildInstalled?: return "Apply Fix replaces it with the finished fix."
         default: return nil
@@ -293,11 +315,22 @@ struct DropZone: View {
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: 380)
-                HStack(spacing: 10) {
-                    Button("Choose Folder…") { model.chooseFolder() }
-                    Button("Find Automatically") { model.findAutomatically() }
+                Group {
+                    if model.busy {
+                        HStack(spacing: 8) {
+                            ProgressView().controlSize(.small)
+                            Text(model.busyText)
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        HStack(spacing: 10) {
+                            Button("Choose Folder…") { model.chooseFolder() }
+                            Button("Find Automatically") { model.findAutomatically() }
+                        }
+                    }
                 }
-                .disabled(model.busy)
+                .frame(height: 24)
                 .padding(.top, 8)
             }
             .frame(maxWidth: .infinity)
@@ -429,23 +462,9 @@ struct BannerView: View {
 
 struct FooterBar: View {
     @ObservedObject var model: AppModel
-    @State private var showInfo = false
 
     var body: some View {
         HStack(spacing: 10) {
-            Button {
-                showInfo.toggle()
-            } label: {
-                Image(systemName: "info.circle")
-                    .font(.system(size: 15))
-            }
-            .buttonStyle(.borderless)
-            .help("How it works")
-            .accessibilityLabel("How it works")
-            .popover(isPresented: $showInfo, arrowEdge: .top) {
-                AboutFix(version: model.version)
-            }
-
             if model.busy {
                 ProgressView()
                     .controlSize(.small)

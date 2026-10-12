@@ -44,6 +44,10 @@ enum Snapshots {
                          GameInstall(folder: URL(fileURLWithPath: NSHomeDirectory() + "/Library/Application Support/CrossOver/Bottles/Games/drive_c/Program Files (x86)/Steam/steamapps/common/Marvel's Spider-Man 2"),
                                      bottle: bottles[1], reason: .insideBottle, candidates: bottles)]
         }),
+        ("6b-searching", { m in
+            m.busy = true
+            m.busyText = "Looking for Spider-Man 2…"
+        }),
         ("8-working", { m in
             m.select(game(bottle: bottles[0], reason: .steamLibrary))
             m.status = .updateAvailable
@@ -54,7 +58,8 @@ enum Snapshots {
 
     static func run(into dir: URL) -> Int32 {
         let app = NSApplication.shared
-        app.setActivationPolicy(.accessory)
+        app.setActivationPolicy(.regular)
+        app.finishLaunching()
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         var failures = 0
         for (appearanceName, suffix) in [(NSAppearance.Name.aqua, "light"), (.darkAqua, "dark")] {
@@ -75,6 +80,7 @@ enum Snapshots {
 
     /// Renders `view` in a real window (so AppKit controls draw) and saves it as PNG.
     static func render(_ view: AnyView, appearance: NSAppearance.Name, to url: URL) -> Bool {
+        let app = NSApplication.shared
         let host = NSHostingView(rootView: view)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 400),
                               styleMask: [.titled], backing: .buffered, defer: false)
@@ -82,7 +88,8 @@ enum Snapshots {
         window.contentView = host
         let size = host.fittingSize
         window.setContentSize(size)
-        window.orderFrontRegardless()
+        app.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
         host.layoutSubtreeIfNeeded()
         RunLoop.current.run(until: Date().addingTimeInterval(0.4))
         host.display()
