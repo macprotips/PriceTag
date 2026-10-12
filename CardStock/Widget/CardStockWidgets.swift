@@ -28,12 +28,15 @@ struct WatchlistProvider: TimelineProvider {
             completion(placeholder(in: context))
             return
         }
+        // WidgetKit's completion handlers aren't Sendable but are safe to call from any thread.
+        nonisolated(unsafe) let completion = completion
         Task {
             completion(WatchlistEntry(date: Date(), snapshot: await WidgetData.snapshot()))
         }
     }
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<WatchlistEntry>) -> Void) {
+        nonisolated(unsafe) let completion = completion
         Task {
             let entry = WatchlistEntry(date: Date(), snapshot: await WidgetData.snapshot())
             completion(Timeline(entries: [entry], policy: .after(Date().addingTimeInterval(WidgetData.reloadInterval))))

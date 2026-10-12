@@ -201,9 +201,11 @@ final class AppModel {
         thumbnails.removeAll(except: items.map(\.card))
         publishToWidget()
 
-        undoManager?.registerUndo(withTarget: self) { model in
+        // UndoManager isn't Sendable, but undo always runs on the main thread.
+        nonisolated(unsafe) let manager = undoManager
+        manager?.registerUndo(withTarget: self) { model in
             MainActor.assumeIsolated {
-                model.restore(removed, undoManager: undoManager)
+                model.restore(removed, undoManager: manager)
             }
         }
         undoManager?.setActionName(removed.count == 1 ? "Remove Card" : "Remove Cards")
@@ -219,9 +221,10 @@ final class AppModel {
             await thumbnails.fetchMissing(for: removed.map(\.element.card))
             publishToWidget()
         }
-        undoManager?.registerUndo(withTarget: self) { model in
+        nonisolated(unsafe) let manager = undoManager
+        manager?.registerUndo(withTarget: self) { model in
             MainActor.assumeIsolated {
-                model.remove(Set(removed.map(\.element.id)), undoManager: undoManager)
+                model.remove(Set(removed.map(\.element.id)), undoManager: manager)
             }
         }
     }
