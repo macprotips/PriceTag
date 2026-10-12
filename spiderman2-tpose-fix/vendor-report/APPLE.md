@@ -40,17 +40,17 @@ The attached `repro/bigbuf_test.exe` is a 270-line D3D12 test, with full source 
 `repro/bigbuf_test.c` and its HLSL in the same folder.
 
 1. Copy the `repro` folder to the Mac.
-2. Run it in any CrossOver bottle that uses D3DMetal:
-
-   ```sh
-   cd repro
-   "/Applications/CrossOver.app/Contents/SharedSupport/CrossOver/bin/wine" \
-       --bottle "<bottle name>" bigbuf_test.exe report.txt
-   ```
-
-   If it stops before printing a table, run it again with
-   `WINEDLLOVERRIDES="winemac.drv=d"` in front of the command.
+2. Run the test in any CrossOver bottle that uses D3DMetal, with the command below.
 3. Read `report.txt`.
+
+```sh
+cd repro
+"/Applications/CrossOver.app/Contents/SharedSupport/CrossOver/bin/wine" \
+    --bottle "<bottle name>" bigbuf_test.exe report.txt
+```
+
+If it stops before printing a table, run it again with `WINEDLLOVERRIDES="winemac.drv=d"`
+in front of the command.
 
 What the test does:
 

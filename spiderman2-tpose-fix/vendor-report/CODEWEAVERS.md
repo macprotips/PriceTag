@@ -54,20 +54,20 @@ The full analysis and data are in `APPLE.md`.
 The test needs only a bottle with D3DMetal and takes about a minute.
 
 1. Unzip the attached `repro` folder anywhere on the Mac.
-2. In Terminal:
-
-   ```sh
-   cd /path/to/repro
-   "/Applications/CrossOver.app/Contents/SharedSupport/CrossOver/bin/wine" \
-       --bottle "<bottle name>" bigbuf_test.exe report.txt
-   ```
-
-   If the test exits before printing a table, add `WINEDLLOVERRIDES="winemac.drv=d"` in
-   front of the command. On our machine, Wine's Mac display driver sometimes crashed this
-   console-only test at startup.
+2. Run the test with the command below.
 3. Open `report.txt`. On M1–M4 the `R32_UINT` column shows `00000000*` from element
    268435456 on. The last line reads `RESULT: SOME VIEWS READ WRONG DATA AT LARGE INDICES`.
    Our output is in `repro/results/bigbuf-report-M3-Max.txt`.
+
+```sh
+cd /path/to/repro
+"/Applications/CrossOver.app/Contents/SharedSupport/CrossOver/bin/wine" \
+    --bottle "<bottle name>" bigbuf_test.exe report.txt
+```
+
+If the test exits before printing a table, add `WINEDLLOVERRIDES="winemac.drv=d"` in front
+of the command. On our machine, Wine's Mac display driver sometimes crashed this
+console-only test at startup.
 
 You can also use **Run Command** in the CrossOver bottle menu: choose `bigbuf_test.exe`
 and pass `report.txt` as the argument.
