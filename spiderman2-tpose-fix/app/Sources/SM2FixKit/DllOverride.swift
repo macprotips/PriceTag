@@ -84,7 +84,12 @@ public enum DllOverride {
         let current = (try? String(contentsOf: bottle.userReg, encoding: .utf8)) ?? ""
         guard let range = section(in: current.components(separatedBy: "\n")),
               current.components(separatedBy: "\n")[range].contains(where: isD3D12Line) else { return .notNeeded }
-        return editFile(of: bottle, env: env) { removing(fromUserReg: $0) } ?? .removed
+        guard let problem = editFile(of: bottle, env: env, { removing(fromUserReg: $0) }) else {
+            // the bottle is back to how it was: the backup made when the fix was added is no longer needed
+            try? FileManager.default.removeItem(at: bottle.path.appendingPathComponent("user.reg.sm2fix-backup"))
+            return .removed
+        }
+        return problem
     }
 
     /// Edits user.reg in place (keeping a backup); nil on success.

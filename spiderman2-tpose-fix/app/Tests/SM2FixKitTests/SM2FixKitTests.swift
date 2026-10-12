@@ -153,7 +153,8 @@ final class DllOverrideTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: path.appendingPathComponent("user.reg.sm2fix-backup"), encoding: .utf8), reg)
         XCTAssertEqual(DllOverride.ensure(in: bottle, env: mac.env), .alreadySet)
         XCTAssertEqual(DllOverride.remove(from: bottle, env: mac.env), .removed)
-        XCTAssertFalse(DllOverride.isSet(inUserReg: try String(contentsOf: path.appendingPathComponent("user.reg"), encoding: .utf8)))
+        XCTAssertEqual(try String(contentsOf: path.appendingPathComponent("user.reg"), encoding: .utf8), reg)
+        XCTAssertFalse(mac.fm.fileExists(atPath: path.appendingPathComponent("user.reg.sm2fix-backup").path))
         XCTAssertEqual(DllOverride.remove(from: bottle, env: mac.env), .notNeeded)
     }
 
