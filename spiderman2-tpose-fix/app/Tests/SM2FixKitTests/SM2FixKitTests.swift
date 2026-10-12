@@ -391,6 +391,19 @@ final class ShaderBuilderTests: XCTestCase {
         XCTAssertFalse(mac.fm.fileExists(atPath: game.appendingPathComponent("d3d12.dll").path))
     }
 
+    /// The pipeline (dxc -dumpbin, rewrite, dxa, dxv) must give the same bytes on the Mac
+    /// as with the Linux build of the same DXC commit that produced the verified game
+    /// shaders. Fixtures/standin-t1.dxil was compiled from standin-t1.hlsl with that build;
+    /// f48be14de76e162e is its rewritten result there.
+    func testRewriteMatchesTheReferenceBuild() throws {
+        guard let tools = StandIns.tools else { throw XCTSkip("needs SM2FIX_DXC") }
+        let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Fixtures/standin-t1.dxil")
+        let container = try Data(contentsOf: fixture)
+        XCTAssertEqual(hex(shaderHash(container)), "0f7cb4aa736453cf")
+        let rewritten = try ShaderBuilder(tools: tools).rewrite(container, space: 0, register: 1)
+        XCTAssertEqual(hex(shaderHash(rewritten)), "f48be14de76e162e")
+    }
+
     func testRealShaderList() {
         XCTAssertEqual(PoolShader.spiderMan2.map(\.fileName),
                        ["sm2fix-pool-3d50acdb571dce22.dxil", "sm2fix-pool-14902794dd7134e4.dxil"])
