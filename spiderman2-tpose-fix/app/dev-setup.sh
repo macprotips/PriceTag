@@ -36,7 +36,7 @@ if [[ ! -x .dxc/bin/dxc ]]; then
     rm -rf .dxc-build   # the 3 GB source and build folder; only .dxc is kept
 fi
 
-# Runs a step with its full output in build/logs/<name>.log; on failure shows the errors.
+# Runs a step with its full output in build-logs/<name>.log; on failure shows the errors.
 step() { # name, command...
     local name="$1"; shift
     mkdir -p build-logs
@@ -50,7 +50,7 @@ step() { # name, command...
 }
 
 say "Running the tests"
-SM2FIX_DXC="$PWD/.dxc/bin" step tests swift test
+step tests env SM2FIX_DXC="$PWD/.dxc/bin" swift test
 
 say "Building the app"
 step build ./build-app.sh
