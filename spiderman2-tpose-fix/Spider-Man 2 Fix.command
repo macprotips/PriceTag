@@ -267,7 +267,7 @@ fi
 
 say ""
 say "What do you want to do?"
-say "  1) Test #26: check every CPU instruction the game uses (2 min, no game)  <-- do this one"
+say "  1) Test #27: GPU check with a huge (2 GB) buffer (1 min, no game)  <-- do this one"
 say "  2) Test #16: GPU check (done: the shader works on your Mac)"
 say "  3) Save my results to the Desktop (to send for help)"
 say "  4) Remove everything (back to normal)"
@@ -294,6 +294,7 @@ say "  23) Test #19: always animate (done: didn't help)"
 say "  24) Test #20: GPU readback watch (done: readbacks are fine)"
 say "  25) Test #21: catch the code that animates characters (done: only caught memory clears)"
 say "  26) Test #22: GPU data-format check (done: all 40 formats fine)"
+say "  32) Test #26: check every CPU instruction the game uses (done: Rosetta is correct)"
 say "  31) Test #25: check every GPU program the game runs (done: no differences found)"
 say "  30) Test #24: record Ziva face/cloth GPU work (done: Ziva GPU math is correct)"
 say "  29) Test #23: Ziva face/cloth code, plain version (done: no change)"
@@ -305,7 +306,8 @@ say ""
 
 # Map the new menu numbers onto the handlers below.
 case "$action" in
-    1) action=t26 ;;
+    1) action=t27 ;;
+    32) action=t26 ;;
     31) action=t25 ;;
     30) action=t24 ;;
     29) action=t23 ;;
@@ -409,6 +411,46 @@ case "$action" in
         say "  2. Quit from the in-game menu, run this again, pick 3, send the log"
         say "     (and a screenshot if you can)."
         line
+        ;;
+    t27)
+        TDIR="$HERE/gpu-test"
+        pick_wine
+        say "Using: $CX_WINE"
+        say "Running the big-buffer GPU check: one 2 GB buffer, read at very large"
+        say "positions the way the game reads its character data. About a minute;"
+        say "it doesn't change anything. Please wait..."
+        say ""
+        rm -f "$TDIR/bigbuf-report.txt"
+        for TRY in "winemac.drv=d" ""; do
+            (cd "$TDIR" && WINEDEBUG=-all WINEDLLOVERRIDES="$TRY" "${RUN[@]}" bigbuf_test.exe bigbuf-report.txt) \
+                > "$TDIR/wine-output.txt" 2>&1 &
+            FPID=$!
+            for _ in $(seq 300); do kill -0 "$FPID" 2>/dev/null || break; sleep 1; done
+            kill "$FPID" 2>/dev/null
+            wait "$FPID" 2>/dev/null
+            grep -q "^RESULT" "$TDIR/bigbuf-report.txt" 2>/dev/null && break
+            [ -n "$TRY" ] && say "First attempt didn't finish, trying again with the normal Wine setup..."
+        done
+        if grep -q "^RESULT" "$TDIR/bigbuf-report.txt" 2>/dev/null; then
+            OUT="$HOME/Desktop/bigbuf-report-$(date +%Y%m%d-%H%M).txt"
+            {
+                echo "mac: $(sysctl -n machdep.cpu.brand_string 2>/dev/null) / macOS $(sw_vers -productVersion 2>/dev/null)"
+                echo "bottle: $KIND / $NAME"
+                cat "$TDIR/bigbuf-report.txt"
+            } > "$OUT"
+            say ""
+            grep "^RESULT" "$TDIR/bigbuf-report.txt"
+            say ""
+            say "Saved: $OUT"
+            say "Send me that file."
+            open -R "$OUT" 2>/dev/null
+        else
+            OUT="$HOME/Desktop/bigbuf-report-FAILED-$(date +%Y%m%d-%H%M).txt"
+            { echo "wine: $CX_WINE"; cat "$TDIR/bigbuf-report.txt" 2>/dev/null; echo "--- wine output (last 60 lines)"; \
+              tail -n 60 "$TDIR/wine-output.txt" 2>/dev/null; } > "$OUT"
+            say "The test didn't finish. Saved what happened to: $OUT"
+            say "Send me that file."
+        fi
         ;;
     t26)
         TDIR="$HERE/rosetta-fuzz"

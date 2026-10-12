@@ -22,7 +22,7 @@ for variant in no-crossover crossover; do
         A="$H/Applications/CrossOver.app/Contents/SharedSupport/CrossOver/bin"
         mkdir -p "$A"
         # Fake wine: records its arguments; for the GPU check it writes a report like the real test.
-        printf '#!/bin/bash\nprintf "%%s\\n" "$@" "OVERRIDES=$WINEDLLOVERRIDES" > "%s/wine-args"\ncase "$*" in *rosetta_fuzz.exe*) echo "RESULT: fake" > fuzz-report.txt ;; *skin_gpu_test.exe*) echo "RESULT: fake" > skin-report.txt ;; *format_test.exe*) echo "RESULT: fake" > format-report.txt ;; esac\nexit 0\n' "$H" > "$A/wine"
+        printf '#!/bin/bash\nprintf "%%s\\n" "$@" "OVERRIDES=$WINEDLLOVERRIDES" > "%s/wine-args"\ncase "$*" in *bigbuf_test.exe*) echo "RESULT: fake" > bigbuf-report.txt ;; *rosetta_fuzz.exe*) echo "RESULT: fake" > fuzz-report.txt ;; *skin_gpu_test.exe*) echo "RESULT: fake" > skin-report.txt ;; *format_test.exe*) echo "RESULT: fake" > format-report.txt ;; esac\nexit 0\n' "$H" > "$A/wine"
         chmod +x "$A/wine"
     fi
     run() { printf '%s\n\n' "$1" | HOME="$H" TERM=dumb SM2FIX_VOLUMES=/nonexistent bash "$CMD" > "$TMP/out" 2>&1; }
@@ -70,7 +70,10 @@ for variant in no-crossover crossover; do
             && grep -qx -- "--bottle" "$H/wine-args" && grep -qx "skin_gpu_test.exe" "$H/wine-args" && grep -q "sm2fix-skinning.dxil$" "$H/wine-args" && grep -qx "OVERRIDES=winemac.drv=d" "$H/wine-args" \
             && grep -q "^Z:.*\\\\Marvel'"'"'s Spider-Man 2\\\\Spider-Man2.exe$" "$H/wine-args"'
         rm -f "$H"/Desktop/cpu-report-*.txt
-        run 1; check "1 test#26 cpu check runs in the bottle" eval 'ls "$H"/Desktop/cpu-report-2*.txt >/dev/null 2>&1 \
+        rm -f "$H"/Desktop/bigbuf-report-*.txt
+        run 1; check "1 test#27 big-buffer check runs in the bottle" eval 'ls "$H"/Desktop/bigbuf-report-2*.txt >/dev/null 2>&1 \
+            && grep -qx "bigbuf_test.exe" "$H/wine-args" && grep -qx "OVERRIDES=winemac.drv=d" "$H/wine-args"'
+        run 32; check "32 test#26 cpu check runs in the bottle" eval 'ls "$H"/Desktop/cpu-report-2*.txt >/dev/null 2>&1 \
             && grep -qx "rosetta_fuzz.exe" "$H/wine-args" && grep -qx "check" "$H/wine-args" && grep -qx "OVERRIDES=winemac.drv=d" "$H/wine-args"'
         rm -f "$H"/Desktop/format-report-*.txt
         run 26; check "26 test#22 format check runs in the bottle" eval 'ls "$H"/Desktop/format-report-*.txt >/dev/null 2>&1 \

@@ -7,6 +7,7 @@ elif command -v zig >/dev/null 2>&1; then CC=(zig cc -target x86_64-windows-gnu)
 else CC=(python3 -m ziglang cc -target x86_64-windows-gnu); fi
 "${CC[@]}" -O2 -Wall -Wno-unused-function -o skin_gpu_test.exe skin_gpu_test.c skin_inputs.c
 "${CC[@]}" -O2 -Wall -o format_test.exe format_test.c
+"${CC[@]}" -O2 -Wall -o bigbuf_test.exe bigbuf_test.c
 "${CC[@]}" -O2 -Wall -o replay.exe replay.c ../shim/sm2fix_core.c
 "${CC[@]}" -O2 -Wall -o capture_demo.exe capture_demo.c ../shim/sm2fix_core.c
 rm -f *.pdb
