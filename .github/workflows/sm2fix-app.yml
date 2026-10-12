@@ -1,0 +1,36 @@
+name: sm2fix-app
+
+on:
+  push:
+    paths: ['spiderman2-tpose-fix/**', '.github/workflows/sm2fix-app.yml']
+  workflow_dispatch:
+
+jobs:
+  macos:
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: spiderman2-tpose-fix/app
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test
+        run: swift test
+
+      - name: Build app
+        run: VERSION=1.0.${{ github.run_number }} BUILD_NUMBER=${{ github.run_number }} UNIVERSAL=1 ./build-app.sh
+
+      - name: Smoke test the built app
+        run: |
+          APP="build/Spider-Man 2 T-Pose Fix.app"
+          "$APP/Contents/MacOS/SM2Fix" --selftest
+          lipo -archs "$APP/Contents/MacOS/SM2Fix"
+          codesign -dv "$APP" 2>&1 | head -5
+          # unzip what users download and check it again
+          mkdir -p /tmp/unzipped && ditto -x -k build/Spider-Man-2-T-Pose-Fix.zip /tmp/unzipped
+          "/tmp/unzipped/Spider-Man 2 T-Pose Fix.app/Contents/MacOS/SM2Fix" --selftest
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Spider-Man-2-T-Pose-Fix
+          path: spiderman2-tpose-fix/app/build/Spider-Man-2-T-Pose-Fix.zip
