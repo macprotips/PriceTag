@@ -17,6 +17,24 @@ static int failures;
 static const char target_shader[] = "pretend-this-is-the-DXIL-of-the-racy-shader";
 static const char other_shader[] = "some-unrelated-compute-shader";
 static const char skin_shader[] = "stand-in-for-CS_ModelSkinning";
+static const char pool_shader_a[] = "stand-in-for-a-shader-reading-the-pool-typed";
+static const char pool_shader_b[] = "another-pool-reader-made-through-a-stream";
+static const char pool_raw_a[] = "DXBC-pretend-pool-reader-a-rewritten-raw";
+static const char pool_raw_b[] = "DXBC-pretend-pool-reader-b-rewritten-raw";
+
+/* pool_fix: write sm2fix-pool-<hash>.dxil next to the shim (the current directory) */
+static void write_pool_shader(const char *orig, size_t orig_size, const char *alt)
+{
+    char name[64];
+    FILE *f;
+
+    snprintf(name, sizeof(name), "sm2fix-pool-%016llx.dxil", (unsigned long long)sm2_shader_hash(orig, orig_size));
+    if ((f = fopen(name, "wb")))
+    {
+        fwrite(alt, 1, strlen(alt), f);
+        fclose(f);
+    }
+}
 
 /* Stand-in for the game's skin-job launcher: same first 15 bytes (three register saves),
  * then mgr[0x34] = mgr[0x30] + 1 so the test can see the original code still ran. */
@@ -112,6 +130,7 @@ int main(int argc, char **argv)
     void (*get_counts)(LONG *, LONG *, LONG *);
     void (*mock_get_queue)(LONG *, LONG *, LONG *);
     const char *mode = argc > 1 ? argv[1] : "hash";
+    int pool_fix;
     ID3D12PipelineState *pso_target, *pso_other, *pso_stream;
     ID3D12GraphicsCommandList *list, *bundle;
     D3D12_COMPUTE_PIPELINE_STATE_DESC cdesc;
@@ -149,6 +168,10 @@ int main(int argc, char **argv)
     snprintf(hash, sizeof(hash), "%016llx", (unsigned long long)sm2_shader_hash(skin_shader, sizeof(skin_shader)));
     SetEnvironmentVariableA("SM2FIX_SKINNING_HASH", hash);
     SetEnvironmentVariableA("SM2FIX_REPLACE_SKINNING", !strcmp(mode, "hash") ? "1" : "0");
+    pool_fix = !strcmp(mode, "hash") || !strcmp(mode, "off");
+    SetEnvironmentVariableA("SM2FIX_POOL_FIX", pool_fix ? "1" : "0");
+    write_pool_shader(pool_shader_a, sizeof(pool_shader_a), pool_raw_a);
+    write_pool_shader(pool_shader_b, sizeof(pool_shader_b), pool_raw_b);
     SetEnvironmentVariableA("SM2FIX_SNAPSHOT_MS", "0");
     {
         uint8_t *base = (uint8_t *)GetModuleHandleA(NULL);
@@ -350,6 +373,59 @@ int main(int argc, char **argv)
     sdesc.SizeInBytes = sizeof(stream);
     sdesc.pPipelineStateSubobjectStream = &stream;
     CHECK(SUCCEEDED(ID3D12Device4_CreatePipelineState(device, &sdesc, &IID_ID3D12PipelineState, (void **)&pso_stream)));
+
+    /* pool_fix: shaders with a sm2fix-pool-<hash>.dxil get it instead (both PSO paths, and
+     * the game's stream must be left untouched); huge typed R32 SRVs become raw views. */
+    {
+        unsigned long long (*last_cs_hash)(void) = (void *)GetProcAddress(mock, "mock_get_last_cs_hash");
+        void (*last_srv)(D3D12_SHADER_RESOURCE_VIEW_DESC *) = (void *)GetProcAddress(mock, "mock_get_last_srv");
+        D3D12_SHADER_RESOURCE_VIEW_DESC sv = {0}, got;
+        D3D12_DESCRIPTOR_HEAP_DESC hd = { D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 4, D3D12_DESCRIPTOR_HEAP_FLAG_NONE };
+        D3D12_CPU_DESCRIPTOR_HANDLE cpu;
+        ID3D12DescriptorHeap *heap;
+        ID3D12PipelineState *p;
+
+        cdesc.CS.pShaderBytecode = pool_shader_a;
+        cdesc.CS.BytecodeLength = sizeof(pool_shader_a);
+        CHECK(SUCCEEDED(ID3D12Device4_CreateComputePipelineState(device, &cdesc, &IID_ID3D12PipelineState, (void **)&p)));
+        CHECK(last_cs_hash() == (pool_fix ? sm2_shader_hash(pool_raw_a, strlen(pool_raw_a))
+                                          : sm2_shader_hash(pool_shader_a, sizeof(pool_shader_a))));
+        stream.cs.code = pool_shader_b;
+        stream.cs.size = sizeof(pool_shader_b);
+        CHECK(SUCCEEDED(ID3D12Device4_CreatePipelineState(device, &sdesc, &IID_ID3D12PipelineState, (void **)&p)));
+        CHECK(last_cs_hash() == (pool_fix ? sm2_shader_hash(pool_raw_b, strlen(pool_raw_b))
+                                          : sm2_shader_hash(pool_shader_b, sizeof(pool_shader_b))));
+        CHECK(stream.cs.code == pool_shader_b && stream.cs.size == sizeof(pool_shader_b));
+        stream.cs.code = other_shader;
+        stream.cs.size = sizeof(other_shader);
+        CHECK(SUCCEEDED(ID3D12Device4_CreatePipelineState(device, &sdesc, &IID_ID3D12PipelineState, (void **)&p)));
+        CHECK(last_cs_hash() == sm2_shader_hash(other_shader, sizeof(other_shader)));
+
+        CHECK(SUCCEEDED(ID3D12Device4_CreateDescriptorHeap(device, &hd, &IID_ID3D12DescriptorHeap, (void **)&heap)));
+        heap->lpVtbl->GetCPUDescriptorHandleForHeapStart(heap, &cpu);
+        sv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        sv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        sv.Format = DXGI_FORMAT_R32_UINT;
+        sv.Buffer.FirstElement = 1024;
+        sv.Buffer.NumElements = 536346624;   /* the game's pool view */
+        ID3D12Device4_CreateShaderResourceView(device, NULL, &sv, cpu);
+        last_srv(&got);
+        printf("pool view: driver got format %u flags %u first %llu num %u\n", (unsigned)got.Format,
+                (unsigned)got.Buffer.Flags, (unsigned long long)got.Buffer.FirstElement, got.Buffer.NumElements);
+        CHECK(got.Format == (pool_fix ? DXGI_FORMAT_R32_TYPELESS : DXGI_FORMAT_R32_UINT));
+        CHECK(got.Buffer.Flags == (pool_fix ? D3D12_BUFFER_SRV_FLAG_RAW : 0));
+        CHECK(got.Buffer.FirstElement == 1024 && got.Buffer.NumElements == 536346624);
+        CHECK(sv.Format == DXGI_FORMAT_R32_UINT);   /* the game's own description untouched */
+        sv.Buffer.NumElements = 1u << 28;          /* fully readable: left alone */
+        ID3D12Device4_CreateShaderResourceView(device, NULL, &sv, cpu);
+        last_srv(&got);
+        CHECK(got.Format == DXGI_FORMAT_R32_UINT && got.Buffer.Flags == 0);
+        sv.Format = DXGI_FORMAT_R32G32B32A32_UINT; /* 16-byte typed: left alone */
+        sv.Buffer.NumElements = 134086656;
+        ID3D12Device4_CreateShaderResourceView(device, NULL, &sv, cpu);
+        last_srv(&got);
+        CHECK(got.Format == DXGI_FORMAT_R32G32B32A32_UINT && got.Buffer.Flags == 0);
+    }
 
     CHECK(SUCCEEDED(ID3D12Device4_CreateCommandList(device, 0, D3D12_COMMAND_LIST_TYPE_DIRECT, NULL, NULL,
             &IID_ID3D12GraphicsCommandList, (void **)&list)));

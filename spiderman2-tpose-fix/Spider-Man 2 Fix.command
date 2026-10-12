@@ -178,6 +178,10 @@ current_mode() {
 }
 
 mode_label() {
+    if grep -q '^pool_fix = 1' "$GAME_DIR/sm2fix.ini" 2>/dev/null; then
+        echo "Test #28 THE FIX (big-buffer fix)"
+        return
+    fi
     if grep -q '^trap_writer = 1' "$GAME_DIR/sm2fix.ini" 2>/dev/null; then
         echo "Test #21 animation code trap"
         return
@@ -267,7 +271,7 @@ fi
 
 say ""
 say "What do you want to do?"
-say "  1) Test #27: GPU check with a huge (2 GB) buffer (1 min, no game)  <-- do this one"
+say "  1) Test #28: THE FIX for the T-pose (install, then play)  <-- do this one"
 say "  2) Test #16: GPU check (done: the shader works on your Mac)"
 say "  3) Save my results to the Desktop (to send for help)"
 say "  4) Remove everything (back to normal)"
@@ -294,6 +298,7 @@ say "  23) Test #19: always animate (done: didn't help)"
 say "  24) Test #20: GPU readback watch (done: readbacks are fine)"
 say "  25) Test #21: catch the code that animates characters (done: only caught memory clears)"
 say "  26) Test #22: GPU data-format check (done: all 40 formats fine)"
+say "  33) Test #27: GPU check with a huge (2 GB) buffer (done: found the cause!)"
 say "  32) Test #26: check every CPU instruction the game uses (done: Rosetta is correct)"
 say "  31) Test #25: check every GPU program the game runs (done: no differences found)"
 say "  30) Test #24: record Ziva face/cloth GPU work (done: Ziva GPU math is correct)"
@@ -306,7 +311,8 @@ say ""
 
 # Map the new menu numbers onto the handlers below.
 case "$action" in
-    1) action=t27 ;;
+    1) action=t28 ;;
+    33) action=t27 ;;
     32) action=t26 ;;
     31) action=t25 ;;
     30) action=t24 ;;
@@ -363,6 +369,25 @@ pick_wine() {
 }
 
 case "$action" in
+    t28)
+        ds_on
+        rm -rf "$GAME_DIR/sm2fix-dumps" "$GAME_DIR/sm2fix-capture"
+        bash "$INSTALLER" "${ARGS[@]}" --mode off --pool-fix || pause_exit 1
+        say ""
+        line
+        say "Test #28 installed: THE FIX."
+        say "Your big-buffer report found it: on M1-M4 Macs, the GPU returns 0 when a"
+        say "shader reads a \"typed\" buffer past position 268,435,456. The game keeps all"
+        say "character mesh data in one 2 GB buffer and reads it exactly that way, so"
+        say "characters stored in its upper half never get their animation (T-pose)."
+        say "This fix makes the game read that buffer the \"raw\" way, which your report"
+        say "showed works all the way to the end."
+        say "  1. Start the game, load your save, walk around near people."
+        say "     Are the T-poses / missing heads gone?"
+        say "  2. Quit from the in-game menu, run this again, pick 3, and send me the log"
+        say "     (and a screenshot either way)."
+        line
+        ;;
     t25)
         ds_on
         rm -rf "$GAME_DIR/sm2fix-dumps" "$GAME_DIR/sm2fix-capture"

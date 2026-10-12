@@ -375,7 +375,14 @@ static int replay(const uint8_t *exe, size_t exe_size, const char *path)
     if (j)
         out("  note: %u views (too big, or textures) weren't captured; the replay reads them as empty\n", j);
     missing = (int)j;
-    if (!(shader = find_shader(exe, exe_size, c.hash, &shader_size)))
+    if (getenv("REPLAY_SHADER"))            /* test a rewritten shader on the same capture */
+    {
+        shader = read_file(getenv("REPLAY_SHADER"), &shader_size);
+        out("  shader replaced by %s\n", getenv("REPLAY_SHADER"));
+    }
+    else
+        shader = find_shader(exe, exe_size, c.hash, &shader_size);
+    if (!shader)
     {
         out("  FAILED: shader not found in the game executable\n");
         return -1;
@@ -576,6 +583,15 @@ static int replay(const uint8_t *exe, size_t exe_size, const char *path)
             sv.Buffer.NumElements = v->num;
             sv.Buffer.StructureByteStride = v->stride;
             sv.Buffer.Flags = v->flags;
+            /* REPLAY_RAW_SLOT=param:slot -> that 32-bit typed view becomes a raw view, as sm2fix does */
+            if (getenv("REPLAY_RAW_SLOT") && (unsigned)atoi(getenv("REPLAY_RAW_SLOT")) == v->param
+                    && strchr(getenv("REPLAY_RAW_SLOT"), ':') && (unsigned)atoi(strchr(getenv("REPLAY_RAW_SLOT"), ':') + 1) == v->slot
+                    && es == 4)
+            {
+                sv.Format = DXGI_FORMAT_R32_TYPELESS;
+                sv.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
+                out("  view root %u slot %u read as raw\n", v->param, v->slot);
+            }
             ID3D12Device_CreateShaderResourceView(device, bufs[v->group], &sv, h);
         }
         else if (v->kind == 2)

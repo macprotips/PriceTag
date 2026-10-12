@@ -93,6 +93,30 @@ enum sm2_stream_result sm2_stream_find_cs(const void *stream, size_t size,
     return found ? SM2_STREAM_COMPUTE : SM2_STREAM_NO_CS;
 }
 
+long sm2_stream_cs_offset(const void *stream, size_t size)
+{
+    const uint8_t *base = stream;
+    size_t offset = 0;
+
+    if (!stream)
+        return -1;
+    while (offset < size)
+    {
+        uint32_t type;
+        size_t sub_size;
+
+        if (size - offset < sizeof(uint32_t))
+            return -1;
+        memcpy(&type, base + offset, sizeof(type));
+        if (is_graphics_subobject(type) || !(sub_size = subobject_size(type)) || size - offset < sub_size)
+            return -1;
+        if (type == SUB_CS)
+            return (long)offset;
+        offset += sub_size;
+    }
+    return -1;
+}
+
 /* Inner payload size/alignment of every subobject type (64-bit), for walking full
  * graphics streams. Sizes of the types mingw's d3d12.h knows are static-asserted
  * in sm2fix.c; the newer ones (26-28) are from the Agility SDK headers. */
@@ -200,6 +224,7 @@ void sm2_config_defaults(struct sm2_config *cfg)
     cfg->capture_budget_mb = 600;
     cfg->capture_view_mb = 32;
     cfg->capture_total_mb = 96;
+    cfg->pool_fix_min = 1u << 28;
     cfg->capture_hash_count = 6;
     cfg->capture_hashes[0] = 0xbd8cf9af848f2800ull;   /* CS_ZivaTensorSkinning */
     cfg->capture_hashes[1] = 0x9485836ba3df2694ull;   /* CS_ZivaKernelFunctions */
@@ -449,6 +474,16 @@ int sm2_config_set(struct sm2_config *cfg, const char *key, const char *value)
     if (key_equals(key, "skinning_hash"))
     {
         cfg->skinning_hash = strtoull(value, NULL, 16);
+        return 0;
+    }
+    if (key_equals(key, "pool_fix"))
+    {
+        cfg->pool_fix = atoi(value) != 0;
+        return 0;
+    }
+    if (key_equals(key, "pool_fix_min"))
+    {
+        cfg->pool_fix_min = (unsigned int)strtoul(value, NULL, 0);
         return 0;
     }
     if (key_equals(key, "replace_skinning"))

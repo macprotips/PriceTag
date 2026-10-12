@@ -7,6 +7,7 @@
 #include <initguid.h>
 #include <d3d12.h>
 #include "../../shim/sm2fix_dxbc.h"
+#include "../../shim/sm2fix_core.h"
 
 static UINT g_last_sampler_filter, g_last_rootsig_filter;
 static int g_last_rootsig_checksum_ok;
@@ -279,19 +280,18 @@ unsigned long long mock_get_last_cs_hash(void)
 static HRESULT STDMETHODCALLTYPE dev_CreateComputePipelineState(ID3D12Device4 *iface,
         const D3D12_COMPUTE_PIPELINE_STATE_DESC *desc, REFIID riid, void **out)
 {
-    const unsigned char *p = desc->CS.pShaderBytecode;
-    unsigned long long h = 0xcbf29ce484222325ull;
-    SIZE_T i;
-
-    for (i = 0; i < desc->CS.BytecodeLength; i++)
-        h = (h * 0x100000001b3ull) ^ p[i];
-    g_last_cs_hash = h;
+    g_last_cs_hash = sm2_shader_hash(desc->CS.pShaderBytecode, desc->CS.BytecodeLength);
     *out = new_object();
     return S_OK;
 }
 static HRESULT STDMETHODCALLTYPE dev_CreatePipelineState(ID3D12Device4 *iface,
         const D3D12_PIPELINE_STATE_STREAM_DESC *desc, REFIID riid, void **out)
 {
+    const void *code;
+    size_t size;
+
+    if (sm2_stream_find_cs(desc->pPipelineStateSubobjectStream, desc->SizeInBytes, &code, &size) == SM2_STREAM_COMPUTE)
+        g_last_cs_hash = sm2_shader_hash(code, size);
     *out = new_object();
     return S_OK;
 }
@@ -313,8 +313,17 @@ static HRESULT STDMETHODCALLTYPE dev_CreateDescriptorHeap(ID3D12Device4 *iface, 
     return S_OK;
 }
 static UINT STDMETHODCALLTYPE dev_GetDescriptorHandleIncrementSize(ID3D12Device4 *iface, D3D12_DESCRIPTOR_HEAP_TYPE t) { return 32; }
+static D3D12_SHADER_RESOURCE_VIEW_DESC g_last_srv;
+
+/* The last SRV description the driver was given (to see pool_fix's raw views). */
+void mock_get_last_srv(D3D12_SHADER_RESOURCE_VIEW_DESC *out) { *out = g_last_srv; }
+
 static void STDMETHODCALLTYPE dev_CreateShaderResourceView(ID3D12Device4 *iface, ID3D12Resource *r,
-        const D3D12_SHADER_RESOURCE_VIEW_DESC *d, D3D12_CPU_DESCRIPTOR_HANDLE h) {}
+        const D3D12_SHADER_RESOURCE_VIEW_DESC *d, D3D12_CPU_DESCRIPTOR_HANDLE h)
+{
+    if (d)
+        g_last_srv = *d;
+}
 static void STDMETHODCALLTYPE dev_CopyDescriptorsSimple(ID3D12Device4 *iface, UINT n, D3D12_CPU_DESCRIPTOR_HANDLE d,
         D3D12_CPU_DESCRIPTOR_HANDLE s, D3D12_DESCRIPTOR_HEAP_TYPE t) {}
 static HRESULT STDMETHODCALLTYPE dev_CreateCommandList(ID3D12Device4 *iface, UINT mask, D3D12_COMMAND_LIST_TYPE type,

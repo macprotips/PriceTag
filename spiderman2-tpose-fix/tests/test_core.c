@@ -61,6 +61,7 @@ static void test_stream_compute(void)
     CHECK(sm2_stream_find_cs(&stream, sizeof(stream), &code, &size) == SM2_STREAM_COMPUTE);
     CHECK(code == shader);
     CHECK(size == sizeof(shader));
+    CHECK(sm2_stream_cs_offset(&stream, sizeof(stream)) == 16);
 }
 
 static void test_stream_graphics_and_errors(void)
@@ -76,6 +77,10 @@ static void test_stream_graphics_and_errors(void)
     CHECK(sm2_stream_find_cs(&root_only, sizeof(root_only), &code, &size) == SM2_STREAM_NO_CS);
     CHECK(sm2_stream_find_cs(&root_only, 12, &code, &size) == SM2_STREAM_MALFORMED);
     CHECK(sm2_stream_find_cs(NULL, 0, &code, &size) == SM2_STREAM_MALFORMED);
+    CHECK(sm2_stream_cs_offset(&gfx, sizeof(gfx)) == -1);
+    CHECK(sm2_stream_cs_offset(&unknown, sizeof(unknown)) == -1);
+    CHECK(sm2_stream_cs_offset(&root_only, sizeof(root_only)) == -1);
+    CHECK(sm2_stream_cs_offset(NULL, 0) == -1);
 }
 
 static int walked;
@@ -231,6 +236,9 @@ static void test_config(void)
     CHECK(sm2_config_set(&cfg, "pso_delay_ms", "5") == 0 && cfg.pso_delay_ms == 5);
     CHECK(sm2_config_set(&cfg, "pso_delay_ms", "99999") == 0 && cfg.pso_delay_ms == 0);
     CHECK(sm2_config_set(&cfg, "cpu_count", "8") == 0 && cfg.cpu_count == 8);
+    CHECK(cfg.pool_fix == 0 && cfg.pool_fix_min == 1u << 28);
+    CHECK(sm2_config_set(&cfg, "pool_fix", "1") == 0 && cfg.pool_fix == 1);
+    CHECK(sm2_config_set(&cfg, "pool_fix_min", "0x1000") == 0 && cfg.pool_fix_min == 0x1000);
 }
 
 static void test_ziva_config(void)

@@ -114,6 +114,8 @@ static void load_config(void)
         {"SM2FIX_SKIN_BUDGET", "skin_budget"},
         {"SM2FIX_SKIP_SKINNING", "skip_skinning"},
         {"SM2FIX_REPLACE_SKINNING", "replace_skinning"},
+        {"SM2FIX_POOL_FIX", "pool_fix"},
+        {"SM2FIX_POOL_FIX_MIN", "pool_fix_min"},
         {"SM2FIX_SKINNING_HASH", "skinning_hash"},
         {"SM2FIX_SNAPSHOT_MS", "snapshot_ms"},
         {"SM2FIX_FORCE_ANIM", "force_anim"},
@@ -1519,6 +1521,78 @@ static const void *replacement_skinning(size_t *size)
     return len ? data : NULL;
 }
 
+/* pool_fix: D3DMetal on M1-M4 reads typed buffer views only up to element 2^28 (later
+ * elements read as 0), but the game reads its 2 GB vertex/morph pool through typed R32
+ * views of ~536M elements. Shaders that do have rewritten versions next to the shim,
+ * sm2fix-pool-<hash>.dxil (shader-fix/typed2raw.py: the typed loads become raw loads), and
+ * the big typed views are created as raw views (see hk_dev_CreateShaderResourceView). */
+#ifndef ARRAY_SIZE
+#define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
+#endif
+
+static LONG g_pool_views, g_pool_psos;
+
+static struct pool_file { uint64_t hash; void *data; size_t len; } g_pool_files[16];
+static unsigned int g_pool_file_count;
+
+/* Loads every sm2fix-pool-<hash>.dxil next to the shim, once. */
+static BOOL CALLBACK load_pool_files(INIT_ONCE *once, void *param, void **ctx)
+{
+    WCHAR pattern[MAX_PATH], path[MAX_PATH];
+    WIN32_FIND_DATAW fd;
+    HANDLE find;
+
+    path_next_to_self(pattern, MAX_PATH, L"sm2fix-pool-*.dxil");
+    if ((find = FindFirstFileW(pattern, &fd)) == INVALID_HANDLE_VALUE)
+    {
+        log_msg("pool_fix: no sm2fix-pool-*.dxil files next to the shim");
+        return TRUE;
+    }
+    do
+    {
+        struct pool_file *pf = &g_pool_files[g_pool_file_count];
+        unsigned long long hash;
+        FILE *f;
+        long n;
+
+        if (g_pool_file_count >= ARRAY_SIZE(g_pool_files) || swscanf(fd.cFileName, L"sm2fix-pool-%16llx.dxil", &hash) != 1)
+            continue;
+        path_next_to_self(path, MAX_PATH, fd.cFileName);
+        if (!(f = _wfopen(path, L"rb")))
+            continue;
+        fseek(f, 0, SEEK_END);
+        n = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        if (n > 32 && (pf->data = HeapAlloc(GetProcessHeap(), 0, n)) && fread(pf->data, 1, n, f) == (size_t)n
+                && !memcmp(pf->data, "DXBC", 4))
+        {
+            pf->hash = hash;
+            pf->len = n;
+            g_pool_file_count++;
+        }
+        fclose(f);
+        log_msg("pool_fix: %s sm2fix-pool-%016llx.dxil (%ld bytes)", pf->len ? "loaded" : "could NOT load", hash, n);
+    } while (FindNextFileW(find, &fd));
+    FindClose(find);
+    return TRUE;
+}
+
+static const void *pool_shader(uint64_t hash, size_t *size)
+{
+    static INIT_ONCE once = INIT_ONCE_STATIC_INIT;
+    unsigned int i;
+
+    InitOnceExecuteOnce(&once, load_pool_files, NULL, NULL);
+    for (i = 0; i < g_pool_file_count; i++)
+        if (g_pool_files[i].hash == hash)
+        {
+            *size = g_pool_files[i].len;
+            return g_pool_files[i].data;
+        }
+    *size = 0;
+    return NULL;
+}
+
 static HRESULT STDMETHODCALLTYPE hk_dev_CreateComputePipelineState(ID3D12Device *device,
         const D3D12_COMPUTE_PIPELINE_STATE_DESC *desc, REFIID riid, void **pso)
 {
@@ -1530,7 +1604,22 @@ static HRESULT STDMETHODCALLTYPE hk_dev_CreateComputePipelineState(ID3D12Device 
     HRESULT hr;
 
     pso_creation_delay();
-    if (g_cfg.replace_skinning && desc && desc->CS.pShaderBytecode
+    if (g_cfg.pool_fix && desc && desc->CS.pShaderBytecode && readable(desc->CS.pShaderBytecode, desc->CS.BytecodeLength)
+            && (alt = pool_shader(sm2_shader_hash(desc->CS.pShaderBytecode, desc->CS.BytecodeLength), &alt_size)))
+    {
+        swapped = *desc;
+        swapped.CS.pShaderBytecode = alt;
+        swapped.CS.BytecodeLength = alt_size;
+        hr = orig(device, &swapped, riid, pso);
+        log_msg("pool_fix: replaced compute shader %016llx (CreateComputePipelineState): hr=%#lx pso=%p",
+                (unsigned long long)sm2_shader_hash(desc->CS.pShaderBytecode, desc->CS.BytecodeLength),
+                (unsigned long)hr, SUCCEEDED(hr) && pso ? *pso : NULL);
+        if (FAILED(hr))
+            hr = orig(device, desc, riid, pso);
+        else
+            InterlockedIncrement(&g_pool_psos);
+    }
+    else if (g_cfg.replace_skinning && desc && desc->CS.pShaderBytecode
             && readable(desc->CS.pShaderBytecode, desc->CS.BytecodeLength)
             && sm2_shader_hash(desc->CS.pShaderBytecode, desc->CS.BytecodeLength) == SM2_SKINNING_HASH
             && (alt = replacement_skinning(&alt_size)))
@@ -1568,7 +1657,38 @@ static HRESULT STDMETHODCALLTYPE hk_dev_CreatePipelineState(ID3D12Device2 *devic
     size_t size = 0;
 
     pso_creation_delay();
-    hr = orig(device, desc, riid, pso);
+    hr = E_FAIL;
+    if (g_cfg.pool_fix && desc && sm2_stream_find_cs(desc->pPipelineStateSubobjectStream, desc->SizeInBytes,
+            &code, &size) == SM2_STREAM_COMPUTE && code && readable(code, size))
+    {
+        long at = sm2_stream_cs_offset(desc->pPipelineStateSubobjectStream, desc->SizeInBytes);
+        uint64_t hash = sm2_shader_hash(code, size);
+        const void *alt;
+        size_t alt_size;
+        uint8_t *copy;
+
+        if (at >= 0 && (alt = pool_shader(hash, &alt_size))
+                && (copy = HeapAlloc(GetProcessHeap(), 0, desc->SizeInBytes)))
+        {
+            D3D12_PIPELINE_STATE_STREAM_DESC sdesc = *desc;
+            uint64_t len64 = alt_size;
+
+            memcpy(copy, desc->pPipelineStateSubobjectStream, desc->SizeInBytes);
+            memcpy(copy + at + 8, &alt, sizeof(alt));
+            memcpy(copy + at + 16, &len64, sizeof(len64));
+            sdesc.pPipelineStateSubobjectStream = copy;
+            hr = orig(device, &sdesc, riid, pso);
+            HeapFree(GetProcessHeap(), 0, copy);
+            log_msg("pool_fix: replaced compute shader %016llx (CreatePipelineState): hr=%#lx pso=%p",
+                    (unsigned long long)hash, (unsigned long)hr, SUCCEEDED(hr) && pso ? *pso : NULL);
+            if (SUCCEEDED(hr))
+                InterlockedIncrement(&g_pool_psos);
+        }
+        code = NULL;
+        size = 0;
+    }
+    if (FAILED(hr))
+        hr = orig(device, desc, riid, pso);
 
     if (SUCCEEDED(hr) && desc && pso && *pso)
     {
@@ -2121,8 +2241,26 @@ static void STDMETHODCALLTYPE hk_dev_CreateShaderResourceView(ID3D12Device *devi
 {
     void (STDMETHODCALLTYPE *orig)(ID3D12Device *, ID3D12Resource *, const D3D12_SHADER_RESOURCE_VIEW_DESC *,
             D3D12_CPU_DESCRIPTOR_HANDLE) = orig_fn(device, DEV_IDX(CreateShaderResourceView));
+    D3D12_SHADER_RESOURCE_VIEW_DESC raw;
     struct view_rec *r;
 
+    if (g_cfg.pool_fix && desc && desc->ViewDimension == D3D12_SRV_DIMENSION_BUFFER
+            && !(desc->Buffer.Flags & D3D12_BUFFER_SRV_FLAG_RAW) && desc->Buffer.NumElements > g_cfg.pool_fix_min
+            && (desc->Format == DXGI_FORMAT_R32_UINT || desc->Format == DXGI_FORMAT_R32_SINT
+                || desc->Format == DXGI_FORMAT_R32_FLOAT))
+    {
+        LONG n = InterlockedIncrement(&g_pool_views);
+
+        raw = *desc;
+        raw.Format = DXGI_FORMAT_R32_TYPELESS;
+        raw.Buffer.Flags |= D3D12_BUFFER_SRV_FLAG_RAW;
+        raw.Buffer.StructureByteStride = 0;
+        if (n <= 16 || !(n & (n - 1)))
+            log_msg("pool_fix: typed SRV #%ld (format %u, first %llu, %u elements, res %p) -> raw view", (long)n,
+                    (unsigned)desc->Format, (unsigned long long)desc->Buffer.FirstElement, desc->Buffer.NumElements,
+                    (void *)res);
+        desc = &raw;
+    }
     orig(device, res, desc, handle);
     if ((r = view_at_cpu(handle.ptr)))
     {
@@ -3138,6 +3276,9 @@ static void hook_device_object(void *obj)
         hook_slot(dev, DEV_IDX(CreateCommandSignature), (void *)hk_dev_CreateCommandSignature,
                 "Device::CreateCommandSignature");
         hook_slot(dev, DEV_IDX(CreateCommandQueue), (void *)hk_dev_CreateCommandQueue, "Device::CreateCommandQueue");
+        if (g_cfg.pool_fix && !(g_cfg.probe_skin || g_cfg.capture))
+            hook_slot(dev, DEV_IDX(CreateShaderResourceView), (void *)hk_dev_CreateShaderResourceView,
+                    "Device::CreateShaderResourceView");
         if (g_cfg.probe_skin || g_cfg.capture)
         {
             hook_slot(dev, DEV_IDX(CreateDescriptorHeap), (void *)hk_dev_CreateDescriptorHeap, "Device::CreateDescriptorHeap");
@@ -3182,6 +3323,8 @@ static BOOL CALLBACK init_once(INIT_ONCE *once, void *param, void **context)
             mode_names[g_cfg.mode], g_cfg.log_shaders, g_cfg.hash_count, g_cfg.spoof, g_cfg.dump_compute,
             g_cfg.dump_graphics, g_cfg.minmax);
     log_msg("profile=%d trace_queries=%d fake_timestamps=%d", g_cfg.profile, g_cfg.trace_queries, g_cfg.fake_timestamps);
+    if (g_cfg.pool_fix)
+        log_msg("pool_fix=1: typed R32 buffer SRVs with more than %u elements become raw views", g_cfg.pool_fix_min);
     for (i = 0; i < g_cfg.hash_count; i++)
         log_msg("  target hash %016llx", (unsigned long long)g_cfg.hashes[i]);
 
@@ -4366,6 +4509,9 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, void *reserved)
     else if (reason == DLL_PROCESS_DETACH && g_log)
     {
         g_exiting = TRUE;
+        if (g_cfg.pool_fix)
+            fprintf(g_log, "exit: pool_fix: %ld shader pipelines replaced, %ld typed views made raw\n",
+                    (long)g_pool_psos, (long)g_pool_views);
         if (g_dispatch_trampoline)
             fprintf(g_log, "exit: skin dispatch calls=%lld with-work=%lld over-capacity=%lld capacity=%u;"
                     " inside: SetPipelineState=%lld (skinning=%lld) Dispatch=%lld (skinning=%lld) ExecuteIndirect=%lld\n",

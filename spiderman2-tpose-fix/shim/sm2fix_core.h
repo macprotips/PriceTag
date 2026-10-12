@@ -32,6 +32,8 @@ enum sm2_stream_result sm2_stream_find_cs(const void *stream, size_t size,
 
 /* Byte size of one stream subobject of `type` (header + padding + payload), 0 if unknown. */
 size_t sm2_stream_subobject_size(uint32_t type);
+/* Offset of the CS subobject in a compute-only stream, or -1. */
+long sm2_stream_cs_offset(const void *stream, size_t size);
 /* Calls fn for every shader subobject (VS, PS, DS, HS, GS, CS, AS, MS). Returns the number
  * of subobjects walked, or -1 if the stream has a type we can't size. */
 int sm2_stream_for_each_shader(const void *stream, size_t size,
@@ -74,6 +76,8 @@ struct sm2_config
     uint32_t anim_vtbl_rva[3];  /* AnimUpdateLOD / AnimControllerComponent / SimpleAnimComponent Prius vtables */
     unsigned int snapshot_ms;   /* probe_skin: period of the binding/palette snapshots */
     int replace_skinning;       /* swap CS_ModelSkinning for sm2fix-skinning.dxil (array-free rewrite) */
+    int pool_fix;               /* huge typed R32 buffer SRVs -> raw views, + sm2fix-pool-<hash>.dxil shaders */
+    unsigned int pool_fix_min;  /* typed views with more elements than this are converted (default 2^28) */
     int skip_skinning;          /* diagnostic: drop every Dispatch while CS_ModelSkinning is bound */
     unsigned int skin_budget;   /* 0 = untouched, else raise RenderBudgets.ModelSkinGroupMax to at least this */
     int fake_timestamps;        /* replace D3DMetal's GPU timestamps (60 Hz, all zero on M1-M4) with real CPU time */

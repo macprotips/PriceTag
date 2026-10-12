@@ -8,3 +8,4 @@ EXPORTS
     mock_set_d3dmetal_like
     mock_get_last_cs_hash
     mock_get_rb_resource
+    mock_get_last_srv

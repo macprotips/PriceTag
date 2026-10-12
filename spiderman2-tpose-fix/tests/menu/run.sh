@@ -30,6 +30,13 @@ for variant in no-crossover crossover; do
     out() { grep -q "$1" "$TMP/out"; }
 
     echo "== $variant"
+    run 1;  check "1 test#28 THE FIX"              eval 'ini pool_fix 1 && ini mode off && ini probe_skin 0 && ini capture 0 && ini replace_skinning 0 \
+            && [ -f "$G/d3d12.dll" ] && [ -f "$G/sm2fix-pool-3d50acdb571dce22.dxil" ] && [ -f "$G/sm2fix-pool-14902794dd7134e4.dxil" ] \
+            && out "Test #28 installed"'
+    run 10; check "fix shows as installed"         eval 'out "Currently installed: Test #28 THE FIX"'
+    run 31; check "31 test#25 capture all"          eval 'ini capture 1 && ini capture_all 1 && ini pool_fix 0 && [ ! -f "$G/sm2fix-pool-3d50acdb571dce22.dxil" ]'
+    run 1;  check "1 again"                        eval 'ini pool_fix 1'
+    run 4;  check "4 remove takes the pool shaders too" eval '! ls "$G"/sm2fix-pool-*.dxil >/dev/null 2>&1 && [ ! -f "$G/d3d12.dll" ]'
     run 31; check "31 test#25 capture all"          eval 'ini capture 1 && ini capture_all 1 && ini capture_view_mb 8 && ini capture_budget_mb 250 && ini mode off && [ -f "$G/d3d12.dll" ]'
     run 30; check "30 test#24 ziva capture"        eval 'ini capture 1 && ini capture_all 0 && ini capture_view_mb 32 && ini mode off && ini ziva_cpu auto && ini probe_skin 0'
     mkdir -p "$G/sm2fix-capture" && echo "x" > "$G/sm2fix.log"
@@ -71,7 +78,7 @@ for variant in no-crossover crossover; do
             && grep -q "^Z:.*\\\\Marvel'"'"'s Spider-Man 2\\\\Spider-Man2.exe$" "$H/wine-args"'
         rm -f "$H"/Desktop/cpu-report-*.txt
         rm -f "$H"/Desktop/bigbuf-report-*.txt
-        run 1; check "1 test#27 big-buffer check runs in the bottle" eval 'ls "$H"/Desktop/bigbuf-report-2*.txt >/dev/null 2>&1 \
+        run 33; check "33 test#27 big-buffer check runs in the bottle" eval 'ls "$H"/Desktop/bigbuf-report-2*.txt >/dev/null 2>&1 \
             && grep -qx "bigbuf_test.exe" "$H/wine-args" && grep -qx "OVERRIDES=winemac.drv=d" "$H/wine-args"'
         run 32; check "32 test#26 cpu check runs in the bottle" eval 'ls "$H"/Desktop/cpu-report-2*.txt >/dev/null 2>&1 \
             && grep -qx "rosetta_fuzz.exe" "$H/wine-args" && grep -qx "check" "$H/wine-args" && grep -qx "OVERRIDES=winemac.drv=d" "$H/wine-args"'

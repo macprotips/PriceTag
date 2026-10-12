@@ -9,7 +9,7 @@ else CC=(python3 -m ziglang cc -target x86_64-windows-gnu); fi
 OUT=build/e2e
 rm -rf "$OUT" && mkdir -p "$OUT"
 cp build/d3d12.dll "$OUT/"
-"${CC[@]}" -O1 -shared -o "$OUT/mock_d3d12.dll" tests/e2e/mock_d3d12.c shim/sm2fix_dxbc.c tests/e2e/mock_d3d12.def
+"${CC[@]}" -O1 -shared -o "$OUT/mock_d3d12.dll" tests/e2e/mock_d3d12.c shim/sm2fix_dxbc.c shim/sm2fix_core.c tests/e2e/mock_d3d12.def
 "${CC[@]}" -O1 -o "$OUT/fake_game.exe" tests/e2e/fake_game.c shim/sm2fix_core.c shim/sm2fix_dxbc.c
 export WINEPREFIX="${WINEPREFIX:-$PWD/build/wineprefix}" WINEDEBUG=-all
 # Make sure the native shim beats Wine's builtin d3d12 when loaded from the app dir.
@@ -18,7 +18,7 @@ cd "$OUT"
 printf '%s' "DXBC-pretend-replacement-skinning-shader-0123456789" > sm2fix-skinning.dxil
 status=0
 for mode in hash all max off; do
-    rm -rf sm2fix-dumps
+    rm -rf sm2fix-dumps sm2fix.log
     wine fake_game.exe "$mode" || status=1
     cp sm2fix.log "sm2fix-$mode.log"
     if [[ $mode != off ]] && ! grep -q "skin launcher (first calls): calls=1 with-requests=1 blocked-by-flag=1 .*+30(requests)=41 .*jobsys flag(+24)=7" sm2fix.log; then
@@ -33,6 +33,15 @@ for mode in hash all max off; do
     if [[ $mode == all || $mode == max ]] && ! { grep -q "SkinningSB created: ok=1 capacity=16 entries" sm2fix.log \
             && grep -q "skin dispatch (first calls): calls=1 with-work=1 over-capacity=0 | entries queued=5 SkinningSB capacity=16" sm2fix.log; }; then
         echo "FAIL: skin budget probe ($mode)"; grep -i "skin" sm2fix.log; status=1
+    fi
+    if [[ $mode == hash || $mode == off ]] && ! { grep -q "pool_fix: replaced compute shader [0-9a-f]* (CreateComputePipelineState): hr=0" sm2fix.log \
+            && grep -q "pool_fix: replaced compute shader [0-9a-f]* (CreatePipelineState): hr=0" sm2fix.log \
+            && grep -q "pool_fix: typed SRV #1 (format 42, first 1024, 536346624 elements, res .*) -> raw view" sm2fix.log \
+            && grep -q "exit: pool_fix: 2 shader pipelines replaced, 1 typed views made raw" sm2fix.log; }; then
+        echo "FAIL: pool_fix ($mode)"; grep -i "pool" sm2fix.log; status=1
+    fi
+    if [[ $mode == all || $mode == max ]] && grep -q "pool_fix" sm2fix.log; then
+        echo "FAIL: pool_fix active when off ($mode)"; status=1
     fi
     if [[ $mode == hash ]] && ! grep -q "replace_skinning: created the replacement skinning pipeline: hr=0" sm2fix.log; then
         echo "FAIL: replace_skinning ($mode)"; grep -i "replace" sm2fix.log; status=1

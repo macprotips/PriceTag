@@ -218,6 +218,8 @@ static void transition(ID3D12GraphicsCommandList *list, ID3D12Resource *res, D3D
     ID3D12GraphicsCommandList_ResourceBarrier(list, 1, &barrier);
 }
 
+static int g_t1_raw;
+
 /* Runs one shader over the inputs; returns the output (SKIN_OUT_VERTS * 4 words) or NULL. */
 static uint32_t *run_shader(const void *code, size_t code_size, const struct skin_inputs *in, enum layout layout)
 {
@@ -230,6 +232,11 @@ static uint32_t *run_shader(const void *code, size_t code_size, const struct ski
         { in->inst, sizeof(in->inst), DXGI_FORMAT_UNKNOWN, 64, 64, D3D12_BUFFER_SRV_FLAG_NONE, 3 },
     };
     const UINT out_pad = (layout == LAYOUT_PLAIN) ? 0 : 123;   /* uint4 elements before the output */
+    if (g_t1_raw)       /* a shader rewritten to read t1 raw (sm2fix's fix for >2^28-element typed views) */
+    {
+        inputs[1].format = DXGI_FORMAT_R32_TYPELESS;
+        inputs[1].flags = D3D12_BUFFER_SRV_FLAG_RAW;
+    }
     D3D12_COMPUTE_PIPELINE_STATE_DESC pd = {0};
     D3D12_DESCRIPTOR_HEAP_DESC hd = { D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 6, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE };
     D3D12_SHADER_RESOURCE_VIEW_DESC sv;
@@ -518,9 +525,15 @@ int main(int argc, char **argv)
     /* Candidate replacements (plain layout). */
     for (i = 4; i < argc; i++)
     {
-        size_t n;
-        uint8_t *alt = read_file(argv[i], &n);
+        size_t n, len = strlen(argv[i]);
+        uint8_t *alt;
         uint32_t *got;
+
+        /* "file.dxil:raw" = the shader reads t1 as a raw buffer */
+        g_t1_raw = len > 4 && !strcmp(argv[i] + len - 4, ":raw");
+        if (g_t1_raw)
+            argv[i][len - 4] = 0;
+        alt = read_file(argv[i], &n);
 
         if (!alt)
         {
