@@ -16,13 +16,20 @@ struct ContentView: View {
         }
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
-                Button {
-                    Task { await model.refresh() }
-                } label: {
-                    Label("Refresh Prices", systemImage: "arrow.clockwise")
+                if model.isRefreshing {
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(width: 28)
+                        .help("Updating prices…")
+                } else {
+                    Button {
+                        Task { await model.refresh() }
+                    } label: {
+                        Label("Refresh Prices", systemImage: "arrow.clockwise")
+                    }
+                    .help("Refresh prices (⌘R)")
+                    .disabled(model.items.isEmpty)
                 }
-                .help("Refresh prices (⌘R)")
-                .disabled(model.isRefreshing || model.items.isEmpty)
 
                 Button {
                     model.isAddingCard = true

@@ -38,15 +38,19 @@ struct CardStockCommands: Commands {
         CommandGroup(before: .toolbar) {
             Button("Refresh Prices") { Task { await model.refresh() } }
                 .keyboardShortcut("r")
+                .disabled(model.isRefreshing || model.items.isEmpty)
 
             Divider()
 
-            ForEach(Array(ChartRange.allCases.enumerated()), id: \.element) { index, range in
-                Button("Chart: \(range.name.capitalized)") { model.chartRange = range }
+            Menu("Chart Range") {
+                ForEach(Array(ChartRange.allCases.enumerated()), id: \.element) { index, range in
+                    Toggle(range.name.capitalized, isOn: Binding(
+                        get: { model.chartRange == range },
+                        set: { if $0 { model.chartRange = range } }
+                    ))
                     .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")))
+                }
             }
-
-            Divider()
 
             Picker("Sort Watchlist By", selection: Binding(get: { model.sort }, set: { model.sort = $0 })) {
                 ForEach(WatchlistSort.allCases) { Text($0.name).tag($0) }
@@ -57,6 +61,13 @@ struct CardStockCommands: Commands {
             }
 
             Divider()
+        }
+
+        CommandGroup(replacing: .help) {
+            Link("Scryfall (Magic Prices)", destination: DataSource.scryfall.website)
+            Link("TCGdex (Pokémon Prices)", destination: DataSource.tcgdex.website)
+            Divider()
+            Link("CardStock on GitHub", destination: URL(string: "https://github.com/macprotips/PriceTag/tree/main/CardStock")!)
         }
     }
 }

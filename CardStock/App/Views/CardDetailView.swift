@@ -7,6 +7,7 @@ struct CardDetailView: View {
 
     /// The point under the pointer in the chart, if any.
     @State private var hovered: PriceSeries.Point?
+    @State private var showingLargeImage = false
 
     private static let artworkWidth: CGFloat = 250
 
@@ -15,31 +16,38 @@ struct CardDetailView: View {
         let currency = model.currency
         let series = item.series(in: currency, range: model.chartRange)
 
+        let info = VStack(alignment: .leading, spacing: 22) {
+            header
+            priceHeader(series: series, currency: currency)
+
+            Picker("Range", selection: $model.chartRange) {
+                ForEach(ChartRange.allCases) { range in
+                    Text(range.title).tag(range).help(range.name.capitalized)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(maxWidth: 360)
+
+            PriceChart(series: series, currency: currency, historyStart: item.history.first?.date, hovered: $hovered)
+                .frame(height: 240)
+
+            StatsGrid(item: item, series: series, currency: currency)
+        }
+
         ScrollView {
             VStack(alignment: .leading, spacing: 28) {
-                HStack(alignment: .top, spacing: 36) {
-                    VStack(alignment: .leading, spacing: 22) {
-                        header
-                        priceHeader(series: series, currency: currency)
-
-                        Picker("Range", selection: $model.chartRange) {
-                            ForEach(ChartRange.allCases) { range in
-                                Text(range.title).tag(range).help(range.name.capitalized)
-                            }
-                        }
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
-                        .frame(maxWidth: 360)
-
-                        PriceChart(series: series, currency: currency, hovered: $hovered)
-                            .frame(height: 240)
-
-                        StatsGrid(item: item, series: series, currency: currency)
+                // The card image shrinks, then moves out of the way, as the window narrows.
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .top, spacing: 36) {
+                        info.frame(minWidth: 440, maxWidth: .infinity, alignment: .leading)
+                        artwork(width: Self.artworkWidth)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                    CardArtwork(url: item.card.imageURL, width: Self.artworkWidth)
-                        .shadow(color: .black.opacity(0.18), radius: 14, y: 6)
+                    HStack(alignment: .top, spacing: 24) {
+                        info.frame(minWidth: 340, maxWidth: .infinity, alignment: .leading)
+                        artwork(width: 160)
+                    }
+                    info
                 }
 
                 footer
@@ -51,6 +59,24 @@ struct CardDetailView: View {
         }
         .navigationTitle(item.card.name)
         .navigationSubtitle(item.subtitle)
+    }
+
+    /// The card image. Click it to see it larger.
+    private func artwork(width: CGFloat) -> some View {
+        Button {
+            showingLargeImage = true
+        } label: {
+            CardArtwork(url: item.card.imageURL, width: width)
+                .shadow(color: .black.opacity(0.18), radius: 14, y: 6)
+        }
+        .buttonStyle(.plain)
+        .help("Click to enlarge")
+        .accessibilityLabel("Card image")
+        .accessibilityHint("Shows the card larger")
+        .popover(isPresented: $showingLargeImage, arrowEdge: .leading) {
+            CardArtwork(url: item.card.imageURL, width: 420)
+                .padding(14)
+        }
     }
 
     private var header: some View {

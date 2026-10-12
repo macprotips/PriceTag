@@ -8,12 +8,14 @@ import SwiftUI
 struct PriceChart: View {
     var series: PriceSeries
     var currency: Currency
+    /// When the card's history began, for the empty state.
+    var historyStart: Date?
     @Binding var hovered: PriceSeries.Point?
 
     @State private var hoveredDate: Date?
 
     var body: some View {
-        if series.points.count < 2 {
+        if plotted.count < 2 {
             emptyState
         } else {
             chart
@@ -21,6 +23,16 @@ struct PriceChart: View {
     }
 
     private var color: Color { series.change.direction.color }
+
+    /// The points to draw. When the price before the range is known, the line
+    /// starts at the left edge with that price, since it held until the next
+    /// one, rather than leaving a gap.
+    private var plotted: [PriceSeries.Point] {
+        guard let baseline = series.baseline, let start = series.start, baseline.date < start else {
+            return series.points
+        }
+        return [PriceSeries.Point(date: start, amount: baseline.amount)] + series.points
+    }
 
     private var chart: some View {
         let domain = yDomain
@@ -32,7 +44,7 @@ struct PriceChart: View {
                     .foregroundStyle(Color.secondary.opacity(0.6))
             }
 
-            ForEach(series.points) { point in
+            ForEach(plotted) { point in
                 AreaMark(
                     x: .value("Date", point.date),
                     yStart: .value("Floor", domain.lowerBound),
@@ -84,9 +96,9 @@ struct PriceChart: View {
             Image(systemName: "chart.xyaxis.line")
                 .font(.system(size: 28, weight: .light))
                 .foregroundStyle(.tertiary)
-            Text("History starts today")
+            Text(emptyTitle)
                 .font(.headline)
-            Text("CardStock records this card's price once a day. Check back tomorrow to see it move.")
+            Text(emptyMessage)
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -96,12 +108,28 @@ struct PriceChart: View {
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.quinary))
     }
 
+    private var startsToday: Bool {
+        guard let historyStart else { return true }
+        return Calendar.current.isDateInToday(historyStart)
+    }
+
+    private var emptyTitle: String {
+        startsToday ? "History starts today" : "Not enough history yet"
+    }
+
+    private var emptyMessage: String {
+        if startsToday {
+            return "CardStock saves this card's price once a day. Check back tomorrow to see it move."
+        }
+        return "There aren't two prices in this range yet. Try a longer range, or check back tomorrow."
+    }
+
     // MARK: Scales
 
     /// The lowest and highest price with some room around them, so the line
     /// never touches the edges. A flat line sits in the middle.
     private var yDomain: ClosedRange<Double> {
-        var values = series.points.map(\.value)
+        var values = plotted.map(\.value)
         if let baseline = series.baseline { values.append(baseline.value) }
         let low = values.min() ?? 0
         let high = values.max() ?? 1
@@ -110,8 +138,8 @@ struct PriceChart: View {
     }
 
     private var xDomain: ClosedRange<Date> {
-        let first = series.start ?? series.points.first?.date ?? Date()
-        let last = series.points.last?.date ?? Date()
+        let first = plotted.first?.date ?? Date()
+        let last = plotted.last?.date ?? Date()
         return first...max(last, first.addingTimeInterval(60 * 60))
     }
 

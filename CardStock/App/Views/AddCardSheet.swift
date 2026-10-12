@@ -62,7 +62,9 @@ struct AddCardSheet: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
 
-    @State private var search: CardSearch?
+    @State private var search = CardSearch(refresher: PriceRefresher())
+    /// Stops Return in the search field and the default button from adding twice.
+    @State private var isAdding = false
     @State private var selection: CardQuote.ID?
     /// The finish picked for each result, when it isn't the suggested one.
     @State private var finishes: [CardQuote.ID: Finish] = [:]
@@ -70,21 +72,15 @@ struct AddCardSheet: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if let search {
-                SearchHeader(search: search, focused: $searchFocused, onMove: moveSelection, onSubmit: addSelected)
-                Divider()
-                results(search)
-                Divider()
-                bottomBar(search)
-            }
+            SearchHeader(search: search, focused: $searchFocused, onMove: moveSelection, onSubmit: addSelected)
+            Divider()
+            results(search)
+            Divider()
+            bottomBar(search)
         }
         .frame(width: 600, height: 560)
-        .onAppear {
-            if search == nil { search = CardSearch(refresher: model.refresher) }
-            searchFocused = true
-        }
+        .onAppear { searchFocused = true }
         .task(id: searchKey) {
-            guard let search else { return }
             // Wait for a pause in typing.
             try? await Task.sleep(for: .milliseconds(300))
             guard !Task.isCancelled else { return }
@@ -94,8 +90,7 @@ struct AddCardSheet: View {
     }
 
     private var searchKey: String {
-        guard let search else { return "" }
-        return "\(search.game.rawValue):\(search.query)"
+        "\(search.game.rawValue):\(search.query)"
     }
 
     @ViewBuilder
@@ -128,12 +123,16 @@ struct AddCardSheet: View {
                     )
                     .tag(quote.id)
                     .task { await search.complete(quote) }
-                    .onTapGesture(count: 2) {
-                        selection = quote.id
-                        addSelected()
-                    }
                 }
                 .listStyle(.inset)
+                // Double-clicking a result adds it.
+                .contextMenu(forSelectionType: CardQuote.ID.self) { _ in
+                    EmptyView()
+                } primaryAction: { ids in
+                    guard let id = ids.first else { return }
+                    selection = id
+                    addSelected()
+                }
                 .overlay {
                     if search.isSearching && search.results.isEmpty {
                         ProgressView()
@@ -156,7 +155,7 @@ struct AddCardSheet: View {
                 .keyboardShortcut(.cancelAction)
             Button(selectedIsAdded ? "Show Card" : "Add Card") { addSelected() }
                 .keyboardShortcut(.defaultAction)
-                .disabled(selectedQuote == nil)
+                .disabled(selectedQuote == nil || isAdding)
         }
         .padding(16)
     }
@@ -165,7 +164,7 @@ struct AddCardSheet: View {
 
     private var selectedQuote: CardQuote? {
         guard let selection else { return nil }
-        return search?.results.first { $0.id == selection }
+        return search.results.first { $0.id == selection }
     }
 
     private var selectedIsAdded: Bool {
@@ -182,13 +181,15 @@ struct AddCardSheet: View {
     }
 
     private func moveSelection(by offset: Int) {
-        guard let results = search?.results, !results.isEmpty else { return }
+        let results = search.results
+        guard !results.isEmpty else { return }
         let current = results.firstIndex { $0.id == selection } ?? (offset > 0 ? -1 : results.count)
         selection = results[max(0, min(results.count - 1, current + offset))].id
     }
 
     private func addSelected() {
-        guard let quote = selectedQuote else { return }
+        guard let quote = selectedQuote, !isAdding else { return }
+        isAdding = true
         Task {
             // Make sure we save the full details, not a bare search result.
             var full = quote

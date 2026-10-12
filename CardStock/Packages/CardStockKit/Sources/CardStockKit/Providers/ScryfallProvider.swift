@@ -27,7 +27,8 @@ public struct ScryfallProvider: PriceProvider {
         var components = URLComponents(url: Self.base.appending(path: "cards/search"), resolvingAgainstBaseURL: false)!
         components.queryItems = [
             // Paper printings only: MTGO and Arena-only cards have no market price.
-            URLQueryItem(name: "q", value: "\(trimmed) game:paper"),
+            // Parentheses keep "game:paper" applying to the whole query, even one using "or".
+            URLQueryItem(name: "q", value: "(\(trimmed)) game:paper"),
             URLQueryItem(name: "unique", value: "prints"),
             URLQueryItem(name: "order", value: "released"),
             URLQueryItem(name: "dir", value: "desc"),
@@ -36,7 +37,10 @@ public struct ScryfallProvider: PriceProvider {
             let list = try await http.get(components.url!, as: ScryfallList.self, decoder: Self.decoder)
             return list.data.prefix(60).map(Self.quote(from:))
         } catch ProviderError.notFound {
-            // Scryfall answers 404 when a search has no results.
+            // Scryfall answers 404 when a search has no results…
+            return []
+        } catch ProviderError.server(status: 400) {
+            // …and 400 when it can't understand the query, which to a person is the same thing.
             return []
         }
     }

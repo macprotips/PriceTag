@@ -162,6 +162,8 @@ final class AppModel {
 
         if result.failures.isEmpty {
             refreshProblem = nil
+        } else if result.failures.values.allSatisfy({ $0 == ProviderError.offline.localizedDescription }) {
+            refreshProblem = "You're offline. Showing the last prices."
         } else {
             let names = result.failures.keys.map(\.name).sorted().formatted(.list(type: .and))
             refreshProblem = "Couldn't reach \(names). Showing the last prices."

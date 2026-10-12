@@ -97,7 +97,7 @@ struct WatchlistWidgetView: View {
                 .font(.headline)
             Spacer()
             if let lastRefresh = entry.snapshot.lastRefresh {
-                Text(lastRefresh, style: .relative)
+                Text("Updated \(lastRefresh, style: .relative) ago")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.trailing)
