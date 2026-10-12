@@ -52,11 +52,19 @@ public enum DllOverride {
         return out
     }
 
-    /// user.reg with the override removed.
+    /// user.reg with the override removed. When it was the section's only value, the
+    /// whole section goes, so the file is back to how it was before the fix.
     public static func removing(fromUserReg text: String) -> String {
         var lines = text.components(separatedBy: "\n")
         guard let range = section(in: lines), let line = lines[range].firstIndex(where: isD3D12Line) else { return text }
         lines.remove(at: line)
+        let rest = lines[range.lowerBound + 1 ..< range.upperBound - 1]
+        guard !rest.contains(where: { $0.hasPrefix("\"") || $0.hasPrefix("@") }) else { return lines.joined(separator: "\n") }
+        var end = range.upperBound - 1
+        while end > range.lowerBound + 1, lines[end - 1].trimmingCharacters(in: .whitespaces).isEmpty { end -= 1 }
+        lines.removeSubrange(range.lowerBound ..< end)
+        let at = range.lowerBound
+        if at > 0, at < lines.count, lines[at - 1].isEmpty, lines[at].isEmpty { lines.remove(at: at) }
         return lines.joined(separator: "\n")
     }
 
