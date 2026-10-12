@@ -11,11 +11,33 @@ permissions:
 jobs:
   macos:
     runs-on: macos-15
+    timeout-minutes: 180
     defaults:
       run:
         working-directory: spiderman2-tpose-fix/app
     steps:
       - uses: actions/checkout@v4
+
+      # Microsoft's shader tools, built once per pinned DXC commit and cached.
+      - name: Restore DXC tools
+        id: dxc-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: spiderman2-tpose-fix/app/.dxc
+          key: dxc-macos-arm64-${{ hashFiles('spiderman2-tpose-fix/app/build-dxc.sh') }}
+
+      - name: Build DXC tools
+        if: steps.dxc-cache.outputs.cache-hit != 'true'
+        run: |
+          brew install ninja >/dev/null || true
+          ./build-dxc.sh
+
+      - name: Save DXC tools
+        if: steps.dxc-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: spiderman2-tpose-fix/app/.dxc
+          key: dxc-macos-arm64-${{ hashFiles('spiderman2-tpose-fix/app/build-dxc.sh') }}
 
       - name: Test
         run: swift test

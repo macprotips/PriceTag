@@ -5,3 +5,5 @@ build/
 *.xcodeproj/xcuserdata/
 DerivedData/
 __pycache__/
+.dxc/
+.dxc-build/
