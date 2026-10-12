@@ -25,10 +25,8 @@ For more information, please refer to <https://unlicense.org/>
 
 ---
 
-Scope: everything in this folder, including the d3d12.dll shim, the Mac app, the
-tests and the vendor reports, with one exception. The files
-shader-fix/sm2fix-pool-*.dxil and shader-fix/sm2fix-skinning.dxil are modified
-copies of shaders from Marvel's Spider-Man 2. Rights in those belong to the game's
-owners and are not covered by this dedication. They can be rebuilt on a user's own machine
-from shaders dumped out of their copy of the game (the shim's dump_compute option)
-with shader-fix/make-pool-fix.sh and shader-fix/typed2raw.py, which are covered.
+Scope: everything in this folder: the d3d12.dll shim, the Mac app, the tests and the
+vendor reports. No files from the game are included. The fix's two shaders are built on
+each user's Mac from their own copy of the game (app/Sources/CShaderFix does the rewrite).
+The Mac app also bundles Microsoft's DirectX Shader Compiler tools, which keep their own
+license; the app includes it under Contents/Resources/Licenses.

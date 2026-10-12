@@ -96,13 +96,18 @@ override in the bottle:
 | What | Where |
 | --- | --- |
 | `d3d12.dll` (the shim) | game folder |
-| `sm2fix-pool-3d50acdb571dce22.dxil` | game folder |
-| `sm2fix-pool-14902794dd7134e4.dxil` | game folder |
+| `sm2fix-pool-3d50acdb571dce22.dxil`, built from the user's own `Spider-Man2.exe` | game folder |
+| `sm2fix-pool-14902794dd7134e4.dxil`, built the same way | game folder |
 | `sm2fix.ini` containing `mode = off` and `pool_fix = 1` | game folder |
 | `d3d12` = `native,builtin` for `Spider-Man2.exe` only | `HKCU\Software\Wine\AppDefaults\Spider-Man2.exe\DllOverrides` |
 
-The shim loads the real D3DMetal from `C:\windows\system32\d3d12.dll`. Users can install
-it with a small Mac app that does the steps above and can remove them again. Source,
+The shim loads the real D3DMetal from `C:\windows\system32\d3d12.dll`. No game files are
+distributed. The two shaders are built on the user's Mac from their own copy of the game:
+extract the original from `Spider-Man2.exe` by hash, disassemble it with DXC, rewrite the
+typed loads (`app/Sources/CShaderFix`), reassemble, then validate and sign. The result is
+checked against the hash of the verified shader before anything is installed. Users can
+install everything with a small Mac app that bundles the DXC tools for this step, and
+remove it again with the same app. Source,
 tests and the app are here:
 <https://github.com/macprotips/PriceTag/tree/claude/elegant-dijkstra-9yhhvx/spiderman2-tpose-fix>
 
@@ -110,12 +115,8 @@ tests and the app are here:
 hash, so a game update that changes those shaders turns the fix off silently. M5 Macs
 don't need it, and on them it is harmless. The proper fix belongs in D3DMetal.
 
-**License.** The workaround is public domain (Unlicense). Use, change, bundle or ship
-it any way you like; no attribution is needed. One exception: the two `.dxil` files are
-modified copies of the game's own shaders, so they carry the game owner's rights, not
-ours. If that matters for shipping, `shader-fix/make-pool-fix.sh` rebuilds them on the
-user's machine from shaders dumped out of their copy of the game with the shim's
-`dump_compute` option (it needs DXC's `dxc`, `dxa` and `dxv`).
+**License.** The workaround is public domain (Unlicense). Use, change, bundle or ship it
+any way you like; no attribution is needed. It contains no game files.
 
 ## What we're asking
 

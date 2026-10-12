@@ -11,7 +11,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-BOTTLE="" PREFIX="" GAME_DIR="" WINE="" MODE="hash" UNINSTALL=0 SPOOF="" DUMP_COMPUTE=0 DUMP_GRAPHICS=0 MINMAX=keep PROFILE=0 CPU_COUNT=0 PSO_DELAY=0 TRACE_QUERIES=0 FAKE_TS=0 PROBE_SKIN=0 SKIN_BUDGET=0 SKIP_SKINNING=0 REPLACE_SKINNING=0 FORCE_ANIM=0 TRAP_WRITER=0 ZIVA_CPU=auto CAPTURE=0 CAPTURE_ALL=0 POOL_FIX=0
+BOTTLE="" PREFIX="" GAME_DIR="" WINE="" MODE="hash" UNINSTALL=0 SPOOF="" DUMP_COMPUTE=0 DUMP_GRAPHICS=0 MINMAX=keep PROFILE=0 CPU_COUNT=0 PSO_DELAY=0 TRACE_QUERIES=0 FAKE_TS=0 PROBE_SKIN=0 SKIN_BUDGET=0 SKIP_SKINNING=0 FORCE_ANIM=0 TRAP_WRITER=0 ZIVA_CPU=auto CAPTURE=0 CAPTURE_ALL=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -33,8 +33,6 @@ while [[ $# -gt 0 ]]; do
         --probe-skin) PROBE_SKIN=1; shift ;;
         --skin-budget) SKIN_BUDGET="$2"; shift 2 ;;
         --skip-skinning) SKIP_SKINNING=1; shift ;;
-        --replace-skinning) REPLACE_SKINNING=1; shift ;;
-        --pool-fix) POOL_FIX=1; shift ;;
         --force-anim) FORCE_ANIM=1; shift ;;
         --trap-writer) TRAP_WRITER=1; shift ;;
         --ziva-cpu) ZIVA_CPU="$2"; shift 2 ;;
@@ -112,13 +110,8 @@ PREV_LOADED=0
 grep -q "D3D12CreateDevice ok" "$GAME_DIR/sm2fix.log" 2>/dev/null && PREV_LOADED=1
 cp "$DLL" "$GAME_DIR/d3d12.dll"
 rm -f "$GAME_DIR/sm2fix.log"   # each test starts with a fresh log
-if [[ $REPLACE_SKINNING -eq 1 ]]; then
-    cp "$HERE/shader-fix/sm2fix-skinning.dxil" "$GAME_DIR/sm2fix-skinning.dxil"
-else
-    rm -f "$GAME_DIR/sm2fix-skinning.dxil"
-fi
-rm -f "$GAME_DIR"/sm2fix-pool-*.dxil
-[[ $POOL_FIX -eq 1 ]] && cp "$HERE"/shader-fix/sm2fix-pool-*.dxil "$GAME_DIR/"
+# Shaders from earlier fix/test installs (the fix itself installs with the app).
+rm -f "$GAME_DIR/sm2fix-skinning.dxil" "$GAME_DIR"/sm2fix-pool-*.dxil
 # capture of every compute shader: smaller limits so the results stay sendable
 CAPTURE_LIMITS="s/^capture_max = /capture_max = /"
 [ "$CAPTURE_ALL" = 1 ] && CAPTURE_LIMITS="s/^capture_budget_mb = .*/capture_budget_mb = 250/;s/^capture_view_mb = .*/capture_view_mb = 8/;s/^capture_total_mb = .*/capture_total_mb = 16/"
@@ -129,8 +122,8 @@ sed -e "s/^mode = .*/mode = $MODE/" -e "s/^spoof =.*/spoof = $SPOOF/" \
     -e "s/^trace_queries = .*/trace_queries = $TRACE_QUERIES/" -e "s/^fake_timestamps = .*/fake_timestamps = $FAKE_TS/" \
     -e "s/^probe_skin = .*/probe_skin = $PROBE_SKIN/" -e "s/^skin_budget = .*/skin_budget = $SKIN_BUDGET/" \
     -e "s/^skip_skinning = .*/skip_skinning = $SKIP_SKINNING/" \
-    -e "s/^replace_skinning = .*/replace_skinning = $REPLACE_SKINNING/" \
-    -e "s/^pool_fix = .*/pool_fix = $POOL_FIX/" \
+    -e "s/^replace_skinning = .*/replace_skinning = 0/" \
+    -e "s/^pool_fix = .*/pool_fix = 0/" \
     -e "s/^force_anim = .*/force_anim = $FORCE_ANIM/" -e "s/^trap_writer = .*/trap_writer = $TRAP_WRITER/" \
     -e "s/^ziva_cpu = .*/ziva_cpu = $ZIVA_CPU/" -e "s/^capture = .*/capture = $CAPTURE/" \
     -e "s/^capture_all = .*/capture_all = $CAPTURE_ALL/" \

@@ -192,7 +192,7 @@ final class InstallerTests: XCTestCase {
         let mac = try FakeMac()
         let path = try mac.bottle("Steam")
         let game = try mac.game(in: path.appendingPathComponent("drive_c/Program Files (x86)/Steam"))
-        let installer = Installer(payload: try mac.payload(), env: mac.env)
+        let installer = try mac.installer()
         let install = GameFinder.install(at: game, env: mac.env)
         XCTAssertEqual(installer.status(of: game), .notInstalled)
 
@@ -204,7 +204,8 @@ final class InstallerTests: XCTestCase {
         let report = try installer.install(install)
         XCTAssertEqual(report.override, .setInFile)
         XCTAssertEqual(installer.status(of: game), .installed)
-        for name in ["d3d12.dll", "sm2fix.ini", "sm2fix-pool-3d50acdb571dce22.dxil", "sm2fix-pool-14902794dd7134e4.dxil", "dstorage.dll"] {
+        let shaderFiles = installer.shaders.map(\.fileName)
+        for name in ["d3d12.dll", "sm2fix.ini", "dstorage.dll"] + shaderFiles {
             XCTAssertTrue(mac.fm.fileExists(atPath: game.appendingPathComponent(name).path), name)
         }
         for name in ["sm2fix-skinning.dxil", "sm2fix-capture", "dstorage.dll.sm2fix-off"] {
@@ -218,7 +219,7 @@ final class InstallerTests: XCTestCase {
         XCTAssertTrue(DllOverride.isSet(inUserReg: try String(contentsOf: path.appendingPathComponent("user.reg"), encoding: .utf8)))
 
         // a changed shader -> update available; installing again fixes it
-        try Data("DXBC stale".utf8).write(to: game.appendingPathComponent("sm2fix-pool-3d50acdb571dce22.dxil"))
+        try Data("DXBC stale".utf8).write(to: game.appendingPathComponent(shaderFiles[0]))
         XCTAssertEqual(installer.status(of: game), .updateAvailable)
         XCTAssertEqual(try installer.install(install).override, .alreadySet)
         XCTAssertEqual(installer.status(of: game), .installed)
@@ -234,7 +235,7 @@ final class InstallerTests: XCTestCase {
     func testKeepsAndRestoresAnotherD3D12() throws {
         let mac = try FakeMac()
         let game = try mac.game(in: mac.volumes.appendingPathComponent("Ext"))
-        let installer = Installer(payload: try mac.payload(), env: mac.env)
+        let installer = try mac.installer()
         let install = GameInstall(folder: game, bottle: nil, candidates: [])
         try Data("someone else's d3d12".utf8).write(to: game.appendingPathComponent("d3d12.dll"))
         let report = try installer.install(install)
@@ -249,17 +250,17 @@ final class InstallerTests: XCTestCase {
     func testRecognisesTestBuilds() throws {
         let mac = try FakeMac()
         let game = try mac.game(in: mac.volumes.appendingPathComponent("Ext"))
-        let payload = try mac.payload()
-        try mac.fm.copyItem(at: payload.dll, to: game.appendingPathComponent("d3d12.dll"))
+        let installer = try mac.installer()
+        try mac.fm.copyItem(at: installer.payload.dll, to: game.appendingPathComponent("d3d12.dll"))
         try "mode = all\npool_fix = 0\n".write(to: game.appendingPathComponent("sm2fix.ini"), atomically: true, encoding: .utf8)
-        XCTAssertEqual(Installer(payload: payload, env: mac.env).status(of: game), .testBuildInstalled)
+        XCTAssertEqual(installer.status(of: game), .testBuildInstalled)
     }
 
     func testRefusesWhileTheGameRuns() throws {
         let mac = try FakeMac()
         let game = try mac.game(in: mac.volumes.appendingPathComponent("Ext"))
         mac.runner.processes = [#"Z:\Volumes\Ext\steamapps\common\Marvel's Spider-Man 2\Spider-Man2.exe"#]
-        let installer = Installer(payload: try mac.payload(), env: mac.env)
+        let installer = try mac.installer()
         XCTAssertThrowsError(try installer.install(GameInstall(folder: game, bottle: nil, candidates: []))) {
             XCTAssertEqual($0 as? InstallError, .gameRunning)
         }
@@ -268,7 +269,7 @@ final class InstallerTests: XCTestCase {
 
     func testRefusesAFolderWithoutTheGame() throws {
         let mac = try FakeMac()
-        let installer = Installer(payload: try mac.payload(), env: mac.env)
+        let installer = try mac.installer()
         XCTAssertThrowsError(try installer.install(GameInstall(folder: mac.home, bottle: nil, candidates: []))) {
             XCTAssertEqual($0 as? InstallError, .notAGameFolder)
         }
@@ -280,7 +281,7 @@ final class InstallerTests: XCTestCase {
         try mac.fm.setAttributes([.posixPermissions: 0o555], ofItemAtPath: game.path)
         defer { try? mac.fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: game.path) }
         guard getuid() != 0 else { throw XCTSkip("root can write anywhere") }
-        let installer = Installer(payload: try mac.payload(), env: mac.env)
+        let installer = try mac.installer()
         XCTAssertThrowsError(try installer.install(GameInstall(folder: game, bottle: nil, candidates: []))) {
             XCTAssertEqual($0 as? InstallError, .readOnly(game.path))
         }
@@ -331,5 +332,67 @@ final class BottleSignalTests: XCTestCase {
         let install = GameFinder.install(at: game, env: mac.env)
         XCTAssertEqual(install.bottle?.name, "Steam")
         XCTAssertEqual(install.reason, .steamLibrary)
+    }
+}
+
+final class ShaderBuilderTests: XCTestCase {
+    /// Both stand-ins come out with raw loads only, validated and signed by dxv.
+    func testRewritesTypedPoolReadsToRaw() throws {
+        guard let tools = StandIns.tools, let standIns = try StandIns.shared() else { throw XCTSkip("needs SM2FIX_DXC") }
+        let builder = ShaderBuilder(tools: tools)
+        let work = FileManager.default.temporaryDirectory.appendingPathComponent("sm2fix-rewrite-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: work) }
+        for (container, shader) in zip(standIns.containers, standIns.shaders) {
+            let rewritten = try builder.rewrite(container, space: shader.space, register: shader.register)
+            XCTAssertEqual(shaderHash(rewritten), shader.resultHash, "deterministic")
+            let file = work.appendingPathComponent(shader.fileName), listing = work.appendingPathComponent("out.ll")
+            try rewritten.write(to: file)
+            XCTAssertEqual(ProcessRunner().run(tools.appendingPathComponent("dxc"), ["-dumpbin", file.path, "-Fc", listing.path],
+                                               environment: [:], timeout: 60).status, 0)
+            let text = try String(contentsOf: listing, encoding: .utf8)
+            XCTAssertTrue(text.contains("@dx.op.rawBufferLoad.i32(i32 139"))
+            XCTAssertFalse(text.contains("@dx.op.bufferLoad.i32("))
+            XCTAssertTrue(text.contains("ResourceProperties { i32 11, i32 0 }"))
+        }
+    }
+
+    func testFindsTheShaderInsideTheExe() throws {
+        guard let tools = StandIns.tools, let standIns = try StandIns.shared() else { throw XCTSkip("needs SM2FIX_DXC") }
+        let exe = Data(repeating: 7, count: 100) + standIns.containers[1] + Data("DXBC junk".utf8) + standIns.containers[0]
+        let builder = ShaderBuilder(tools: tools)
+        XCTAssertEqual(builder.extract(standIns.shaders[0], from: exe), standIns.containers[0])
+        XCTAssertEqual(builder.extract(standIns.shaders[1], from: exe), standIns.containers[1])
+        XCTAssertNil(builder.extract(PoolShader.spiderMan2[0], from: exe))
+    }
+
+    /// A game version without the shaders: nothing in the game folder changes.
+    func testUnsupportedGameVersionChangesNothing() throws {
+        let mac = try FakeMac()
+        let game = try mac.game(in: mac.volumes.appendingPathComponent("Ext"), withShaders: false)
+        let installer = try mac.installer()
+        XCTAssertThrowsError(try installer.install(GameInstall(folder: game, bottle: nil, candidates: []))) {
+            XCTAssertEqual($0 as? InstallError, .shaders(.shaderNotFound))
+        }
+        XCTAssertEqual(try mac.fm.contentsOfDirectory(atPath: game.path).sorted(), ["Spider-Man2.exe", "dstorage.dll"])
+    }
+
+    /// A rebuilt shader that doesn't match the verified one is refused.
+    func testRefusesAnUnverifiedResult() throws {
+        let mac = try FakeMac()
+        let game = try mac.game(in: mac.volumes.appendingPathComponent("Ext"))
+        let base = try mac.installer()
+        var shaders = base.shaders
+        shaders[0].resultHash = 1
+        let installer = Installer(payload: base.payload, env: mac.env, shaders: shaders)
+        XCTAssertThrowsError(try installer.install(GameInstall(folder: game, bottle: nil, candidates: []))) {
+            XCTAssertEqual($0 as? InstallError, .shaders(.unexpectedResult))
+        }
+        XCTAssertFalse(mac.fm.fileExists(atPath: game.appendingPathComponent("d3d12.dll").path))
+    }
+
+    func testRealShaderList() {
+        XCTAssertEqual(PoolShader.spiderMan2.map(\.fileName),
+                       ["sm2fix-pool-3d50acdb571dce22.dxil", "sm2fix-pool-14902794dd7134e4.dxil"])
     }
 }

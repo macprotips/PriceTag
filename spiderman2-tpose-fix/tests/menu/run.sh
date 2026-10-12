@@ -30,13 +30,10 @@ for variant in no-crossover crossover; do
     out() { grep -q "$1" "$TMP/out"; }
 
     echo "== $variant"
-    run 1;  check "1 test#28 THE FIX"              eval 'ini pool_fix 1 && ini mode off && ini probe_skin 0 && ini capture 0 && ini replace_skinning 0 \
-            && [ -f "$G/d3d12.dll" ] && [ -f "$G/sm2fix-pool-3d50acdb571dce22.dxil" ] && [ -f "$G/sm2fix-pool-14902794dd7134e4.dxil" ] \
-            && out "Test #28 installed"'
-    run 10; check "fix shows as installed"         eval 'out "Currently installed: Test #28 THE FIX"'
-    run 31; check "31 test#25 capture all"          eval 'ini capture 1 && ini capture_all 1 && ini pool_fix 0 && [ ! -f "$G/sm2fix-pool-3d50acdb571dce22.dxil" ]'
-    run 1;  check "1 again"                        eval 'ini pool_fix 1'
-    run 4;  check "4 remove takes the pool shaders too" eval '! ls "$G"/sm2fix-pool-*.dxil >/dev/null 2>&1 && [ ! -f "$G/d3d12.dll" ]'
+    run 1;  check "1 points to the app, changes nothing" eval 'out "installs with the Spider-Man 2 T-Pose Fix app" && [ ! -f "$G/d3d12.dll" ]'
+    printf 'mode = off\npool_fix = 1\n' > "$G/sm2fix.ini"; printf 'sm2fix' > "$G/d3d12.dll"; touch "$G/sm2fix-pool-3d50acdb571dce22.dxil"
+    run 10; check "app-installed fix shows as installed" eval 'out "Currently installed: the T-pose fix (installed by the app)"'
+    run 31; check "31 test#25 replaces it, removes its shaders" eval 'ini capture 1 && ini capture_all 1 && ini pool_fix 0 && [ ! -f "$G/sm2fix-pool-3d50acdb571dce22.dxil" ]'
     run 31; check "31 test#25 capture all"          eval 'ini capture 1 && ini capture_all 1 && ini capture_view_mb 8 && ini capture_budget_mb 250 && ini mode off && [ -f "$G/d3d12.dll" ]'
     run 30; check "30 test#24 ziva capture"        eval 'ini capture 1 && ini capture_all 0 && ini capture_view_mb 32 && ini mode off && ini ziva_cpu auto && ini probe_skin 0'
     mkdir -p "$G/sm2fix-capture" && echo "x" > "$G/sm2fix.log"
@@ -50,8 +47,8 @@ for variant in no-crossover crossover; do
     run 24; check "24 test#20 readback watch"      eval 'ini probe_skin 1 && ini trap_writer 0 && ini force_anim 0'
     run 23; check "23 test#19 force anim"          eval 'ini force_anim 1 && ini probe_skin 1 && ini skip_skinning 0'
     run 22; check "22 test#18 inputs trace"        eval 'ini probe_skin 1 && ini replace_skinning 0 && ini skip_skinning 0 && ini profile 1'
-    run 21; check "21 test#17 corrected shader"    eval 'ini replace_skinning 1 && ini skip_skinning 0 && [ -f "$G/sm2fix-skinning.dxil" ] && [ -f "$G/d3d12.dll" ]'
-    run 4;  check "4 remove takes the shader too"  eval '[ ! -f "$G/sm2fix-skinning.dxil" ] && [ ! -f "$G/d3d12.dll" ]'
+    touch "$G/sm2fix-skinning.dxil"
+    run 4;  check "4 remove takes old shaders too" eval '[ ! -f "$G/sm2fix-skinning.dxil" ] && [ ! -f "$G/d3d12.dll" ]'
     run 19; check "19 test#15 skip skinning"       eval 'ini skip_skinning 1 && ini probe_skin 1 && ini profile 1 && [ -f "$G/d3d12.dll" ]'
     run 18; check "18 test#14 skin trace"          eval 'ini probe_skin 1 && ini skin_budget 0 && ini skip_skinning 0'
     run 17; check "17 test#13 skin budget"         eval 'ini skin_budget 65536 && ini probe_skin 1'
@@ -74,7 +71,7 @@ for variant in no-crossover crossover; do
         run 19; check "override set via CrossOver wine" eval 'out "Set per-game DLL override"'
         rm -f "$H"/Desktop/skin-report-*.txt
         run 2; check "2 test#16 GPU check runs in the bottle" eval 'ls "$H"/Desktop/skin-report-*.txt >/dev/null 2>&1 \
-            && grep -qx -- "--bottle" "$H/wine-args" && grep -qx "skin_gpu_test.exe" "$H/wine-args" && grep -q "sm2fix-skinning.dxil$" "$H/wine-args" && grep -qx "OVERRIDES=winemac.drv=d" "$H/wine-args" \
+            && grep -qx -- "--bottle" "$H/wine-args" && grep -qx "skin_gpu_test.exe" "$H/wine-args" && ! grep -q "sm2fix-skinning.dxil" "$H/wine-args" && grep -qx "OVERRIDES=winemac.drv=d" "$H/wine-args" \
             && grep -q "^Z:.*\\\\Marvel'"'"'s Spider-Man 2\\\\Spider-Man2.exe$" "$H/wine-args"'
         rm -f "$H"/Desktop/cpu-report-*.txt
         rm -f "$H"/Desktop/bigbuf-report-*.txt

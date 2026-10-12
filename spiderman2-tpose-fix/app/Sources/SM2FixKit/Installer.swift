@@ -3,11 +3,13 @@ import Foundation
 import Darwin
 #endif
 
-/// The files the fix installs: the d3d12.dll shim, its settings and the rewritten shaders.
+/// What the app carries: the d3d12.dll shim, its settings template and Microsoft's shader
+/// tools. The rewritten shaders are built from the user's own game, so none ship with it.
 public struct Payload {
     public let dll: URL
     public let ini: URL
-    public let shaders: [URL]
+    /// Folder with dxc, dxa and dxv.
+    public let tools: URL
 
     public enum LoadError: Error, LocalizedError {
         case missing(String)
@@ -18,21 +20,19 @@ public struct Payload {
         }
     }
 
-    /// Loads the payload from a folder holding d3d12.dll, sm2fix.ini and sm2fix-pool-*.dxil.
-    public init(directory: URL) throws {
+    /// Loads the payload from a folder holding d3d12.dll and sm2fix.ini, with the shader
+    /// tools in `tools`.
+    public init(directory: URL, tools: URL) throws {
         let fm = FileManager.default
         let dllFile = directory.appendingPathComponent("d3d12.dll")
         let iniFile = directory.appendingPathComponent("sm2fix.ini")
         for file in [dllFile, iniFile] where !fm.fileExists(atPath: file.path) {
             throw LoadError.missing(file.lastPathComponent)
         }
-        let entries = (try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
-        let shaderFiles = entries.filter { $0.lastPathComponent.hasPrefix("sm2fix-pool-") && $0.pathExtension == "dxil" }
-            .sorted { $0.lastPathComponent < $1.lastPathComponent }
-        if shaderFiles.isEmpty { throw LoadError.missing("shader files") }
+        guard ShaderBuilder(tools: tools).toolsPresent else { throw LoadError.missing("shader tools") }
         dll = dllFile
         ini = iniFile
-        shaders = shaderFiles
+        self.tools = tools
     }
 }
 
@@ -51,6 +51,7 @@ public enum InstallError: Error, LocalizedError, Equatable {
     case gameRunning
     case readOnly(String)
     case copyFailed(String)
+    case shaders(ShaderBuildError)
 
     public var errorDescription: String? {
         switch self {
@@ -62,6 +63,8 @@ public enum InstallError: Error, LocalizedError, Equatable {
             return "Can't write to \(path). If the game is on an external drive formatted as NTFS, macOS can only read it."
         case .copyFailed(let reason):
             return "Couldn't copy the fix into the game folder: \(reason)"
+        case .shaders(let error):
+            return error.errorDescription
         }
     }
 }
@@ -80,10 +83,12 @@ public struct InstallReport: Equatable {
 public struct Installer {
     public let payload: Payload
     public let env: SystemEnvironment
+    public let shaders: [PoolShader]
 
-    public init(payload: Payload, env: SystemEnvironment) {
+    public init(payload: Payload, env: SystemEnvironment, shaders: [PoolShader] = PoolShader.spiderMan2) {
         self.payload = payload
         self.env = env
+        self.shaders = shaders
     }
 
     static let managedFiles = ["d3d12.dll", "sm2fix.ini", "sm2fix.log", "sm2fix-skinning.dxil"]
@@ -110,8 +115,9 @@ public struct Installer {
         guard Self.iniValue("pool_fix", in: ini) == "1" else { return .testBuildInstalled }
         let fm = FileManager.default
         let sameDll = fm.contentsEqual(atPath: dll.path, andPath: payload.dll.path)
-        let sameShaders = payload.shaders.allSatisfy {
-            fm.contentsEqual(atPath: folder.appendingPathComponent($0.lastPathComponent).path, andPath: $0.path)
+        let sameShaders = shaders.allSatisfy { shader in
+            guard let data = try? Data(contentsOf: folder.appendingPathComponent(shader.fileName)) else { return false }
+            return shader.resultHash.map { shaderHash(data) == $0 } ?? true
         }
         let cleanSettings = Self.iniValue("mode", in: ini) == "off"
         return sameDll && sameShaders && cleanSettings ? .installed : .updateAvailable
@@ -152,11 +158,20 @@ public struct Installer {
     }
 
     /// Installs (or updates) the fix in `game.folder` and sets the DLL override in its bottle.
+    /// The shaders are built from the game's own Spider-Man2.exe first; nothing in the game
+    /// folder changes unless that works.
     public func install(_ game: GameInstall) throws -> InstallReport {
         let folder = game.folder
         try checkWritable(folder)
         let fm = FileManager.default
         var report = InstallReport()
+        let built: [String: Data]
+        do {
+            built = try ShaderBuilder(tools: payload.tools)
+                .build(shaders, fromGame: folder.appendingPathComponent(GameFinder.exeName))
+        } catch let error as ShaderBuildError {
+            throw InstallError.shaders(error)
+        }
 
         let dll = folder.appendingPathComponent("d3d12.dll")
         let backup = folder.appendingPathComponent("d3d12.dll" + Self.backupSuffix)
@@ -178,8 +193,8 @@ public struct Installer {
                 try? fm.removeItem(at: old)
             }
             try Self.replace(dll, with: payload.dll)
-            for shader in payload.shaders {
-                try Self.replace(folder.appendingPathComponent(shader.lastPathComponent), with: shader)
+            for (name, data) in built.sorted(by: { $0.key < $1.key }) {
+                try data.write(to: folder.appendingPathComponent(name), options: .atomic)
             }
             try settings().write(to: folder.appendingPathComponent("sm2fix.ini"), atomically: true, encoding: .utf8)
         } catch {

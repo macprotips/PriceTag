@@ -42,7 +42,8 @@ final class AppModel: ObservableObject {
 
     static func loadPayload() throws -> Payload {
         let resources = Bundle.main.resourceURL ?? Bundle.main.bundleURL
-        return try Payload(directory: resources.appendingPathComponent("payload"))
+        return try Payload(directory: resources.appendingPathComponent("payload"),
+                           tools: Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers"))
     }
 
     var bottles: [Bottle] { game?.candidates ?? [] }
@@ -170,7 +171,7 @@ final class AppModel: ObservableObject {
         guard var game, case .success(let payload) = payload else { return }
         game.bottle = selectedBottle
         busy = true
-        busyText = remove ? "Removing the fix…" : "Applying the fix…"
+        busyText = remove ? "Removing the fix…" : "Building the fix from your copy of the game…"
         banner = nil
         let installer = Installer(payload: payload, env: env)
         queue.async {

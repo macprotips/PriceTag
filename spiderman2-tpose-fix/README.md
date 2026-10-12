@@ -8,7 +8,8 @@ makes the game read that buffer the "raw" way (test #28 below).
 Reports for Apple and CodeWeavers, with a standalone repro, are in [`vendor-report/`](vendor-report/).
 
 Public domain ([Unlicense](LICENSE)): anyone may use, change or redistribute this fix for any purpose,
-without credit. The rewritten game shaders (`shader-fix/*.dxil`) are the one exception; see [LICENSE](LICENSE).
+without credit. It contains no game files: the app builds the fix's two shaders on your Mac from your
+own copy of the game.
 
 ## The easy way: the app
 
@@ -27,7 +28,8 @@ without credit. The rewritten game shaders (`shader-fix/*.dxil`) are the one exc
 4. Click **Apply Fix**, then start the game from CrossOver (or Whisky) as usual.
 
 **Remove Fix** in the same window puts everything back. The app copies a small
-`d3d12.dll`, two shader files and `sm2fix.ini` into the game folder, and sets one Wine
+`d3d12.dll` and `sm2fix.ini` into the game folder, builds two shader files there from the
+game's own `Spider-Man2.exe` (checked against the verified versions), and sets one Wine
 setting (`d3d12 = native,builtin` for Spider-Man2.exe) in the bottle. Nothing else changes.
 Its source is in [`app/`](app/): `SM2FixKit` holds all the logic and its tests, and
 `./build-app.sh` builds it on a Mac with Xcode.

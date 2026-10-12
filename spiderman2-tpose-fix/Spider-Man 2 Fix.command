@@ -179,7 +179,7 @@ current_mode() {
 
 mode_label() {
     if grep -q '^pool_fix = 1' "$GAME_DIR/sm2fix.ini" 2>/dev/null; then
-        echo "Test #28 THE FIX (big-buffer fix)"
+        echo "the T-pose fix (installed by the app)"
         return
     fi
     if grep -q '^trap_writer = 1' "$GAME_DIR/sm2fix.ini" 2>/dev/null; then
@@ -271,7 +271,7 @@ fi
 
 say ""
 say "What do you want to do?"
-say "  1) Test #28: THE FIX for the T-pose (install, then play)  <-- do this one"
+say "  1) Install the fix (now done with the Spider-Man 2 T-Pose Fix app)"
 say "  2) Test #16: GPU check (done: the shader works on your Mac)"
 say "  3) Save my results to the Desktop (to send for help)"
 say "  4) Remove everything (back to normal)"
@@ -292,7 +292,6 @@ say "  17) Test #13: bigger skinning buffer (done: budget was fine)"
 say "  18) Test #14: skinning trace (done: the shader does run)"
 say "  19) Test #15: skinning shader off (done: its output is what you see)"
 say "  20) Test #9: Rosetta instruction check (done: Rosetta is fine)"
-say "  21) Test #17: rewritten skinning shader (done: not needed, shader is fine)"
 say "  22) Test #18: skinning inputs trace (done: some bone sets are never written)"
 say "  23) Test #19: always animate (done: didn't help)"
 say "  24) Test #20: GPU readback watch (done: readbacks are fine)"
@@ -330,7 +329,6 @@ case "$action" in
     16) action=t11 ;;
     15) action=t10 ;;
     2) action=t16 ;;
-    21) action=t17 ;;
     20) action=t9 ;;
     14) action=t8 ;;
     13) action=t7 ;;
@@ -370,22 +368,11 @@ pick_wine() {
 
 case "$action" in
     t28)
-        ds_on
-        rm -rf "$GAME_DIR/sm2fix-dumps" "$GAME_DIR/sm2fix-capture"
-        bash "$INSTALLER" "${ARGS[@]}" --mode off --pool-fix || pause_exit 1
-        say ""
         line
-        say "Test #28 installed: THE FIX."
-        say "Your big-buffer report found it: on M1-M4 Macs, the GPU returns 0 when a"
-        say "shader reads a \"typed\" buffer past position 268,435,456. The game keeps all"
-        say "character mesh data in one 2 GB buffer and reads it exactly that way, so"
-        say "characters stored in its upper half never get their animation (T-pose)."
-        say "This fix makes the game read that buffer the \"raw\" way, which your report"
-        say "showed works all the way to the end."
-        say "  1. Start the game, load your save, walk around near people."
-        say "     Are the T-poses / missing heads gone?"
-        say "  2. Quit from the in-game menu, run this again, pick 3, and send me the log"
-        say "     (and a screenshot either way)."
+        say "The fix now installs with the Spider-Man 2 T-Pose Fix app: drag the game"
+        say "folder into it and click Apply Fix. The app builds the fix's two shaders"
+        say "from your own copy of the game, so no game files are passed around."
+        say "Nothing was changed."
         line
         ;;
     t25)
@@ -566,7 +553,7 @@ case "$action" in
         # on new macOS versions), then normally. Wine's own messages go to a log file.
         for TRY in "winemac.drv=d" ""; do
             (cd "$TDIR" && WINEDEBUG=-all WINEDLLOVERRIDES="$TRY" "${RUN[@]}" skin_gpu_test.exe "$EXE_WIN" \
-                golden-skin.bin skin-report.txt ..\\shader-fix\\sm2fix-skinning.dxil) > "$TDIR/wine-output.txt" 2>&1
+                golden-skin.bin skin-report.txt) > "$TDIR/wine-output.txt" 2>&1
             grep -q "^RESULT" "$TDIR/skin-report.txt" 2>/dev/null && break
             [ -n "$TRY" ] && say "First attempt didn't finish, trying again with the normal Wine setup..."
         done
@@ -658,21 +645,6 @@ case "$action" in
         say "  1. Start the game, load your save, play ~2 minutes near people"
         say "     (keep moving so the characters animate)."
         say "  2. Quit from the in-game menu, run this again, pick 3, send the log."
-        line
-        ;;
-    t17)
-        ds_on
-        rm -rf "$GAME_DIR/sm2fix-dumps"
-        bash "$INSTALLER" "${ARGS[@]}" --mode off --profile --probe-skin --replace-skinning || pause_exit 1
-        say ""
-        line
-        say "Test #17 installed. The game's character-skinning shader is swapped for a"
-        say "rewritten copy that computes exactly the same thing (checked bit for bit on"
-        say "a reference GPU) but without the code pattern Apple's M1-M4 compiler seems"
-        say "to get wrong."
-        say "  1. Start the game, load your save, look at Spider-Man and people nearby."
-        say "  2. Quit from the in-game menu, run this again, pick 3, send the log"
-        say "     (and a screenshot), fixed or not."
         line
         ;;
     t15)

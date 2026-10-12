@@ -79,11 +79,17 @@ final class FakeMac {
                        atomically: true, encoding: .utf8)
     }
 
+    /// A game folder. With the shader tools available, its Spider-Man2.exe holds the
+    /// stand-in shaders (`StandIns`) the way the real exe holds the game's.
     @discardableResult
-    func game(in folder: URL) throws -> URL {
+    func game(in folder: URL, withShaders: Bool = true) throws -> URL {
         let game = folder.appendingPathComponent("steamapps/common/Marvel's Spider-Man 2")
         try fm.createDirectory(at: game, withIntermediateDirectories: true)
-        try Data("MZ fake game".utf8).write(to: game.appendingPathComponent("Spider-Man2.exe"))
+        var exe = Data("MZ fake game".utf8) + Data(repeating: 0x90, count: 4000)
+        if withShaders, let standIns = try StandIns.shared() {
+            for container in standIns.containers { exe += container + Data(repeating: 0xcc, count: 777) }
+        }
+        try exe.write(to: game.appendingPathComponent("Spider-Man2.exe"))
         try Data("MZ dstorage".utf8).write(to: game.appendingPathComponent("dstorage.dll"))
         return game
     }
@@ -97,20 +103,80 @@ final class FakeMac {
         return wine
     }
 
-    /// The real payload from the repository, copied into a temp folder.
+    /// An installer for the stand-in shaders, with the real d3d12.dll and settings.
+    func installer() throws -> Installer {
+        guard let standIns = try StandIns.shared() else { throw XCTSkip("set SM2FIX_DXC to the folder with dxc, dxa and dxv") }
+        return Installer(payload: try payload(), env: env, shaders: standIns.shaders)
+    }
+
+    /// The real d3d12.dll and settings from the repository, copied into a temp folder.
     func payload() throws -> Payload {
+        guard let tools = StandIns.tools else { throw XCTSkip("set SM2FIX_DXC to the folder with dxc, dxa and dxv") }
         let repo = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         let dir = root.appendingPathComponent("payload")
         try fm.createDirectory(at: dir, withIntermediateDirectories: true)
         try fm.copyItem(at: repo.appendingPathComponent("prebuilt/d3d12.dll"), to: dir.appendingPathComponent("d3d12.dll"))
         try fm.copyItem(at: repo.appendingPathComponent("shim/sm2fix.ini"), to: dir.appendingPathComponent("sm2fix.ini"))
-        let shaders = try fm.contentsOfDirectory(at: repo.appendingPathComponent("shader-fix"), includingPropertiesForKeys: nil)
-            .filter { $0.lastPathComponent.hasPrefix("sm2fix-pool-") }
-        XCTAssertEqual(shaders.count, 2)
-        for shader in shaders {
-            try fm.copyItem(at: shader, to: dir.appendingPathComponent(shader.lastPathComponent))
+        return try Payload(directory: dir, tools: tools)
+    }
+}
+
+/// Two small shaders compiled from HLSL with the same kind of typed pool read as the
+/// game's (one at t1, one at t0), standing in for the real ones, which don't ship.
+final class StandIns {
+    static let tools: URL? = ProcessInfo.processInfo.environment["SM2FIX_DXC"].map { URL(fileURLWithPath: $0) }
+    static let sources: [(String, Int32)] = [
+        ("""
+        Buffer<uint> pool : register(t1);
+        StructuredBuffer<uint> offsets : register(t0);
+        RWStructuredBuffer<uint4> result : register(u0);
+        [numthreads(64, 1, 1)]
+        void main(uint i : SV_DispatchThreadID)
+        {
+            uint base = offsets[i];
+            result[i] = uint4(pool[base], pool[base + 1], pool[base + 2], pool[i + 268435456]);
         }
-        return try Payload(directory: dir)
+        """, 1),
+        ("""
+        Buffer<uint> pool : register(t0);
+        RWStructuredBuffer<uint> result : register(u0);
+        [numthreads(64, 1, 1)]
+        void main(uint i : SV_DispatchThreadID) { result[i] = pool[i * 3] ^ pool[i * 3 + 1]; }
+        """, 0),
+    ]
+    private static var cached: StandIns?
+
+    let containers: [Data]
+    let shaders: [PoolShader]
+
+    private init(containers: [Data], shaders: [PoolShader]) {
+        self.containers = containers
+        self.shaders = shaders
+    }
+
+    /// nil when the tools aren't available (the tests that need them skip).
+    static func shared() throws -> StandIns? {
+        if let cached { return cached }
+        guard let tools else { return nil }
+        let builder = ShaderBuilder(tools: tools)
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("sm2fix-standins-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        var containers: [Data] = [], shaders: [PoolShader] = []
+        for (i, (source, register)) in sources.enumerated() {
+            let hlsl = dir.appendingPathComponent("\(i).hlsl"), dxil = dir.appendingPathComponent("\(i).dxil")
+            try source.write(to: hlsl, atomically: true, encoding: .utf8)
+            let result = ProcessRunner().run(tools.appendingPathComponent("dxc"), ["-T", "cs_6_6", "-E", "main", "-Fo", dxil.path, hlsl.path],
+                                             environment: [:], timeout: 60)
+            guard result.status == 0 else { throw ShaderBuildError.toolFailed("dxc", result.output) }
+            let container = try Data(contentsOf: dxil)
+            let rewritten = try builder.rewrite(container, space: 0, register: register)
+            containers.append(container)
+            shaders.append(PoolShader(sourceHash: shaderHash(container), space: 0, register: register,
+                                      resultHash: shaderHash(rewritten)))
+        }
+        cached = StandIns(containers: containers, shaders: shaders)
+        return cached
     }
 }
