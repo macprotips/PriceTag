@@ -1,19 +1,36 @@
 # Spider-Man 2 T-pose fix for Apple Silicon (M1–M4)
 
-## Quick start (no technical knowledge needed)
+**Fixed.** On M1–M4 Macs, D3DMetal returns 0 for "typed" buffer reads past element
+268,435,456 (2^28). The game reads all its character meshes from one 2 GB buffer that way,
+so characters stored in its upper half never get animated and stay in a T-pose. The fix
+makes the game read that buffer the "raw" way (test #28 below).
+
+## The easy way: the app
+
+1. Download **Spider-Man 2 T-Pose Fix** and unzip it.
+2. Open it. The first time, macOS may say it can't check the app (it isn't from the App
+   Store or notarized): **right-click** the app > **Open** > **Open**. On newer macOS,
+   go to **System Settings > Privacy & Security** and click **Open Anyway**.
+3. Quit Spider-Man 2, then drag the game folder (**Marvel's Spider-Man 2**, the one with
+   `Spider-Man2.exe`) into the window. The app also finds the game by itself, even in a
+   Steam library on an external drive.
+4. Click **Apply Fix**, then start the game from CrossOver (or Whisky) as usual.
+
+**Remove Fix** in the same window puts everything back. The app copies a small
+`d3d12.dll`, two shader files and `sm2fix.ini` into the game folder, and sets one Wine
+setting (`d3d12 = native,builtin` for Spider-Man2.exe) in the bottle. Nothing else changes.
+Its source is in [`app/`](app/): `SM2FixKit` holds all the logic and its tests, and
+`./build-app.sh` builds it on a Mac with Xcode.
+
+## Troubleshooting menu (the tests that found the cause)
 
 1. On this repo's GitHub page, switch to the branch `claude/elegant-dijkstra-9yhhvx`.
    Click the green **Code** button, then **Download ZIP**. Double-click the ZIP to unzip it.
 2. Quit Spider-Man 2.
 3. Open the `spiderman2-tpose-fix` folder. **Right-click** `Spider-Man 2 Fix.command`
-   and choose **Open**, then **Open** again. You only need to right-click the first
-   time, because macOS blocks downloaded scripts until you approve them.
-4. A Terminal window opens and finds the game for you. Type **1** and press Return.
-5. Play the game. Is the T-pose gone?
-   - Either way, quit from the in-game menu, run the file again and pick **3**.
-     That saves a log to your Desktop. Send it to me.
-
-That's it. To undo everything, run the file and pick **4**.
+   and choose **Open**, then **Open** again.
+4. A Terminal window opens and finds the game for you. Option **1** installs the fix;
+   **3** saves a log to your Desktop; **4** removes everything.
 
 ## Results so far
 
