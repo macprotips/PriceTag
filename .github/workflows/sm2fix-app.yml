@@ -33,6 +33,12 @@ jobs:
           mkdir -p /tmp/unzipped && ditto -x -k build/Spider-Man-2-T-Pose-Fix.zip /tmp/unzipped
           "/tmp/unzipped/Spider-Man 2 T-Pose Fix.app/Contents/MacOS/SM2Fix" --selftest
 
+      - name: Native Metal texture-buffer check
+        continue-on-error: true   # the runner's GPU may be virtual
+        run: |
+          swiftc -O ../vendor-report/repro/metal_texbuf_test.swift -o /tmp/metal_texbuf_test
+          /tmp/metal_texbuf_test
+
       - name: Render screenshots
         run: |
           rm -rf screenshots
