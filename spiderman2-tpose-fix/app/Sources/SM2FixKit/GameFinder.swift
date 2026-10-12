@@ -5,12 +5,15 @@ public struct GameInstall: Equatable {
     public var folder: URL
     /// The bottle that runs it, when it could be told.
     public var bottle: Bottle?
-    /// Bottles to choose from when `bottle` is nil (or to change it).
+    /// Why that bottle.
+    public var reason: BottleReason?
+    /// Every bottle on the Mac, to choose from.
     public var candidates: [Bottle]
 
-    public init(folder: URL, bottle: Bottle?, candidates: [Bottle]) {
+    public init(folder: URL, bottle: Bottle?, reason: BottleReason? = nil, candidates: [Bottle]) {
         self.folder = folder
         self.bottle = bottle
+        self.reason = reason
         self.candidates = candidates
     }
 }
@@ -67,8 +70,9 @@ public enum GameFinder {
 
     /// The install for a game folder: which bottle runs it.
     public static func install(at folder: URL, env: SystemEnvironment) -> GameInstall {
-        let found = Bottles.bottle(for: folder, among: Bottles.all(in: env))
-        return GameInstall(folder: folder, bottle: found.bottle, candidates: found.candidates)
+        let bottles = Bottles.all(in: env)
+        let found = Bottles.bottle(for: folder, among: bottles)
+        return GameInstall(folder: folder, bottle: found.bottle, reason: found.reason, candidates: bottles)
     }
 
     /// Every copy of the game on this Mac: inside bottles, in the Steam libraries they
@@ -101,7 +105,7 @@ public enum GameFinder {
         }
         return folders.map { folder in
             let found = Bottles.bottle(for: folder, among: bottles)
-            return GameInstall(folder: folder, bottle: found.bottle, candidates: found.candidates)
+            return GameInstall(folder: folder, bottle: found.bottle, reason: found.reason, candidates: bottles)
         }
     }
 }

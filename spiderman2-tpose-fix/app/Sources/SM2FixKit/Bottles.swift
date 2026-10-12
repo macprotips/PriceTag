@@ -48,15 +48,38 @@ public struct Bottle: Hashable, Identifiable {
     public func steamLibraries() -> [URL] {
         var libraries: [URL] = []
         for folder in Self.steamFolders {
-            let vdf = path.appendingPathComponent("drive_c/\(folder)/steamapps/libraryfolders.vdf")
-            guard let text = try? String(contentsOf: vdf, encoding: .utf8) else { continue }
-            for windowsPath in Self.libraryPaths(inVDF: text) {
-                if let url = macURL(forWindowsPath: windowsPath), !libraries.contains(url) {
-                    libraries.append(url)
+            for list in ["steamapps/libraryfolders.vdf", "config/libraryfolders.vdf"] {
+                let vdf = path.appendingPathComponent("drive_c/\(folder)/\(list)")
+                guard let text = try? String(contentsOf: vdf, encoding: .utf8) else { continue }
+                for windowsPath in Self.libraryPaths(inVDF: text) {
+                    if let url = macURL(forWindowsPath: windowsPath),
+                       !libraries.contains(where: { $0.canonicalPath == url.canonicalPath }) {
+                        libraries.append(url)
+                    }
                 }
             }
         }
         return libraries
+    }
+
+    /// Mac folders this bottle has drive letters for, other than its own C: and the
+    /// whole-Mac Z: (/).
+    public func mappedDrives() -> [URL] {
+        let links = (try? FileManager.default.contentsOfDirectory(at: path.appendingPathComponent("dosdevices"),
+                                                                 includingPropertiesForKeys: nil)) ?? []
+        return links.filter { $0.lastPathComponent.count == 2 && $0.lastPathComponent.hasSuffix(":") }
+            .map { $0.resolvingSymlinksInPath() }
+            .filter { target in
+                target.canonicalPath != "/" && !target.isInside(path)
+                    && FileManager.default.fileExists(atPath: target.path)
+            }
+    }
+
+    /// Whether Spider-Man 2 has per-game Wine settings in this bottle (the fix, or the
+    /// troubleshooting menu, set them up here before).
+    public var hasGameSettings: Bool {
+        guard let text = try? String(contentsOf: userReg, encoding: .utf8) else { return false }
+        return text.range(of: "AppDefaults\\\\\(GameFinder.exeName)", options: .caseInsensitive) != nil
     }
 
     /// The `"path"` entries of a Steam `libraryfolders.vdf`, unescaped.
@@ -72,6 +95,16 @@ public struct Bottle: Hashable, Identifiable {
         }
         return paths
     }
+}
+
+/// Why a bottle was picked for the game.
+public enum BottleReason: String, Equatable {
+    case insideBottle = "The game is inside this bottle."
+    case steamLibrary = "This bottle's Steam has the game's library."
+    case gameSettings = "The game was set up in this bottle before."
+    case driveLetter = "This bottle has a drive letter for the game's disk."
+    case onlySteam = "The only bottle with Steam installed."
+    case chosen = "Chosen by you."
 }
 
 public enum Bottles {
@@ -108,20 +141,27 @@ public enum Bottles {
         return bottle.lastPathComponent
     }
 
-    /// Which bottle runs the game in `gameFolder`: the one it is inside, else the one whose
-    /// Steam lists its library, else the only bottle with Steam. `candidates` are the
-    /// bottles to offer when it can't be told.
-    public static func bottle(for gameFolder: URL, among bottles: [Bottle]) -> (bottle: Bottle?, candidates: [Bottle]) {
+    /// Which bottle runs the game in `gameFolder`, and why. Each test narrows the bottles
+    /// down; the first that leaves exactly one decides:
+    /// the bottle the game is inside; bottles whose Steam lists the game's library; bottles
+    /// where the game has Wine settings already; bottles with a drive letter for the
+    /// game's disk; bottles with Steam installed.
+    public static func bottle(for gameFolder: URL, among bottles: [Bottle]) -> (bottle: Bottle?, reason: BottleReason?) {
         if let inside = bottles.first(where: { gameFolder.isInside($0.path) }) {
-            return (inside, [inside])
+            return (inside, .insideBottle)
         }
-        let byLibrary = bottles.filter { bottle in
-            bottle.steamLibraries().contains { gameFolder.isInside($0) }
+        var pool = bottles
+        let tests: [(BottleReason, (Bottle) -> Bool)] = [
+            (.steamLibrary, { $0.steamLibraries().contains { gameFolder.isInside($0) } }),
+            (.gameSettings, { $0.hasGameSettings }),
+            (.driveLetter, { $0.mappedDrives().contains { gameFolder.isInside($0) } }),
+            (.onlySteam, { $0.hasSteam }),
+        ]
+        for (reason, test) in tests {
+            let matching = pool.filter(test)
+            if matching.count == 1 { return (matching[0], reason) }
+            if matching.count > 1 { pool = matching }
         }
-        if byLibrary.count == 1 { return (byLibrary[0], byLibrary) }
-        if byLibrary.count > 1 { return (nil, byLibrary) }
-        let withSteam = bottles.filter(\.hasSteam)
-        if withSteam.count == 1 { return (withSteam[0], withSteam) }
-        return (nil, withSteam.isEmpty ? bottles : withSteam)
+        return (nil, nil)
     }
 }

@@ -5,6 +5,9 @@ on:
     paths: ['spiderman2-tpose-fix/**', '.github/workflows/sm2fix-app.yml']
   workflow_dispatch:
 
+permissions:
+  contents: write   # commits the rendered screenshots back to the branch
+
 jobs:
   macos:
     runs-on: macos-15
@@ -29,6 +32,25 @@ jobs:
           # unzip what users download and check it again
           mkdir -p /tmp/unzipped && ditto -x -k build/Spider-Man-2-T-Pose-Fix.zip /tmp/unzipped
           "/tmp/unzipped/Spider-Man 2 T-Pose Fix.app/Contents/MacOS/SM2Fix" --selftest
+
+      - name: Render screenshots
+        run: |
+          rm -rf screenshots
+          "build/Spider-Man 2 T-Pose Fix.app/Contents/MacOS/SM2Fix" --snapshots screenshots
+
+      - name: Commit screenshots
+        if: github.ref == 'refs/heads/claude/elegant-dijkstra-9yhhvx'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add screenshots
+          if git diff --cached --quiet; then echo "screenshots unchanged"; exit 0; fi
+          git commit -q -m "sm2fix app: update screenshots [skip ci]"
+          for i in 1 2 3; do
+            git pull -q --rebase origin "${GITHUB_REF_NAME}" && git push -q origin "HEAD:${GITHUB_REF_NAME}" && exit 0
+            sleep 5
+          done
+          exit 1
 
       - uses: actions/upload-artifact@v4
         with:

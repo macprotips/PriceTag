@@ -70,6 +70,11 @@ public enum InstallError: Error, LocalizedError, Equatable {
 public struct InstallReport: Equatable {
     public var override: DllOverride.Outcome?
     public var notes: [String] = []
+
+    public init(override: DllOverride.Outcome? = nil, notes: [String] = []) {
+        self.override = override
+        self.notes = notes
+    }
 }
 
 public struct Installer {

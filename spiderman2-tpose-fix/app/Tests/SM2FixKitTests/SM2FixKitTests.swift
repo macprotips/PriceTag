@@ -286,3 +286,50 @@ final class InstallerTests: XCTestCase {
         }
     }
 }
+
+final class BottleSignalTests: XCTestCase {
+    /// Two bottles with Steam, game on an external drive that no Steam library lists: the
+    /// bottle where the game was set up before wins.
+    func testPrefersTheBottleWhereTheGameWasSetUp() throws {
+        let mac = try FakeMac()
+        try mac.bottle("Other")
+        try mac.bottle("Steam", userReg: "WINE REGISTRY Version 2\n\n[Software\\\\Wine\\\\AppDefaults\\\\Spider-Man2.exe\\\\DllOverrides] 1\n\"d3d12\"=\"native,builtin\"\n")
+        let game = try mac.game(in: mac.volumes.appendingPathComponent("MPT/SteamLibrary"))
+        let install = GameFinder.install(at: game, env: mac.env)
+        XCTAssertEqual(install.bottle?.name, "Steam")
+        XCTAssertEqual(install.reason, .gameSettings)
+        XCTAssertEqual(install.candidates.map(\.name), ["Other", "Steam"])
+    }
+
+    /// The bottle with a drive letter for the game's disk (Z: = / doesn't count).
+    func testPrefersTheBottleWithADriveLetterForTheDisk() throws {
+        let mac = try FakeMac()
+        let other = try mac.bottle("Other")
+        let steam = try mac.bottle("Steam")
+        let drive = mac.volumes.appendingPathComponent("MPT")
+        let game = try mac.game(in: drive.appendingPathComponent("SteamLibrary"))
+        try mac.drive("z", in: other, to: URL(fileURLWithPath: "/"))
+        try mac.drive("z", in: steam, to: URL(fileURLWithPath: "/"))
+        try mac.drive("k", in: steam, to: drive)
+        let install = GameFinder.install(at: game, env: mac.env)
+        XCTAssertEqual(install.bottle?.name, "Steam")
+        XCTAssertEqual(install.reason, .driveLetter)
+    }
+
+    /// Newer Steam keeps the library list in config/libraryfolders.vdf too.
+    func testReadsTheConfigLibraryList() throws {
+        let mac = try FakeMac()
+        try mac.bottle("Other")
+        let steam = try mac.bottle("Steam")
+        let drive = mac.volumes.appendingPathComponent("MPT")
+        let game = try mac.game(in: drive.appendingPathComponent("SteamLibrary"))
+        try mac.drive("k", in: steam, to: drive)
+        let config = steam.appendingPathComponent("drive_c/Program Files (x86)/Steam/config")
+        try mac.fm.createDirectory(at: config, withIntermediateDirectories: true)
+        try "\"libraryfolders\"\n{\n\t\"1\"\n\t{\n\t\t\"path\"\t\t\"K:\\\\SteamLibrary\"\n\t}\n}\n"
+            .write(to: config.appendingPathComponent("libraryfolders.vdf"), atomically: true, encoding: .utf8)
+        let install = GameFinder.install(at: game, env: mac.env)
+        XCTAssertEqual(install.bottle?.name, "Steam")
+        XCTAssertEqual(install.reason, .steamLibrary)
+    }
+}

@@ -5,8 +5,12 @@ import SM2FixKit
 @main
 enum Entry {
     static func main() {
-        if CommandLine.arguments.contains("--selftest") {
+        let args = CommandLine.arguments
+        if args.contains("--selftest") {
             exit(SelfTest.run())
+        }
+        if let i = args.firstIndex(of: "--snapshots"), i + 1 < args.count {
+            exit(Snapshots.run(into: URL(fileURLWithPath: args[i + 1])))
         }
         SM2FixApp.main()
     }
@@ -23,6 +27,10 @@ struct SM2FixApp: App {
         .windowResizability(.contentSize)
         .commands {
             CommandGroup(replacing: .newItem) {}
+            CommandGroup(replacing: .help) {
+                Link("Spider-Man 2 T-Pose Fix Help",
+                     destination: URL(string: "https://github.com/macprotips/PriceTag/tree/claude/elegant-dijkstra-9yhhvx/spiderman2-tpose-fix")!)
+            }
         }
     }
 }

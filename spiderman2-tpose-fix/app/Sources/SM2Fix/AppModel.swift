@@ -16,6 +16,7 @@ final class AppModel: ObservableObject {
 
     @Published var game: GameInstall?
     @Published var bottleID: String?
+    @Published var bottleReason: BottleReason?
     @Published var status: FixStatus?
     @Published var busy = false
     @Published var busyText = ""
@@ -25,12 +26,16 @@ final class AppModel: ObservableObject {
 
     let env = SystemEnvironment()
     let payload: Result<Payload, Error>
+    /// Screenshots: no searching, no disk access.
+    let isPreview: Bool
     private let queue = DispatchQueue(label: "sm2fix.work", qos: .userInitiated)
     private var searchedAtLaunch = false
+    private static let rememberedKey = "BottleForGameFolder"
 
-    init() {
+    init(preview: Bool = false) {
+        isPreview = preview
         payload = Result { try AppModel.loadPayload() }
-        if case .failure(let error) = payload {
+        if !preview, case .failure(let error) = payload {
             banner = Banner(kind: .error, title: "This copy of the app is incomplete.", detail: error.localizedDescription)
         }
     }
@@ -40,19 +45,26 @@ final class AppModel: ObservableObject {
         return try Payload(directory: resources.appendingPathComponent("payload"))
     }
 
+    var bottles: [Bottle] { game?.candidates ?? [] }
+
     var selectedBottle: Bottle? {
-        game?.candidates.first { $0.id == bottleID } ?? game?.bottle
+        bottles.first { $0.id == bottleID }
     }
 
     var version: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
     }
 
+    /// Apply needs a bottle, unless there are no bottles at all (then it explains the manual step).
+    var canApply: Bool {
+        game != nil && !busy && (selectedBottle != nil || bottles.isEmpty)
+    }
+
     // MARK: - Finding the game
 
     /// Looks for the game once at launch, and picks it if there's exactly one copy.
     func searchAtLaunch() {
-        guard !searchedAtLaunch, game == nil else { return }
+        guard !isPreview, !searchedAtLaunch, game == nil else { return }
         searchedAtLaunch = true
         findAutomatically(quiet: true)
     }
@@ -60,6 +72,7 @@ final class AppModel: ObservableObject {
     func findAutomatically(quiet: Bool = false) {
         busy = true
         busyText = "Looking for Spider-Man 2…"
+        banner = nil
         let env = self.env
         queue.async {
             let found = GameFinder.findAll(env: env)
@@ -71,7 +84,7 @@ final class AppModel: ObservableObject {
                     self.choices = found
                 } else if !quiet {
                     self.banner = Banner(kind: .warning, title: "Couldn't find Spider-Man 2 automatically.",
-                                         detail: "Drag the game's folder (Marvel's Spider-Man 2) into this window, or click Choose Folder.")
+                                         detail: "Drag the Marvel's Spider-Man 2 folder into this window, or click Choose Folder.")
                 }
             }
         }
@@ -91,8 +104,8 @@ final class AppModel: ObservableObject {
                 if let install {
                     self.select(install)
                 } else {
-                    self.banner = Banner(kind: .error, title: "That's not the Spider-Man 2 folder.",
-                                         detail: "Drop the folder that contains Spider-Man2.exe. In Steam: right-click the game > Manage > Browse local files.")
+                    self.banner = Banner(kind: .error, title: "That isn't the Spider-Man 2 folder.",
+                                         detail: "Choose the folder that contains Spider-Man2.exe. In Steam: right-click the game, then Manage › Browse local files.")
                 }
             }
         }
@@ -100,8 +113,8 @@ final class AppModel: ObservableObject {
 
     func chooseFolder() {
         let panel = NSOpenPanel()
-        panel.title = "Choose the Marvel's Spider-Man 2 folder"
-        panel.message = "Choose the folder that contains Spider-Man2.exe (or the exe itself)."
+        panel.title = "Choose the Marvel's Spider-Man 2 Folder"
+        panel.message = "Choose the folder that contains Spider-Man2.exe."
         panel.canChooseDirectories = true
         panel.canChooseFiles = true
         panel.allowsMultipleSelection = false
@@ -114,8 +127,26 @@ final class AppModel: ObservableObject {
     func select(_ install: GameInstall) {
         choices = []
         game = install
-        bottleID = install.bottle?.id
+        let remembered = (UserDefaults.standard.dictionary(forKey: Self.rememberedKey) as? [String: String])?[install.folder.path]
+        if install.reason == .insideBottle || remembered == nil
+            || !install.candidates.contains(where: { $0.id == remembered }) {
+            bottleID = install.bottle?.id
+            bottleReason = install.reason
+        } else {
+            bottleID = remembered
+            bottleReason = remembered == install.bottle?.id ? install.reason : .chosen
+        }
         refreshStatus()
+    }
+
+    /// The user picked a bottle: remember it for this game folder.
+    func choose(bottleID id: String?) {
+        bottleID = id
+        bottleReason = id == nil ? nil : (id == game?.bottle?.id ? game?.reason : .chosen)
+        guard let game, let id, !isPreview else { return }
+        var remembered = UserDefaults.standard.dictionary(forKey: Self.rememberedKey) as? [String: String] ?? [:]
+        remembered[game.folder.path] = id
+        UserDefaults.standard.set(remembered, forKey: Self.rememberedKey)
     }
 
     func forget() {
@@ -126,7 +157,7 @@ final class AppModel: ObservableObject {
     }
 
     func refreshStatus() {
-        guard let game, case .success(let payload) = payload else { return }
+        guard !isPreview, let game, case .success(let payload) = payload else { return }
         status = Installer(payload: payload, env: env).status(of: game.folder)
     }
 
@@ -162,26 +193,25 @@ final class AppModel: ObservableObject {
             report = r
         }
         var notes = report.notes
-        let manual = "In CrossOver: select the bottle > Wine Configuration > Libraries > type d3d12 > Add > Edit > “Native then Builtin”."
+        let manual = "In CrossOver, select the bottle, open Wine Configuration › Libraries, add d3d12 and set it to “Native then Builtin”."
         if removing {
-            return Banner(kind: .success, title: "The fix is removed. The game is back to normal.",
-                          detail: notes.joined(separator: "\n"))
+            return Banner(kind: .success, title: "The fix was removed.",
+                          detail: (["The game is back to how it was."] + notes).joined(separator: " "))
         }
         switch report.override {
         case .wineRunning?:
-            notes.insert("One more step: quit CrossOver completely (CrossOver menu > Quit CrossOver), then click Apply Fix again. "
-                         + "Wine has to be told once to load the fix, and it can't be while it's running.", at: 0)
-            return Banner(kind: .warning, title: "Almost done.", detail: notes.joined(separator: "\n\n"))
+            notes.insert("Quit CrossOver completely (CrossOver › Quit CrossOver), then click Apply Fix again. "
+                         + "Wine needs to be told once to load the fix, and that can't happen while it's running.", at: 0)
+            return Banner(kind: .warning, title: "One more step", detail: notes.joined(separator: " "))
         case .failed(let reason)?:
-            notes.insert("Wine couldn't be told to load the fix (\(reason)). Do it once by hand: \(manual)", at: 0)
-            return Banner(kind: .warning, title: "Fix copied, one manual step left.", detail: notes.joined(separator: "\n\n"))
+            notes.insert("Wine couldn't be set to load the fix (\(reason)). Do it once by hand: \(manual)", at: 0)
+            return Banner(kind: .warning, title: "One more step", detail: notes.joined(separator: " "))
         case nil:
-            notes.insert("No bottle was selected, so if the fix doesn't take effect, do this once: \(manual)", at: 0)
-            return Banner(kind: .warning, title: "Fix copied.", detail: notes.joined(separator: "\n\n"))
+            notes.insert("No CrossOver or Whisky bottle was found, so Wine wasn't set to load it. If the fix doesn't take effect: \(manual)", at: 0)
+            return Banner(kind: .warning, title: "The fix was copied", detail: notes.joined(separator: " "))
         default:
-            notes.insert("Start Spider-Man 2 from \(bottle?.kind.rawValue ?? "CrossOver") as usual. "
-                         + "A log is written to sm2fix.log in the game folder.", at: 0)
-            return Banner(kind: .success, title: "The fix is applied.", detail: notes.joined(separator: "\n\n"))
+            notes.insert("Start Spider-Man 2 from \(bottle?.kind.rawValue ?? "CrossOver") as usual.", at: 0)
+            return Banner(kind: .success, title: "The fix is applied.", detail: notes.joined(separator: " "))
         }
     }
 
