@@ -15,5 +15,40 @@ jobs:
         working-directory: CardStock
     steps:
       - uses: actions/checkout@v4
+
       - name: Test CardStockKit
         run: swift test --package-path Packages/CardStockKit
+
+      - name: Generate Xcode project
+        run: |
+          brew install xcodegen
+          xcodegen generate
+
+      - name: Build app and widget
+        run: |
+          mkdir -p build
+          if ! xcodebuild build \
+              -project CardStock.xcodeproj \
+              -scheme CardStock \
+              -configuration Release \
+              -destination 'generic/platform=macOS' \
+              -derivedDataPath build/DerivedData \
+              CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= \
+              MARKETING_VERSION=0.1.${{ github.run_number }} CURRENT_PROJECT_VERSION=${{ github.run_number }} \
+              > build/xcodebuild.log 2>&1; then
+            grep -E "error:" -A 4 build/xcodebuild.log | head -300
+            tail -40 build/xcodebuild.log
+            exit 1
+          fi
+          grep -E "warning:" build/xcodebuild.log | grep -v "/DerivedData/" | sort -u | head -100 || true
+          tail -5 build/xcodebuild.log
+
+      - name: Package
+        run: |
+          cd build/DerivedData/Build/Products/Release
+          ditto -c -k --keepParent CardStock.app "$GITHUB_WORKSPACE/CardStock/build/CardStock.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CardStock
+          path: CardStock/build/CardStock.zip

@@ -1,0 +1,79 @@
+# Generates CardStock.xcodeproj. Run `xcodegen` in this folder after changing it.
+name: CardStock
+
+options:
+  bundleIdPrefix: com.macprotips
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+
+settings:
+  base:
+    MARKETING_VERSION: 0.1.0
+    CURRENT_PROJECT_VERSION: 1
+    SWIFT_VERSION: "5.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    # Set your team here (or in Xcode) to sign with your Developer ID. The
+    # widget needs a team for the app and widget to share data.
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Automatic
+    CODE_SIGN_IDENTITY: "-"
+    ENABLE_HARDENED_RUNTIME: YES
+    DEAD_CODE_STRIPPING: YES
+
+packages:
+  CardStockKit:
+    path: Packages/CardStockKit
+
+targets:
+  CardStock:
+    type: application
+    platform: macOS
+    sources:
+      - App
+      - Shared
+    dependencies:
+      - package: CardStockKit
+      - target: CardStockWidget
+        embed: true
+        codeSign: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.macprotips.CardStock
+        PRODUCT_NAME: CardStock
+        INFOPLIST_FILE: App/Info.plist
+        CODE_SIGN_ENTITLEMENTS: App/CardStock.entitlements
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        GENERATE_INFOPLIST_FILE: NO
+
+  CardStockWidget:
+    type: app-extension
+    platform: macOS
+    sources:
+      - Widget
+      - Shared
+    dependencies:
+      - package: CardStockKit
+      - sdk: WidgetKit.framework
+      - sdk: SwiftUI.framework
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.macprotips.CardStock.Widget
+        PRODUCT_NAME: CardStockWidget
+        INFOPLIST_FILE: Widget/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Widget/CardStockWidget.entitlements
+        GENERATE_INFOPLIST_FILE: NO
+        SKIP_INSTALL: YES
+
+schemes:
+  CardStock:
+    build:
+      targets:
+        CardStock: all
+        CardStockWidget: all
+    run:
+      config: Debug
+    archive:
+      config: Release

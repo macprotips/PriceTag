@@ -28,3 +28,11 @@ final class FormatTests: XCTestCase {
         XCTAssertEqual(PriceFormat.spokenChange(nil, .usd), "no change yet")
     }
 }
+
+final class DeepLinkTests: XCTestCase {
+    func testRoundTrip() {
+        let id = "pokemon:sv03.5-151:reverse-holofoil"
+        XCTAssertEqual(DeepLink.itemID(from: DeepLink.card(id)), id)
+        XCTAssertNil(DeepLink.itemID(from: URL(string: "https://example.com/card?id=x")!))
+    }
+}
