@@ -81,7 +81,7 @@ enum Snapshots {
     /// Renders `view` in a real window (so AppKit controls draw) and saves it as PNG.
     static func render(_ view: AnyView, appearance: NSAppearance.Name, to url: URL) -> Bool {
         let app = NSApplication.shared
-        let host = NSHostingView(rootView: view)
+        let host = NSHostingView(rootView: AnyView(view.environment(\.controlActiveState, .key)))
         let window = ActiveWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 400),
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.appearance = NSAppearance(named: appearance)
