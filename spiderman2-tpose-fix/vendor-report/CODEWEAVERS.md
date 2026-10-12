@@ -110,13 +110,20 @@ tests and the app are here:
 hash, so a game update that changes those shaders turns the fix off silently. M5 Macs
 don't need it, and on them it is harmless. The proper fix belongs in D3DMetal.
 
+**License.** The workaround is public domain (Unlicense). Use, change, bundle or ship
+it any way you like; no attribution is needed. One exception: the two `.dxil` files are
+modified copies of the game's own shaders, so they carry the game owner's rights, not
+ours. If that matters for shipping, `shader-fix/make-pool-fix.sh` rebuilds them on the
+user's machine from shaders dumped out of their copy of the game with the shim's
+`dump_compute` option (it needs DXC's `dxc`, `dxa` and `dxv`).
+
 ## What we're asking
 
 1. **Forward to Apple.** Please pass `APPLE.md` and the `repro` folder to your D3DMetal
    contacts, or reference FB[number]. The repro is small and needs no game.
 2. **CrossTie.** Consider a CrossTie, or a known-issue note in the compatibility database
    entry for Marvel's Spider-Man 2, that installs the workaround (the four files and the
-   per-game DLL override above). Please contact us about redistribution terms first.
+   per-game DLL override above).
 3. **Check other titles.** Other Direct3D 12 titles that read very large typed buffers
    will hit the same limit. The symptom is missing or zeroed data in the upper part of a
    large buffer, with no errors anywhere.

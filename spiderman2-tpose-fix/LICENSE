@@ -1,0 +1,34 @@
+This is free and unencumbered software released into the public domain.
+
+Anyone is free to copy, modify, publish, use, compile, sell, or
+distribute this software, either in source code form or as a compiled
+binary, for any purpose, commercial or non-commercial, and by any
+means.
+
+In jurisdictions that recognize copyright laws, the author or authors
+of this software dedicate any and all copyright interest in the
+software to the public domain. We make this dedication for the benefit
+of the public at large and to the detriment of our heirs and
+successors. We intend this dedication to be an overt act of
+relinquishment in perpetuity of all present and future rights to this
+software under copyright law.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+OTHER DEALINGS IN THE SOFTWARE.
+
+For more information, please refer to <https://unlicense.org/>
+
+---
+
+Scope: everything in this folder, including the d3d12.dll shim, the Mac app, the
+tests and the vendor reports, with one exception. The files
+shader-fix/sm2fix-pool-*.dxil and shader-fix/sm2fix-skinning.dxil are modified
+copies of shaders from Marvel's Spider-Man 2. Rights in those belong to the game's
+owners and are not covered by this dedication. They can be rebuilt on a user's own machine
+from shaders dumped out of their copy of the game (the shim's dump_compute option)
+with shader-fix/make-pool-fix.sh and shader-fix/typed2raw.py, which are covered.

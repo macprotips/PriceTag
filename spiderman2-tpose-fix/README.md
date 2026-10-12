@@ -7,6 +7,9 @@ makes the game read that buffer the "raw" way (test #28 below).
 
 Reports for Apple and CodeWeavers, with a standalone repro, are in [`vendor-report/`](vendor-report/).
 
+Public domain ([Unlicense](LICENSE)): anyone may use, change or redistribute this fix for any purpose,
+without credit. The rewritten game shaders (`shader-fix/*.dxil`) are the one exception; see [LICENSE](LICENSE).
+
 ## The easy way: the app
 
 <p>
