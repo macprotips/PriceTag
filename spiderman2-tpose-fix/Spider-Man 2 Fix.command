@@ -415,7 +415,7 @@ case "$action" in
         pick_wine
         say "Using: $CX_WINE"
         say "Running the CPU instruction check: every kind of instruction the game's code"
-        say "uses (about 1,200), each on 96 inputs, compared with a real Intel CPU."
+        say "uses (about 1,200) plus 1,900 flag pairs, each on 96 inputs, vs a real Intel CPU."
         say "It takes a minute or two and doesn't change anything. Please wait..."
         say ""
         rm -f "$TDIR/fuzz-report.txt"

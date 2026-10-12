@@ -374,7 +374,7 @@ int main(int argc, char **argv)
             "state block at %p\n\n", NTESTS, NINPUTS, NENVS, (void *)g_s);
     for (t = 0; t < NTESTS; t++)
     {
-        unsigned int d = 0, fl = 0, mx = 0, fa = 0, shown = 0;
+        unsigned int d = 0, fl = 0, mx = 0, fa = 0, shown = 0, flag_bits = 0, flag_shown = 0;
 
         if (test_dropped[t])
             continue;
@@ -401,15 +401,29 @@ int main(int argc, char **argv)
                     }
                 }
                 else if (a->flags != b->flags)
+                {
                     fl++;
+                    flag_bits |= a->flags ^ b->flags;
+                    if (flag_shown++ < 2)
+                    {
+                        struct state in;
+                        struct result r;
+
+                        run_one(t, k, env, &in, &r);
+                        fprintf(rep, "    test %u (%s) input %u: flags in %03llx, real CPU %03x, this Mac %03x\n", t,
+                                form_text[t], k, (unsigned long long)(in.flags & 0x8d5), b->flags, a->flags);
+                    }
+                }
                 else if (a->mxcsr != b->mxcsr)
                     mx++;
             }
         if (res[(size_t)t * NENVS * NINPUTS].fault == FAULT_HANG)
             fprintf(rep, "HANG test %u: %s (game uses it %ux): didn't finish within 5 s\n", t, form_text[t], form_count[t]);
         else if (d || fl || mx || fa)
-            fprintf(rep, "MISMATCH test %u: %-48s game uses it %ux | data %u, flags %u, mxcsr %u, faults %u (of %u)\n",
-                    t, form_text[t], form_count[t], d, fl, mx, fa, NINPUTS * NENVS);
+            fprintf(rep, "MISMATCH test %u: %-48s game uses it %ux | data %u, flags %u [%s%s%s%s%s%s], mxcsr %u, faults %u (of %u)\n",
+                    t, form_text[t], form_count[t], d, fl, flag_bits & 1 ? "CF " : "", flag_bits & 4 ? "PF " : "",
+                    flag_bits & 0x10 ? "AF " : "", flag_bits & 0x40 ? "ZF " : "", flag_bits & 0x80 ? "SF " : "",
+                    flag_bits & 0x800 ? "OF" : "", mx, fa, NINPUTS * NENVS);
         data_bad += d != 0;
         flag_bad += !d && fl != 0;
         mx_bad += !d && !fl && mx != 0;
