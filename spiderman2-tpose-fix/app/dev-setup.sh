@@ -36,11 +36,24 @@ if [[ ! -x .dxc/bin/dxc ]]; then
     rm -rf .dxc-build   # the 3 GB source and build folder; only .dxc is kept
 fi
 
+# Runs a step with its full output in build/logs/<name>.log; on failure shows the errors.
+step() { # name, command...
+    local name="$1"; shift
+    mkdir -p build-logs
+    if "$@" > "build-logs/$name.log" 2>&1; then
+        tail -n 2 "build-logs/$name.log"
+    else
+        echo "Failed. The errors:"
+        grep -E -B2 -A8 "error:|FAIL|failed" "build-logs/$name.log" | head -n 80
+        fail "$name failed. Full log: $PWD/build-logs/$name.log"
+    fi
+}
+
 say "Running the tests"
-SM2FIX_DXC="$PWD/.dxc/bin" swift test 2>&1 | tail -n 3
+SM2FIX_DXC="$PWD/.dxc/bin" step tests swift test
 
 say "Building the app"
-./build-app.sh >/dev/null
+step build ./build-app.sh
 APP="build/Spider-Man 2 T-Pose Fix.app"
 "$APP/Contents/MacOS/SM2Fix" --selftest | tail -n 1
 

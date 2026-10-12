@@ -7,3 +7,4 @@ DerivedData/
 __pycache__/
 .dxc/
 .dxc-build/
+build-logs/
