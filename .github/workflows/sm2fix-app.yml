@@ -84,3 +84,7 @@ jobs:
         with:
           name: Spider-Man-2-T-Pose-Fix
           path: spiderman2-tpose-fix/app/build/Spider-Man-2-T-Pose-Fix.zip
+
+      # The script a developer runs on their own Mac (uses the cached DXC tools here).
+      - name: Local setup script
+        run: ./dev-setup.sh --no-open
