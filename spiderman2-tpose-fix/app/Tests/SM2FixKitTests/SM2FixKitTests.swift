@@ -144,16 +144,31 @@ final class DllOverrideTests: XCTestCase {
         XCTAssertEqual(fixed.components(separatedBy: "\"d3d12\"").count, 2)
     }
 
-    func testUsesCrossOverWineWhenAvailable() throws {
+    /// While Wine runs, the change goes through the bottle's own `wine reg`.
+    func testUsesCrossOverWineWhileWineRuns() throws {
         let mac = try FakeMac()
-        try mac.bottle("Steam", userReg: reg)
+        let path = try mac.bottle("Steam", userReg: reg)
         let wine = try mac.crossOverApp()
+        mac.runner.processes = ["/Applications/CrossOver.app/Contents/SharedSupport/CrossOver/bin/wineserver"]
         let bottle = Bottles.all(in: mac.env)[0]
         XCTAssertEqual(DllOverride.ensure(in: bottle, env: mac.env), .setWithWine)
         XCTAssertEqual(mac.runner.calls.last?.0, wine.path)
         XCTAssertEqual(mac.runner.wineCalls.last, ["--bottle", "Steam", "reg", "add",
                                                    #"HKCU\Software\Wine\AppDefaults\Spider-Man2.exe\DllOverrides"#,
                                                    "/v", "d3d12", "/t", "REG_SZ", "/d", "native,builtin", "/f"])
+        XCTAssertEqual(try String(contentsOf: path.appendingPathComponent("user.reg"), encoding: .utf8), reg)
+    }
+
+    /// With CrossOver installed but not running, no Wine process is started at all.
+    func testStartsNoWineWhenWineIsNotRunning() throws {
+        let mac = try FakeMac()
+        let path = try mac.bottle("Steam", userReg: reg)
+        _ = try mac.crossOverApp()
+        let bottle = Bottles.all(in: mac.env)[0]
+        XCTAssertEqual(DllOverride.ensure(in: bottle, env: mac.env), .setInFile)
+        XCTAssertEqual(DllOverride.remove(from: bottle, env: mac.env), .removed)
+        XCTAssertEqual(mac.runner.wineCalls, [])
+        XCTAssertFalse(DllOverride.isSet(inUserReg: try String(contentsOf: path.appendingPathComponent("user.reg"), encoding: .utf8)))
     }
 
     func testEditsUserRegWithoutWine() throws {
@@ -178,12 +193,15 @@ final class DllOverrideTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: path.appendingPathComponent("user.reg"), encoding: .utf8), reg)
     }
 
-    func testFallsBackToFileWhenWineFails() throws {
+    /// Wine running but its `reg` failing: never edit the file under a running Wine.
+    func testAsksToQuitWineWhenWineRegFails() throws {
         let mac = try FakeMac()
-        try mac.bottle("Steam", userReg: reg)
+        let path = try mac.bottle("Steam", userReg: reg)
         _ = try mac.crossOverApp()
+        mac.runner.processes = ["/Applications/CrossOver.app/Contents/SharedSupport/CrossOver/bin/wineserver"]
         mac.runner.wineStatus = 1
-        XCTAssertEqual(DllOverride.ensure(in: Bottles.all(in: mac.env)[0], env: mac.env), .setInFile)
+        XCTAssertEqual(DllOverride.ensure(in: Bottles.all(in: mac.env)[0], env: mac.env), .wineRunning)
+        XCTAssertEqual(try String(contentsOf: path.appendingPathComponent("user.reg"), encoding: .utf8), reg)
     }
 }
 
