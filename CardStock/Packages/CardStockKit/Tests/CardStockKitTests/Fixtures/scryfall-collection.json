@@ -1,0 +1,51 @@
+{
+  "object": "list",
+  "not_found": [
+    { "id": "00000000-0000-0000-0000-000000000000" }
+  ],
+  "data": [
+    {
+      "object": "card",
+      "id": "b2c6aa39-2d2a-459c-a555-fb48ba993373",
+      "name": "Delver of Secrets // Insectile Aberration",
+      "scryfall_uri": "https://scryfall.com/card/isd/51/delver-of-secrets-insectile-aberration",
+      "layout": "transform",
+      "card_faces": [
+        {
+          "object": "card_face",
+          "name": "Delver of Secrets",
+          "image_uris": {
+            "small": "https://cards.scryfall.io/small/front/b/2/b2c6aa39.jpg",
+            "normal": "https://cards.scryfall.io/normal/front/b/2/b2c6aa39.jpg",
+            "large": "https://cards.scryfall.io/large/front/b/2/b2c6aa39.jpg"
+          }
+        },
+        {
+          "object": "card_face",
+          "name": "Insectile Aberration",
+          "image_uris": {
+            "small": "https://cards.scryfall.io/small/back/b/2/b2c6aa39.jpg",
+            "normal": "https://cards.scryfall.io/normal/back/b/2/b2c6aa39.jpg",
+            "large": "https://cards.scryfall.io/large/back/b/2/b2c6aa39.jpg"
+          }
+        }
+      ],
+      "finishes": ["nonfoil", "foil"],
+      "set": "isd",
+      "set_name": "Innistrad",
+      "collector_number": "51",
+      "rarity": "common",
+      "prices": {
+        "usd": "0.71",
+        "usd_foil": "6.10",
+        "usd_etched": null,
+        "eur": null,
+        "eur_foil": "4.95",
+        "tix": "0.02"
+      },
+      "purchase_uris": {
+        "tcgplayer": "https://www.tcgplayer.com/product/52193"
+      }
+    }
+  ]
+}

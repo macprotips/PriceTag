@@ -1,0 +1,13 @@
+{
+  "id": "base1-4",
+  "localId": "4",
+  "name": "Charizard",
+  "image": "https://assets.tcgdex.net/en/base/base1/4",
+  "rarity": "Rare",
+  "set": { "id": "base1", "name": "Base Set" },
+  "variants": { "firstEdition": true, "holo": true, "normal": false, "reverse": false },
+  "pricing": {
+    "cardmarket": "unexpected",
+    "tcgplayer": null
+  }
+}

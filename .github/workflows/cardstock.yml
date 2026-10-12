@@ -1,0 +1,19 @@
+name: cardstock
+
+on:
+  push:
+    paths: ['CardStock/**', '.github/workflows/cardstock.yml']
+  pull_request:
+    paths: ['CardStock/**', '.github/workflows/cardstock.yml']
+  workflow_dispatch:
+
+jobs:
+  macos:
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: CardStock
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test CardStockKit
+        run: swift test --package-path Packages/CardStockKit

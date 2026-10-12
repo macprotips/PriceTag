@@ -1,0 +1,39 @@
+{
+  "object": "card",
+  "id": "4e4fb50c-a81f-44d3-93c5-fa9a0b37f617",
+  "name": "Sheoldred, the Apocalypse",
+  "lang": "en",
+  "released_at": "2022-09-09",
+  "uri": "https://api.scryfall.com/cards/4e4fb50c-a81f-44d3-93c5-fa9a0b37f617",
+  "scryfall_uri": "https://scryfall.com/card/dmu/107/sheoldred-the-apocalypse",
+  "layout": "normal",
+  "image_uris": {
+    "small": "https://cards.scryfall.io/small/front/4/e/4e4fb50c.jpg",
+    "normal": "https://cards.scryfall.io/normal/front/4/e/4e4fb50c.jpg",
+    "large": "https://cards.scryfall.io/large/front/4/e/4e4fb50c.jpg",
+    "png": "https://cards.scryfall.io/png/front/4/e/4e4fb50c.png",
+    "art_crop": "https://cards.scryfall.io/art_crop/front/4/e/4e4fb50c.jpg",
+    "border_crop": "https://cards.scryfall.io/border_crop/front/4/e/4e4fb50c.jpg"
+  },
+  "mana_cost": "{2}{B}{B}",
+  "type_line": "Legendary Creature — Phyrexian Praetor",
+  "finishes": ["nonfoil", "foil"],
+  "set": "dmu",
+  "set_name": "Dominaria United",
+  "collector_number": "107",
+  "rarity": "mythic",
+  "artist": "Chris Rahn",
+  "prices": {
+    "usd": "79.12",
+    "usd_foil": "84.20",
+    "usd_etched": null,
+    "eur": "70.05",
+    "eur_foil": "71.30",
+    "tix": "8.11"
+  },
+  "purchase_uris": {
+    "tcgplayer": "https://www.tcgplayer.com/product/284522",
+    "cardmarket": "https://www.cardmarket.com/en/Magic/Products/Singles/Dominaria-United/Sheoldred-the-Apocalypse",
+    "cardhoarder": "https://www.cardhoarder.com/cards/103957"
+  }
+}
