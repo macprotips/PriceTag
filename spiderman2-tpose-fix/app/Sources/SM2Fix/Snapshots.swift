@@ -81,8 +81,9 @@ enum Snapshots {
     /// Renders `view` in a real window (so AppKit controls draw) and saves it as PNG.
     static func render(_ view: AnyView, appearance: NSAppearance.Name, to url: URL) -> Bool {
         let app = NSApplication.shared
-        let host = NSHostingView(rootView: AnyView(view.environment(\.controlActiveState, .key)))
-        let window = ActiveWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 400),
+        // CI can't bring the app to the front, so the default button draws grey here (blue in the real app).
+        let host = NSHostingView(rootView: view)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 400),
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.appearance = NSAppearance(named: appearance)
         window.contentView = host
@@ -113,10 +114,3 @@ enum Snapshots {
     }
 }
 
-/// Draws its controls as in the active window (CI can't activate the app), so the
-/// screenshots show the default button in the accent colour like the real app.
-final class ActiveWindow: NSWindow {
-    override var isKeyWindow: Bool { true }
-    override var isMainWindow: Bool { true }
-    override var canBecomeKey: Bool { true }
-}
