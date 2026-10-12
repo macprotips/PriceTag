@@ -187,6 +187,10 @@ final class AppModel: ObservableObject {
     static func banner(for result: Result<InstallReport, Error>, removing: Bool, bottle: Bottle?) -> Banner {
         let report: InstallReport
         switch result {
+        case .failure(InstallError.gameRunning):
+            return Banner(kind: .warning, title: "Quit Spider-Man 2 first", detail: InstallError.gameRunning.localizedDescription)
+        case .failure(InstallError.quitCrossOver):
+            return Banner(kind: .warning, title: "Quit Steam first", detail: InstallError.quitCrossOver.localizedDescription)
         case .failure(let error):
             return Banner(kind: .error, title: removing ? "Couldn't remove the fix." : "Couldn't apply the fix.",
                           detail: error.localizedDescription)

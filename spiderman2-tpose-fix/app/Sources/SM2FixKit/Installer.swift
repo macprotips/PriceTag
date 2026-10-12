@@ -91,9 +91,9 @@ public enum InstallError: Error, LocalizedError, Equatable {
         case .notAGameFolder:
             return "That folder doesn't contain Spider-Man2.exe."
         case .gameRunning:
-            return "Spider-Man 2 is still running. Quit it, then try again."
+            return "Quit Spider-Man 2, then click the button again. Nothing was changed."
         case .quitCrossOver:
-            return "Quit CrossOver first (CrossOver › Quit CrossOver), then try again. The fix changes one Wine setting in the bottle, which can't be done while Wine is running. Nothing was changed. If this keeps appearing after quitting CrossOver, restart your Mac."
+            return "Steam or another Windows program is still running in CrossOver. Quit it, or quit CrossOver (CrossOver › Quit CrossOver), then click the button again. This is needed once, to change one setting in the bottle. Nothing was changed. If this still appears after quitting CrossOver, restart your Mac."
         case .readOnly(let path):
             return "Can't write to \(path). If the game is on an external drive formatted as NTFS, macOS can only read it."
         case .copyFailed(let reason):
