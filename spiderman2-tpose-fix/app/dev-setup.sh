@@ -49,8 +49,16 @@ step() { # name, command...
     fi
 }
 
-say "Running the tests"
-step tests env SM2FIX_DXC="$PWD/.dxc/bin" swift test
+# The tests use XCTest, which comes with the full Xcode app, not the Command Line Tools.
+dev="$(xcode-select -p)"
+if [[ -d "$dev/Platforms/MacOSX.platform/Developer/Library/Frameworks/XCTest.framework" \
+      || -d "$dev/Library/Developer/Frameworks/XCTest.framework" ]]; then
+    say "Running the tests"
+    step tests env SM2FIX_DXC="$PWD/.dxc/bin" swift test
+else
+    say "Skipping the tests: they need the full Xcode app (free in the App Store)."
+    echo "That's fine: GitHub runs every test on each change. Install Xcode only if you want to run them here."
+fi
 
 say "Building the app"
 step build ./build-app.sh
