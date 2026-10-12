@@ -60,7 +60,7 @@ This decides the whole architecture, so it comes first.
 Neither free source gives history, only today's price. So:
 
 1. **The app records its own history.** Each refresh saves one point per card, per day. Charts get richer the longer a card is watched.
-2. **Pokémon gets trend context on day one.** Cardmarket's 1, 7 and 30-day averages from TCGdex give a 7D and 30D change before we have our own history.
+2. **Pokémon gets trend context on day one.** Cardmarket's 7 and 30-day averages from TCGdex show in the stats before we have our own history.
 3. **The UI is honest about it.** A new card shows "History starts today" with a single point, not a fake line.
 4. **Later, optional backfill.** An optional paid source (Phase 3) can backfill up to a year of history for people who want it.
 
@@ -131,7 +131,7 @@ A tracked item is a **printing plus a finish**: "Sol Ring, Commander Masters #39
 
 ### Prices, precisely
 
-- Prices are stored as `Decimal`, never `Double`, so $0.10 is exactly $0.10.
+- Prices are stored as whole cents (integers), never floating point, so $0.10 is exactly $0.10 through every save and load. Doubles are only used to draw charts.
 - **Magic:** USD is TCGplayer market price; EUR is Cardmarket trend. Both come from Scryfall.
 - **Pokémon:** USD is TCGplayer market price for the chosen variant, falling back to mid. EUR is Cardmarket trend, falling back to the 30-day average (trend can be 0 on thin markets).
 - **Day change** compares with the most recent point from an earlier day. Until there is one, it shows "—", not +0.00%.
@@ -177,7 +177,7 @@ The reference is Stocks on macOS, along with Mail, Notes and System Settings. Th
 
 - **Sidebar rows** follow Stocks: a thumbnail, name on top and set code plus finish underneath in secondary text, a sparkline, the price in monospaced digits, and a change pill. Clicking the pill switches every row between percent, amount and price, like Stocks.
 - **Detail:** the title in large semibold, the price at 34 pt with monospaced digits, and the change in green or red. A segmented control picks the range. The chart is a single line with a very light fill under it, colored by whether the range is up or down. Hovering shows a vertical rule with the date and price, like Stocks.
-- **Card image:** the whole card, with corners matching a real card (about 4.7% of the width) and a soft shadow. Clicking it opens a Quick Look style enlargement.
+- **Card image:** the whole card, with corners matching a real card (about 4.7% of the width) and a soft shadow. Clicking to enlarge it comes in Phase 2.
 - **Stats:** a two-column grid of label and value, labels in secondary text. No boxes or cards around them.
 - **Empty states** use `ContentUnavailableView`: "No Cards" with an "Add Card" button, and "No Results" for search.
 
@@ -211,14 +211,14 @@ Widgets use the system widget background and `containerBackground`, and look rig
 | ⌘R | Refresh Prices |
 | Delete | Remove the selected card (with Undo) |
 | ⌘1 to ⌘6 | Chart range 1W, 1M, 3M, 6M, 1Y, All |
-| ⌘⌥S | Show or hide the sidebar |
+| ⌃⌘S | Show or hide the sidebar |
 | ⌘, | Settings |
 
 ### Accessibility
 
 - Every row reads as one VoiceOver element, for example: "Sheoldred, the Apocalypse, Dominaria United foil, 84 dollars 20, up 2.4 percent."
-- Charts have audio graphs and a summary label.
-- Up and down are never shown by color alone: there's always a sign, and an arrow in the pill.
+- Charts have a spoken summary (range, change, low and high). Audio graphs are a Phase 2 item.
+- Up and down are never shown by color alone: every change has a + or − sign.
 
 ---
 
@@ -226,7 +226,7 @@ Widgets use the system widget background and `containerBackground`, and look rig
 
 - **Tests:** CardStockKit has unit tests for decoding real API responses (saved as fixtures), choosing prices, history maths (ranges, changes, daily de-duplication, downsampling) and store round trips. These run on every push.
 - **CI:** GitHub Actions on macOS runs `swift test` for the package, generates the project with XcodeGen and builds the app and widget.
-- **Concurrency:** Swift 6 strict concurrency. Stores and providers are actors or `Sendable`.
+- **Concurrency:** complete strict concurrency checking. Stores and providers are actors or `Sendable`. Moving to the Swift 6 language mode is a Phase 2 item.
 - **Errors:** typed errors from providers. The UI shows a calm inline message ("Couldn't reach Scryfall. Showing prices from 3 hours ago.") rather than an alert.
 - **Privacy:** no analytics, no accounts. The only network requests go to the two price sources and their image servers.
 - **Distribution:** Developer ID signing and notarization for direct download. The Mac App Store is possible later, since everything is sandboxed already.
@@ -241,15 +241,16 @@ Widgets use the system widget background and `containerBackground`, and look rig
 - [x] CardStockKit: models, Scryfall and TCGdex providers, store, history, formatting, tests
 - [x] App: watchlist, detail with chart, add card, refresh, settings
 - [x] Widgets: small, medium, large
+- [x] Undo for removing cards, reordering by drag and drop
 - [x] CI that builds and tests everything
 
 ### Phase 2: polish (v1.0)
 
-- [ ] App icon, designed properly (not generated)
-- [ ] Interactive widget: refresh button, choose a card in the small widget
+- [ ] App icon, designed properly (the current one is a drawn placeholder)
+- [ ] Audio graphs for charts
+- [ ] Swift 6 language mode
+- [ ] Interactive widget: a refresh button
 - [ ] Clicking the card image enlarges it
-- [ ] Undo for removing cards
-- [ ] Reordering the watchlist by drag and drop
 - [ ] Import and export the watchlist (CSV and JSON)
 - [ ] Notarized download from GitHub Releases
 

@@ -50,6 +50,10 @@ open build/PriceTag.app
 
 You can also open `Package.swift` in Xcode and press Run, or use `swift run`.
 
+## Also in this repo
+
+**[CardStock](CardStock/)** is a separate Mac app and widget that tracks Magic and Pokémon card prices the way Stocks tracks shares. It's an early work in progress; see its [README](CardStock/README.md) and [plan](CardStock/docs/PLAN.md).
+
 ## Project layout
 
 | Path | What's there |
