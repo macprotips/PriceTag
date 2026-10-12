@@ -24,14 +24,13 @@ final class BottleTests: XCTestCase {
     func testFindsBottlesWithDriveC() throws {
         let mac = try FakeMac()
         try mac.bottle("Steam")
-        try mac.bottle("Games", kind: .whisky, steam: false)
+        try mac.bottle("Games", steam: false)
         try mac.fm.createDirectory(at: mac.home.appendingPathComponent("Library/Application Support/CrossOver/Bottles/empty"),
                                    withIntermediateDirectories: true)
         let bottles = Bottles.all(in: mac.env)
-        XCTAssertEqual(bottles.map(\.name), ["Steam", "Games"])
-        XCTAssertEqual(bottles.map(\.kind), [.crossOver, .whisky])
-        XCTAssertTrue(bottles[0].hasSteam)
-        XCTAssertFalse(bottles[1].hasSteam)
+        XCTAssertEqual(bottles.map(\.name), ["Games", "Steam"])
+        XCTAssertFalse(bottles[0].hasSteam)
+        XCTAssertTrue(bottles[1].hasSteam)
     }
 
     func testDriveLettersMapToMacFolders() throws {
@@ -144,33 +143,6 @@ final class DllOverrideTests: XCTestCase {
         XCTAssertEqual(fixed.components(separatedBy: "\"d3d12\"").count, 2)
     }
 
-    /// While Wine runs, the change goes through the bottle's own `wine reg`.
-    func testUsesCrossOverWineWhileWineRuns() throws {
-        let mac = try FakeMac()
-        let path = try mac.bottle("Steam", userReg: reg)
-        let wine = try mac.crossOverApp()
-        mac.runner.processes = ["/Applications/CrossOver.app/Contents/SharedSupport/CrossOver/bin/wineserver"]
-        let bottle = Bottles.all(in: mac.env)[0]
-        XCTAssertEqual(DllOverride.ensure(in: bottle, env: mac.env), .setWithWine)
-        XCTAssertEqual(mac.runner.calls.last?.0, wine.path)
-        XCTAssertEqual(mac.runner.wineCalls.last, ["--bottle", "Steam", "reg", "add",
-                                                   #"HKCU\Software\Wine\AppDefaults\Spider-Man2.exe\DllOverrides"#,
-                                                   "/v", "d3d12", "/t", "REG_SZ", "/d", "native,builtin", "/f"])
-        XCTAssertEqual(try String(contentsOf: path.appendingPathComponent("user.reg"), encoding: .utf8), reg)
-    }
-
-    /// With CrossOver installed but not running, no Wine process is started at all.
-    func testStartsNoWineWhenWineIsNotRunning() throws {
-        let mac = try FakeMac()
-        let path = try mac.bottle("Steam", userReg: reg)
-        _ = try mac.crossOverApp()
-        let bottle = Bottles.all(in: mac.env)[0]
-        XCTAssertEqual(DllOverride.ensure(in: bottle, env: mac.env), .setInFile)
-        XCTAssertEqual(DllOverride.remove(from: bottle, env: mac.env), .removed)
-        XCTAssertEqual(mac.runner.wineCalls, [])
-        XCTAssertFalse(DllOverride.isSet(inUserReg: try String(contentsOf: path.appendingPathComponent("user.reg"), encoding: .utf8)))
-    }
-
     func testEditsUserRegWithoutWine() throws {
         let mac = try FakeMac()
         let path = try mac.bottle("Steam", userReg: reg)
@@ -193,15 +165,14 @@ final class DllOverrideTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: path.appendingPathComponent("user.reg"), encoding: .utf8), reg)
     }
 
-    /// Wine running but its `reg` failing: never edit the file under a running Wine.
-    func testAsksToQuitWineWhenWineRegFails() throws {
+    /// The app never starts Wine: the only program it runs here is ps.
+    func testNeverRunsWine() throws {
         let mac = try FakeMac()
-        let path = try mac.bottle("Steam", userReg: reg)
-        _ = try mac.crossOverApp()
-        mac.runner.processes = ["/Applications/CrossOver.app/Contents/SharedSupport/CrossOver/bin/wineserver"]
-        mac.runner.wineStatus = 1
-        XCTAssertEqual(DllOverride.ensure(in: Bottles.all(in: mac.env)[0], env: mac.env), .wineRunning)
-        XCTAssertEqual(try String(contentsOf: path.appendingPathComponent("user.reg"), encoding: .utf8), reg)
+        try mac.bottle("Steam", userReg: reg)
+        let bottle = Bottles.all(in: mac.env)[0]
+        XCTAssertEqual(DllOverride.ensure(in: bottle, env: mac.env), .setInFile)
+        XCTAssertEqual(DllOverride.remove(from: bottle, env: mac.env), .removed)
+        XCTAssertEqual(mac.runner.wineCalls, [])
     }
 }
 
@@ -230,10 +201,8 @@ final class InstallerTests: XCTestCase {
             XCTAssertFalse(mac.fm.fileExists(atPath: game.appendingPathComponent(name).path), name)
         }
         let ini = try String(contentsOf: game.appendingPathComponent("sm2fix.ini"), encoding: .utf8)
-        XCTAssertEqual(Installer.iniValue("mode", in: ini), "off")
-        XCTAssertEqual(Installer.iniValue("pool_fix", in: ini), "1")
-        XCTAssertEqual(Installer.iniValue("capture", in: ini), "0")
-        XCTAssertEqual(Installer.iniValue("replace_skinning", in: ini), "0")
+        XCTAssertEqual(Installer.iniValue("game_build", in: ini), FakeMac.gameBuild)
+        XCTAssertEqual(Installer.iniValue("shaders", in: ini), installer.shaders.map { hex($0.sourceHash) }.joined(separator: " "))
         XCTAssertTrue(DllOverride.isSet(inUserReg: try String(contentsOf: path.appendingPathComponent("user.reg"), encoding: .utf8)))
 
         // a changed shader -> update available; installing again fixes it
@@ -272,6 +241,58 @@ final class InstallerTests: XCTestCase {
         try mac.fm.copyItem(at: installer.payload.dll, to: game.appendingPathComponent("d3d12.dll"))
         try "mode = all\npool_fix = 0\n".write(to: game.appendingPathComponent("sm2fix.ini"), atomically: true, encoding: .utf8)
         XCTAssertEqual(installer.status(of: game), .testBuildInstalled)
+    }
+
+    /// A game update (new exe build) pauses the fix until Update Fix.
+    func testNoticesAGameUpdate() throws {
+        let mac = try FakeMac()
+        let game = try mac.game(in: mac.volumes.appendingPathComponent("Ext"))
+        let installer = try mac.installer()
+        let install = GameInstall(folder: game, bottle: nil, candidates: [])
+        _ = try installer.install(install)
+        XCTAssertEqual(installer.status(of: game), .installed)
+        let exe = game.appendingPathComponent("Spider-Man2.exe")
+        var data = try Data(contentsOf: exe)
+        data.replaceSubrange(0..<0x200, with: GameBuild.minimalExe(timestamp: FakeMac.gameTimestamp + 1, imageSize: 0x0c8d_1000))
+        try data.write(to: exe)
+        XCTAssertEqual(installer.status(of: game), .gameUpdated)
+        _ = try installer.install(install)
+        XCTAssertEqual(installer.status(of: game), .installed)
+    }
+
+    func testReadsTheGameBuild() throws {
+        let mac = try FakeMac()
+        let game = try mac.game(in: mac.volumes.appendingPathComponent("Ext"))
+        XCTAssertEqual(GameBuild.of(exe: game.appendingPathComponent("Spider-Man2.exe")), FakeMac.gameBuild)
+        XCTAssertNil(GameBuild.of(exe: game.appendingPathComponent("dstorage.dll")))
+    }
+
+    func testAnEarlierFixVersionNeedsAnUpdate() throws {
+        let mac = try FakeMac()
+        let game = try mac.game(in: mac.volumes.appendingPathComponent("Ext"))
+        let installer = try mac.installer()
+        try mac.fm.copyItem(at: installer.payload.dll, to: game.appendingPathComponent("d3d12.dll"))
+        try "mode = off\npool_fix = 1\n".write(to: game.appendingPathComponent("sm2fix.ini"), atomically: true, encoding: .utf8)
+        XCTAssertEqual(installer.status(of: game), .updateAvailable)
+    }
+
+    /// With CrossOver running, the bottle setting can't be changed: nothing is touched.
+    func testAsksToQuitCrossOverAndChangesNothing() throws {
+        let mac = try FakeMac()
+        let path = try mac.bottle("Steam")
+        let game = try mac.game(in: path.appendingPathComponent("drive_c/Program Files (x86)/Steam"))
+        let installer = try mac.installer()
+        mac.runner.processes = ["/Applications/CrossOver.app/Contents/SharedSupport/CrossOver/lib/wine/wineserver"]
+        let install = GameFinder.install(at: game, env: mac.env)
+        XCTAssertThrowsError(try installer.install(install)) { XCTAssertEqual($0 as? InstallError, .quitCrossOver) }
+        XCTAssertEqual(try mac.fm.contentsOfDirectory(atPath: game.path).sorted(), ["Spider-Man2.exe", "dstorage.dll"])
+        // once the setting is there, CrossOver may stay open for reinstalls
+        mac.runner.processes = []
+        _ = try installer.install(install)
+        mac.runner.processes = ["/Applications/CrossOver.app/Contents/SharedSupport/CrossOver/lib/wine/wineserver"]
+        XCTAssertEqual(try installer.install(install).override, .alreadySet)
+        XCTAssertThrowsError(try installer.uninstall(install)) { XCTAssertEqual($0 as? InstallError, .quitCrossOver) }
+        XCTAssertEqual(installer.status(of: game), .installed)
     }
 
     func testRefusesWhileTheGameRuns() throws {

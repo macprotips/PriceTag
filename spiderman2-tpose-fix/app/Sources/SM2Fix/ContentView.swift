@@ -190,7 +190,7 @@ struct GameCard: View {
     private var bottleRow: some View {
         CardRow(label: "Bottle") {
             if model.bottles.isEmpty {
-                Text("No CrossOver or Whisky bottles found")
+                Text("No CrossOver bottles found")
                     .foregroundStyle(.secondary)
             } else {
                 VStack(alignment: .leading, spacing: 4) {
@@ -270,6 +270,7 @@ struct StatusView: View {
         switch status {
         case .installed?: return "Fix installed"
         case .updateAvailable?: return "Update available"
+        case .gameUpdated?: return "The game was updated"
         case .testBuildInstalled?: return "Troubleshooting test installed"
         case .notInstalled?: return "Not installed"
         case nil: return "Checking…"
@@ -280,6 +281,7 @@ struct StatusView: View {
         switch status {
         case .installed?: return "Start the game as usual."
         case .updateAvailable?: return "This app has a newer version of the fix."
+        case .gameUpdated?: return "The fix is paused until it's updated for this version of the game."
         case .testBuildInstalled?: return "Apply Fix replaces it with the finished fix."
         default: return nil
         }
@@ -288,7 +290,7 @@ struct StatusView: View {
     private var color: Color {
         switch status {
         case .installed?: return .green
-        case .updateAvailable?, .testBuildInstalled?: return .orange
+        case .updateAvailable?, .gameUpdated?, .testBuildInstalled?: return .orange
         default: return Color(nsColor: .tertiaryLabelColor)
         }
     }
@@ -495,7 +497,7 @@ struct FooterBar: View {
     private var applyTitle: String {
         switch model.status {
         case .installed?: return "Reinstall"
-        case .updateAvailable?: return "Update Fix"
+        case .updateAvailable?, .gameUpdated?: return "Update Fix"
         default: return "Apply Fix"
         }
     }

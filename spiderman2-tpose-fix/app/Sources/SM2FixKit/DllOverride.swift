@@ -1,12 +1,11 @@
 import Foundation
 
 /// The per-game Wine setting `d3d12 = native,builtin` for Spider-Man2.exe, which makes Wine
-/// load the fix's d3d12.dll from the game folder. Stored in the bottle's user.reg.
+/// load the fix's d3d12.dll from the game folder. Stored in the bottle's user.reg, which
+/// the app edits directly (it never runs Wine).
 public enum DllOverride {
     /// The key as written in user.reg (backslashes doubled).
     static let fileKey = #"Software\\Wine\\AppDefaults\\Spider-Man2.exe\\DllOverrides"#
-    /// The key as `wine reg` takes it.
-    static let regKey = #"HKCU\Software\Wine\AppDefaults\Spider-Man2.exe\DllOverrides"#
     static let valueLine = #""d3d12"="native,builtin""#
 
     /// The line range of the key's section in user.reg (header line first), if present.
@@ -63,42 +62,21 @@ public enum DllOverride {
 
     public enum Outcome: Equatable {
         case alreadySet
-        case setWithWine
         case setInFile
         case removed
         case notNeeded
-        /// The bottle's Wine is running and Wine's own tool isn't available: quit CrossOver/Whisky first.
+        /// Wine is running, and it would overwrite the change when it exits: quit CrossOver first.
         case wineRunning
         case failed(String)
     }
 
-    /// The bottle's command-line Wine and the extra arguments/environment to address the bottle.
-    struct WineTool {
-        var executable: URL
-        var arguments: [String]
-        var environment: [String: String]
-    }
-
-    static func wineTool(for bottle: Bottle, env: SystemEnvironment) -> WineTool? {
-        switch bottle.kind {
-        case .crossOver:
-            guard let wine = env.crossOverWine() else { return nil }
-            return WineTool(executable: wine, arguments: ["--bottle", bottle.name], environment: [:])
-        case .whisky:
-            guard let wine = env.whiskyWine() else { return nil }
-            return WineTool(executable: wine, arguments: [], environment: ["WINEPREFIX": bottle.path.path])
-        }
-    }
-
-    /// Makes sure the override is set in `bottle`. When Wine isn't running, user.reg is
-    /// edited directly: instant, and it starts no Wine processes. When Wine is running it
-    /// keeps the registry in memory (and would overwrite the file on exit), so the
-    /// bottle's own `wine reg` is used, which is quick because Wine is already up.
+    /// Makes sure the override is set in `bottle`, by editing its user.reg. The app never
+    /// starts Wine: while Wine runs it keeps the registry in memory and would overwrite
+    /// the file when it exits, so then the user is asked to quit CrossOver first.
     public static func ensure(in bottle: Bottle, env: SystemEnvironment) -> Outcome {
         let current = (try? String(contentsOf: bottle.userReg, encoding: .utf8)) ?? ""
         if isSet(inUserReg: current) { return .alreadySet }
-        return change(bottle, env: env, wineArguments: ["add", regKey, "/v", "d3d12", "/t", "REG_SZ", "/d", "native,builtin", "/f"],
-                      done: .setWithWine, inFile: .setInFile) { adding(toUserReg: $0) }
+        return editFile(of: bottle, env: env) { adding(toUserReg: $0) } ?? .setInFile
     }
 
     /// Removes the override from `bottle` (used when the fix is removed).
@@ -106,19 +84,7 @@ public enum DllOverride {
         let current = (try? String(contentsOf: bottle.userReg, encoding: .utf8)) ?? ""
         guard let range = section(in: current.components(separatedBy: "\n")),
               current.components(separatedBy: "\n")[range].contains(where: isD3D12Line) else { return .notNeeded }
-        return change(bottle, env: env, wineArguments: ["delete", regKey, "/v", "d3d12", "/f"],
-                      done: .removed, inFile: .removed) { removing(fromUserReg: $0) }
-    }
-
-    private static func change(_ bottle: Bottle, env: SystemEnvironment, wineArguments: [String],
-                               done: Outcome, inFile: Outcome, edit: (String) -> String) -> Outcome {
-        guard env.wineIsRunning() else {
-            return editFile(of: bottle, env: env, edit) ?? inFile
-        }
-        guard let tool = wineTool(for: bottle, env: env) else { return .wineRunning }
-        let result = env.runner.run(tool.executable, tool.arguments + ["reg"] + wineArguments,
-                                    environment: tool.environment.merging(["WINEDEBUG": "-all"]) { a, _ in a }, timeout: 30)
-        return result.status == 0 ? done : .wineRunning
+        return editFile(of: bottle, env: env) { removing(fromUserReg: $0) } ?? .removed
     }
 
     /// Edits user.reg in place (keeping a backup); nil on success.

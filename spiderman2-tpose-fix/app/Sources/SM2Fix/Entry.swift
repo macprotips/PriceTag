@@ -80,7 +80,7 @@ enum SelfTest {
                 return 1
             }
             let container = try Data(contentsOf: dxil)
-            var exe = Data("MZ".utf8) + Data(repeating: 0x90, count: 4093)
+            var exe = GameBuild.minimalExe(timestamp: 0x6543_2100, imageSize: 0x0c8d_1000) + Data(repeating: 0x90, count: 4000)
             exe += container + Data(repeating: 0xcc, count: 1000)
             try exe.write(to: game.appendingPathComponent(GameFinder.exeName))
             let shader = PoolShader(sourceHash: shaderHash(container), space: 0, register: 1, resultHash: nil)

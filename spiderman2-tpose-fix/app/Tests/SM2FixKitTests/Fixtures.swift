@@ -23,8 +23,8 @@ final class FakeRunner: CommandRunner {
 final class FakeMac {
     let root: URL
     let home: URL
+    /// Stands in for /Volumes (external drives).
     let volumes: URL
-    let apps: URL
     let runner = FakeRunner()
     let fm = FileManager.default
 
@@ -32,8 +32,7 @@ final class FakeMac {
         root = fm.temporaryDirectory.appendingPathComponent("sm2fix-tests-\(UUID().uuidString)")
         home = root.appendingPathComponent("home")
         volumes = root.appendingPathComponent("Volumes")
-        apps = root.appendingPathComponent("Applications")
-        for dir in [home, volumes, apps] {
+        for dir in [home, volumes] {
             try fm.createDirectory(at: dir, withIntermediateDirectories: true)
         }
     }
@@ -43,13 +42,12 @@ final class FakeMac {
     }
 
     var env: SystemEnvironment {
-        SystemEnvironment(home: home, volumes: volumes, applicationFolders: [apps], runner: runner)
+        SystemEnvironment(home: home, runner: runner)
     }
 
     @discardableResult
-    func bottle(_ name: String, kind: Bottle.Kind = .crossOver, steam: Bool = true, userReg: String = "WINE REGISTRY Version 2\n") throws -> URL {
-        let base = kind == .crossOver ? "Library/Application Support/CrossOver/Bottles"
-                                      : "Library/Containers/com.isaacmarovitz.Whisky/Bottles"
+    func bottle(_ name: String, steam: Bool = true, userReg: String = "WINE REGISTRY Version 2\n") throws -> URL {
+        let base = "Library/Application Support/CrossOver/Bottles"
         let bottle = home.appendingPathComponent(base).appendingPathComponent(name)
         try fm.createDirectory(at: bottle.appendingPathComponent("drive_c/windows/system32"), withIntermediateDirectories: true)
         try fm.createDirectory(at: bottle.appendingPathComponent("dosdevices"), withIntermediateDirectories: true)
@@ -85,7 +83,7 @@ final class FakeMac {
     func game(in folder: URL, withShaders: Bool = true) throws -> URL {
         let game = folder.appendingPathComponent("steamapps/common/Marvel's Spider-Man 2")
         try fm.createDirectory(at: game, withIntermediateDirectories: true)
-        var exe = Data("MZ fake game".utf8) + Data(repeating: 0x90, count: 4000)
+        var exe = GameBuild.minimalExe(timestamp: FakeMac.gameTimestamp, imageSize: 0x0c8d_1000) + Data(repeating: 0x90, count: 4000)
         if withShaders, let standIns = try StandIns.shared() {
             for container in standIns.containers { exe += container + Data(repeating: 0xcc, count: 777) }
         }
@@ -94,14 +92,8 @@ final class FakeMac {
         return game
     }
 
-    func crossOverApp() throws -> URL {
-        let bin = apps.appendingPathComponent("CrossOver.app/Contents/SharedSupport/CrossOver/bin")
-        try fm.createDirectory(at: bin, withIntermediateDirectories: true)
-        let wine = bin.appendingPathComponent("wine")
-        try "#!/bin/sh\nexit 0\n".write(to: wine, atomically: true, encoding: .utf8)
-        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: wine.path)
-        return wine
-    }
+    static let gameTimestamp: UInt32 = 0x6543_2100
+    static let gameBuild = "65432100-0c8d1000"
 
     /// An installer for the stand-in shaders, with the real d3d12.dll and settings.
     func installer() throws -> Installer {
@@ -109,15 +101,14 @@ final class FakeMac {
         return Installer(payload: try payload(), env: env, shaders: standIns.shaders)
     }
 
-    /// The real d3d12.dll and settings from the repository, copied into a temp folder.
+    /// The fix's real d3d12.dll from the repository, copied into a temp folder.
     func payload() throws -> Payload {
         guard let tools = StandIns.tools else { throw XCTSkip("set SM2FIX_DXC to the folder with dxc, dxa and dxv") }
         let repo = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         let dir = root.appendingPathComponent("payload")
         try fm.createDirectory(at: dir, withIntermediateDirectories: true)
-        try fm.copyItem(at: repo.appendingPathComponent("prebuilt/d3d12.dll"), to: dir.appendingPathComponent("d3d12.dll"))
-        try fm.copyItem(at: repo.appendingPathComponent("shim/sm2fix.ini"), to: dir.appendingPathComponent("sm2fix.ini"))
+        try fm.copyItem(at: repo.appendingPathComponent("prebuilt/fix/d3d12.dll"), to: dir.appendingPathComponent("d3d12.dll"))
         return try Payload(directory: dir, tools: tools)
     }
 }

@@ -43,7 +43,6 @@
 			<array>
 				<string>public.folder</string>
 				<string>com.microsoft.windows-executable</string>
-				<string>public.data</string>
 			</array>
 		</dict>
 	</array>

@@ -24,7 +24,7 @@ enum Snapshots {
         ("3-applied", { m in
             m.select(game(bottle: bottles[0], reason: .steamLibrary))
             m.status = .installed
-            m.banner = AppModel.banner(for: .success(InstallReport(override: .setWithWine)), removing: false, bottle: bottles[0])
+            m.banner = AppModel.banner(for: .success(InstallReport(override: .setInFile)), removing: false, bottle: bottles[0])
         }),
         ("4-choose-bottle", { m in
             m.select(game(bottle: nil, reason: nil))
@@ -33,7 +33,7 @@ enum Snapshots {
         ("5-one-more-step", { m in
             m.select(game(bottle: bottles[0], reason: .chosen))
             m.status = .installed
-            m.banner = AppModel.banner(for: .success(InstallReport(override: .wineRunning)), removing: false, bottle: bottles[0])
+            m.banner = AppModel.banner(for: .failure(InstallError.quitCrossOver), removing: false, bottle: bottles[0])
         }),
         ("6-error", { m in
             m.banner = Banner(kind: .error, title: "That isn't the Spider-Man 2 folder.",

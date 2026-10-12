@@ -75,8 +75,8 @@ public enum GameFinder {
         return GameInstall(folder: folder, bottle: found.bottle, reason: found.reason, candidates: bottles)
     }
 
-    /// Every copy of the game on this Mac: inside bottles, in the Steam libraries they
-    /// know about, and on external drives.
+    /// Every copy of the game this Mac's CrossOver bottles know about: inside a bottle's
+    /// Steam, or in a Steam library (on any drive) that a bottle's Steam lists.
     public static func findAll(env: SystemEnvironment) -> [GameInstall] {
         let bottles = Bottles.all(in: env)
         var folders: [URL] = []
@@ -91,16 +91,6 @@ public enum GameFinder {
             }
             for library in bottle.steamLibraries() {
                 add(library.appendingPathComponent(commonSubpath))
-            }
-        }
-        let fm = FileManager.default
-        let drives = (try? fm.contentsOfDirectory(at: env.volumes, includingPropertiesForKeys: nil)) ?? []
-        for drive in drives {
-            add(drive.appendingPathComponent(commonSubpath))
-            let level1 = (try? fm.contentsOfDirectory(at: drive, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])) ?? []
-            for dir in level1 {
-                add(dir.appendingPathComponent(commonSubpath))
-                add(dir.appendingPathComponent("Steam/" + commonSubpath))
             }
         }
         return folders.map { folder in

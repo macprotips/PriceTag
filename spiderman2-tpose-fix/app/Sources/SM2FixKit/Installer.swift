@@ -3,11 +3,10 @@ import Foundation
 import Darwin
 #endif
 
-/// What the app carries: the d3d12.dll shim, its settings template and Microsoft's shader
-/// tools. The rewritten shaders are built from the user's own game, so none ship with it.
+/// What the app carries: the fix's d3d12.dll and Microsoft's shader tools. The rewritten
+/// shaders are built from the user's own game, so none ship with it.
 public struct Payload {
     public let dll: URL
-    public let ini: URL
     /// Folder with dxc, dxa and dxv.
     public let tools: URL
 
@@ -20,19 +19,50 @@ public struct Payload {
         }
     }
 
-    /// Loads the payload from a folder holding d3d12.dll and sm2fix.ini, with the shader
-    /// tools in `tools`.
+    /// Loads the payload from a folder holding d3d12.dll, with the shader tools in `tools`.
     public init(directory: URL, tools: URL) throws {
-        let fm = FileManager.default
         let dllFile = directory.appendingPathComponent("d3d12.dll")
-        let iniFile = directory.appendingPathComponent("sm2fix.ini")
-        for file in [dllFile, iniFile] where !fm.fileExists(atPath: file.path) {
-            throw LoadError.missing(file.lastPathComponent)
-        }
+        guard FileManager.default.fileExists(atPath: dllFile.path) else { throw LoadError.missing("d3d12.dll") }
         guard ShaderBuilder(tools: tools).toolsPresent else { throw LoadError.missing("shader tools") }
         dll = dllFile
-        ini = iniFile
         self.tools = tools
+    }
+}
+
+/// Which build of the game an exe is: its PE timestamp and image size. The fix's
+/// d3d12.dll reads the same two fields from the running game and only acts when they
+/// match what the app wrote to sm2fix.ini.
+public enum GameBuild {
+    public static func of(exe: URL) -> String? {
+        guard let handle = try? FileHandle(forReadingFrom: exe) else { return nil }
+        defer { try? handle.close() }
+        guard let head = try? handle.read(upToCount: 4096), head.count >= 64 else { return nil }
+        func u32(_ at: Int) -> UInt32? {
+            guard at >= 0, at + 4 <= head.count else { return nil }
+            return head[head.startIndex + at ..< head.startIndex + at + 4].reversed().reduce(0) { $0 << 8 | UInt32($1) }
+        }
+        guard head.prefix(2) == Data("MZ".utf8), let pe = u32(0x3c).map(Int.init),
+              u32(pe) == 0x0000_4550,                       // "PE\0\0"
+              let timestamp = u32(pe + 8), let imageSize = u32(pe + 24 + 56) else { return nil }
+        return hex8(timestamp) + "-" + hex8(imageSize)
+    }
+
+    static func hex8(_ v: UInt32) -> String {
+        let s = String(v, radix: 16)
+        return String(repeating: "0", count: 8 - s.count) + s
+    }
+
+    /// The smallest file `of(exe:)` reads (tests and the app's self-test).
+    public static func minimalExe(timestamp: UInt32, imageSize: UInt32) -> Data {
+        var d = Data(count: 0x200)
+        func put(_ v: UInt32, _ at: Int) { for i in 0..<4 { d[at + i] = UInt8(truncatingIfNeeded: v >> (8 * UInt32(i))) } }
+        d[0] = 0x4d; d[1] = 0x5a                            // "MZ"
+        put(0x80, 0x3c)
+        put(0x0000_4550, 0x80)                              // "PE\0\0"
+        put(timestamp, 0x80 + 8)
+        put(0x20b, 0x80 + 24)                               // PE32+
+        put(imageSize, 0x80 + 24 + 56)
+        return d
     }
 }
 
@@ -40,15 +70,18 @@ public struct Payload {
 public enum FixStatus: Equatable {
     case notInstalled
     case installed
-    /// This fix, but an older build of it.
+    /// This fix, but an older version of it.
     case updateAvailable
-    /// One of the earlier sm2fix test builds (from the troubleshooting menu).
+    /// Set up for an earlier build of the game; the fix does nothing until updated.
+    case gameUpdated
+    /// One of the earlier troubleshooting test builds.
     case testBuildInstalled
 }
 
 public enum InstallError: Error, LocalizedError, Equatable {
     case notAGameFolder
     case gameRunning
+    case quitCrossOver
     case readOnly(String)
     case copyFailed(String)
     case shaders(ShaderBuildError)
@@ -58,7 +91,9 @@ public enum InstallError: Error, LocalizedError, Equatable {
         case .notAGameFolder:
             return "That folder doesn't contain Spider-Man2.exe."
         case .gameRunning:
-            return "Spider-Man 2 is still running. Quit it (or quit CrossOver completely), then try again."
+            return "Spider-Man 2 is still running. Quit it, then try again."
+        case .quitCrossOver:
+            return "Quit CrossOver first (CrossOver › Quit CrossOver), then try again. The fix changes one Wine setting in the bottle, which can't be done while Wine is running. Nothing was changed. If this keeps appearing after quitting CrossOver, restart your Mac."
         case .readOnly(let path):
             return "Can't write to \(path). If the game is on an external drive formatted as NTFS, macOS can only read it."
         case .copyFailed(let reason):
@@ -101,7 +136,7 @@ public struct Installer {
     }
 
     static func iniValue(_ key: String, in text: String) -> String? {
-        for line in text.components(separatedBy: .newlines) {
+        for line in text.components(separatedBy: .newlines) where !line.hasPrefix("#") {
             let parts = line.split(separator: "=", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
             if parts.count == 2, parts[0] == key { return parts[1] }
         }
@@ -112,28 +147,38 @@ public struct Installer {
         let dll = folder.appendingPathComponent("d3d12.dll")
         guard Self.isShim(dll) else { return .notInstalled }
         let ini = (try? String(contentsOf: folder.appendingPathComponent("sm2fix.ini"), encoding: .utf8)) ?? ""
-        guard Self.iniValue("pool_fix", in: ini) == "1" else { return .testBuildInstalled }
+        guard let build = Self.iniValue("game_build", in: ini) else {
+            // an earlier version of the fix (pool_fix = 1), or a troubleshooting test
+            return Self.iniValue("pool_fix", in: ini) == "1" ? .updateAvailable : .testBuildInstalled
+        }
+        if build != GameBuild.of(exe: folder.appendingPathComponent(GameFinder.exeName)) { return .gameUpdated }
         let fm = FileManager.default
         let sameDll = fm.contentsEqual(atPath: dll.path, andPath: payload.dll.path)
         let sameShaders = shaders.allSatisfy { shader in
             guard let data = try? Data(contentsOf: folder.appendingPathComponent(shader.fileName)) else { return false }
             return shader.resultHash.map { shaderHash(data) == $0 } ?? true
         }
-        let cleanSettings = Self.iniValue("mode", in: ini) == "off"
-        return sameDll && sameShaders && cleanSettings ? .installed : .updateAvailable
+        let sameList = Self.iniValue("shaders", in: ini) == shaders.map { hex($0.sourceHash) }.joined(separator: " ")
+        return sameDll && sameShaders && sameList ? .installed : .updateAvailable
     }
 
-    /// The settings file: the shipped template with only the fix switched on.
-    func settings() throws -> String {
-        let template = try String(contentsOf: payload.ini, encoding: .utf8)
-        var lines = template.components(separatedBy: "\n")
-        for (i, line) in lines.enumerated() {
-            if line.hasPrefix("mode =") || line.hasPrefix("mode=") { lines[i] = "mode = off" }
-            if line.hasPrefix("pool_fix =") || line.hasPrefix("pool_fix=") { lines[i] = "pool_fix = 1" }
-        }
-        var text = lines.joined(separator: "\n")
-        if Self.iniValue("pool_fix", in: text) != "1" { text += "\npool_fix = 1\n" }
-        return text
+    /// sm2fix.ini: which game build the fix was set up for, and its shaders.
+    func settings(gameBuild: String) -> String {
+        """
+        # Spider-Man 2 T-Pose Fix, written by the app. The fix only acts on this game build.
+        game_build = \(gameBuild)
+        shaders = \(shaders.map { hex($0.sourceHash) }.joined(separator: " "))
+
+        """
+    }
+
+    func readUserReg(_ bottle: Bottle) -> String {
+        (try? String(contentsOf: bottle.userReg, encoding: .utf8)) ?? ""
+    }
+
+    /// A d3d12.dll the fix put aside when it was installed (it goes back on removal).
+    func hasOtherD3D12(_ folder: URL) -> Bool {
+        FileManager.default.fileExists(atPath: folder.appendingPathComponent("d3d12.dll" + Self.backupSuffix).path)
     }
 
     func checkWritable(_ folder: URL) throws {
@@ -165,6 +210,12 @@ public struct Installer {
         try checkWritable(folder)
         let fm = FileManager.default
         var report = InstallReport()
+        if let bottle = game.bottle, !DllOverride.isSet(inUserReg: readUserReg(bottle)), env.wineIsRunning() {
+            throw InstallError.quitCrossOver
+        }
+        guard let gameBuild = GameBuild.of(exe: folder.appendingPathComponent(GameFinder.exeName)) else {
+            throw InstallError.shaders(.cantReadGame("it isn't a Windows program"))
+        }
         let built: [String: Data]
         do {
             built = try ShaderBuilder(tools: payload.tools)
@@ -196,7 +247,7 @@ public struct Installer {
             for (name, data) in built.sorted(by: { $0.key < $1.key }) {
                 try data.write(to: folder.appendingPathComponent(name), options: .atomic)
             }
-            try settings().write(to: folder.appendingPathComponent("sm2fix.ini"), atomically: true, encoding: .utf8)
+            try settings(gameBuild: gameBuild).write(to: folder.appendingPathComponent("sm2fix.ini"), atomically: true, encoding: .utf8)
         } catch {
             throw InstallError.copyFailed(error.localizedDescription)
         }
@@ -221,6 +272,10 @@ public struct Installer {
     public func uninstall(_ game: GameInstall) throws -> InstallReport {
         let folder = game.folder
         try checkWritable(folder)
+        if let bottle = game.bottle, !hasOtherD3D12(folder), DllOverride.isSet(inUserReg: readUserReg(bottle)),
+           env.wineIsRunning() {
+            throw InstallError.quitCrossOver
+        }
         let fm = FileManager.default
         var report = InstallReport()
         let dll = folder.appendingPathComponent("d3d12.dll")

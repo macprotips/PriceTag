@@ -1,10 +1,9 @@
 import Foundation
 
-/// A Wine bottle (CrossOver) or prefix (Whisky) on this Mac.
+/// A CrossOver bottle on this Mac.
 public struct Bottle: Hashable, Identifiable {
     public enum Kind: String {
         case crossOver = "CrossOver"
-        case whisky = "Whisky"
     }
 
     public let kind: Kind
@@ -108,37 +107,16 @@ public enum BottleReason: String, Equatable {
 }
 
 public enum Bottles {
-    /// Every CrossOver and Whisky bottle in the user's home folder.
+    /// Every CrossOver bottle in the user's home folder.
     public static func all(in env: SystemEnvironment) -> [Bottle] {
-        let roots: [(Bottle.Kind, String)] = [
-            (.crossOver, "Library/Application Support/CrossOver/Bottles"),
-            (.whisky, "Library/Containers/com.isaacmarovitz.Whisky/Bottles"),
-        ]
+        let root = env.home.appendingPathComponent("Library/Application Support/CrossOver/Bottles")
         let fm = FileManager.default
-        var bottles: [Bottle] = []
-        for (kind, relative) in roots {
-            let root = env.home.appendingPathComponent(relative)
-            let entries = (try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
-            for entry in entries.sorted(by: { $0.lastPathComponent.lowercased() < $1.lastPathComponent.lowercased() }) {
-                var isDir: ObjCBool = false
-                if fm.fileExists(atPath: entry.appendingPathComponent("drive_c").path, isDirectory: &isDir), isDir.boolValue {
-                    bottles.append(Bottle(kind: kind, name: Self.displayName(of: entry, kind: kind), path: entry))
-                }
-            }
+        let entries = (try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
+        return entries.sorted { $0.lastPathComponent.lowercased() < $1.lastPathComponent.lowercased() }.compactMap { entry in
+            var isDir: ObjCBool = false
+            guard fm.fileExists(atPath: entry.appendingPathComponent("drive_c").path, isDirectory: &isDir), isDir.boolValue else { return nil }
+            return Bottle(kind: .crossOver, name: entry.lastPathComponent, path: entry)
         }
-        return bottles
-    }
-
-    /// CrossOver bottles are named by their folder; Whisky's folders are UUIDs with the
-    /// real name in Metadata.plist.
-    static func displayName(of bottle: URL, kind: Bottle.Kind) -> String {
-        if kind == .whisky,
-           let data = try? Data(contentsOf: bottle.appendingPathComponent("Metadata.plist")),
-           let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
-           let info = plist["info"] as? [String: Any], let name = info["name"] as? String, !name.isEmpty {
-            return name
-        }
-        return bottle.lastPathComponent
     }
 
     /// Which bottle runs the game in `gameFolder`, and why. Each test narrows the bottles

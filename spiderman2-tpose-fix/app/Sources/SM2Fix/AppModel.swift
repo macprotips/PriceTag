@@ -200,18 +200,17 @@ final class AppModel: ObservableObject {
                           detail: (["The game is back to how it was."] + notes).joined(separator: " "))
         }
         switch report.override {
-        case .wineRunning?:
-            notes.insert("Quit CrossOver completely (CrossOver › Quit CrossOver), then click Apply Fix again. "
-                         + "Wine needs to be told once to load the fix, and that can't happen while it's running.", at: 0)
-            return Banner(kind: .warning, title: "One more step", detail: notes.joined(separator: " "))
         case .failed(let reason)?:
-            notes.insert("Wine couldn't be set to load the fix (\(reason)). Do it once by hand: \(manual)", at: 0)
+            notes.insert("The fix is in the game folder, but Wine couldn't be set to load it (\(reason)). Do it once by hand: \(manual)", at: 0)
+            return Banner(kind: .warning, title: "One more step", detail: notes.joined(separator: " "))
+        case .wineRunning?:
+            notes.insert("Quit CrossOver, then click Apply Fix again.", at: 0)
             return Banner(kind: .warning, title: "One more step", detail: notes.joined(separator: " "))
         case nil:
-            notes.insert("No CrossOver or Whisky bottle was found, so Wine wasn't set to load it. If the fix doesn't take effect: \(manual)", at: 0)
+            notes.insert("No CrossOver bottle was found, so Wine wasn't set to load it. If the fix doesn't take effect: \(manual)", at: 0)
             return Banner(kind: .warning, title: "The fix was copied", detail: notes.joined(separator: " "))
         default:
-            notes.insert("Start Spider-Man 2 from \(bottle?.kind.rawValue ?? "CrossOver") as usual.", at: 0)
+            notes.insert("Start Spider-Man 2 from CrossOver as usual.", at: 0)
             return Banner(kind: .success, title: "The fix is applied.", detail: notes.joined(separator: " "))
         }
     }

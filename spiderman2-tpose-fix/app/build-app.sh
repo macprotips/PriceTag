@@ -5,7 +5,7 @@
 #   UNIVERSAL=1 ./build-app.sh    # Apple Silicon + Intel (needs full Xcode)
 #   VERSION=1.2 ./build-app.sh
 #
-# The fix files come from the rest of the repo (prebuilt/d3d12.dll, shim/sm2fix.ini) and
+# The fix's d3d12.dll comes from the rest of the repo (prebuilt/fix, built from shim/fix.c) and
 # Microsoft's shader tools from ./build-dxc.sh (in .dxc). No game data goes in the app:
 # it builds the fix's shaders from the user's own copy of the game.
 set -euo pipefail
@@ -32,8 +32,8 @@ cp Resources/Info.plist "$APP/Contents/Info.plist"
 plutil -replace CFBundleShortVersionString -string "$VERSION" "$APP/Contents/Info.plist"
 plutil -replace CFBundleVersion -string "$BUILD_NUMBER" "$APP/Contents/Info.plist"
 iconutil -c icns Resources/AppIcon.iconset -o "$APP/Contents/Resources/AppIcon.icns"
-cp "$FIX/prebuilt/d3d12.dll" "$FIX/shim/sm2fix.ini" "$APP/Contents/Resources/payload/"
-(cd "$FIX/prebuilt" && shasum -a 256 -c d3d12.dll.sha256)
+cp "$FIX/prebuilt/fix/d3d12.dll" "$APP/Contents/Resources/payload/"
+(cd "$FIX/prebuilt/fix" && shasum -a 256 -c d3d12.dll.sha256)
 cp "$FIX/LICENSE" "$APP/Contents/Resources/Licenses/LICENSE.txt"
 
 # Shader tools: executables in Helpers, libraries in Frameworks.

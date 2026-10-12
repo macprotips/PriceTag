@@ -56,23 +56,15 @@ public struct ProcessRunner: CommandRunner {
     }
 }
 
-/// Everything the fix touches outside the game folder: the home folder (bottles),
-/// mounted drives, installed apps and running processes. Tests point it at a temporary
-/// folder and a fake command runner.
+/// Everything the app looks at outside the game folder: the home folder (bottles) and
+/// running processes. Tests point it at a temporary folder and a fake command runner.
+/// The only program the app runs besides the shader tools is /bin/ps.
 public struct SystemEnvironment {
     public var home: URL
-    public var volumes: URL
-    public var applicationFolders: [URL]
     public var runner: CommandRunner
 
-    public init(home: URL = FileManager.default.homeDirectoryForCurrentUser,
-                volumes: URL = URL(fileURLWithPath: "/Volumes"),
-                applicationFolders: [URL]? = nil,
-                runner: CommandRunner = ProcessRunner()) {
+    public init(home: URL = FileManager.default.homeDirectoryForCurrentUser, runner: CommandRunner = ProcessRunner()) {
         self.home = home
-        self.volumes = volumes
-        self.applicationFolders = applicationFolders
-            ?? [URL(fileURLWithPath: "/Applications"), home.appendingPathComponent("Applications")]
         self.runner = runner
     }
 
@@ -83,41 +75,17 @@ public struct SystemEnvironment {
         return result.output.split(separator: "\n").map { String($0) }
     }
 
-    /// Whether Spider-Man 2 (or a leftover copy of it) is running.
+    /// Whether Spider-Man 2 is running.
     public func gameIsRunning() -> Bool {
         runningProcesses().contains { $0.contains(GameFinder.exeName) }
     }
 
-    /// Whether any Wine server is running (it would overwrite registry edits when it exits).
+    /// Whether any Wine is running (it would overwrite registry edits when it exits).
     public func wineIsRunning() -> Bool {
         runningProcesses().contains { line in
             let program = line.split(separator: " ").first.map(String.init) ?? line
             return program.hasSuffix("/wineserver") || program == "wineserver"
         }
-    }
-
-    /// CrossOver's command-line `wine`, if CrossOver is installed.
-    public func crossOverWine() -> URL? {
-        let fm = FileManager.default
-        var apps: [URL] = []
-        for folder in applicationFolders {
-            let regular = folder.appendingPathComponent("CrossOver.app")
-            if fm.fileExists(atPath: regular.path) { apps.append(regular) }
-            let others = (try? fm.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? []
-            apps += others.filter { $0.lastPathComponent.hasPrefix("CrossOver") && $0.pathExtension == "app" && $0 != regular }
-                .sorted { $0.lastPathComponent < $1.lastPathComponent }
-        }
-        for app in apps {
-            let wine = app.appendingPathComponent("Contents/SharedSupport/CrossOver/bin/wine")
-            if fm.isExecutableFile(atPath: wine.path) { return wine }
-        }
-        return nil
-    }
-
-    /// Whisky's `wine64`, if Whisky has installed its Wine.
-    public func whiskyWine() -> URL? {
-        let wine = home.appendingPathComponent("Library/Application Support/com.isaacmarovitz.Whisky/Libraries/Wine/bin/wine64")
-        return FileManager.default.isExecutableFile(atPath: wine.path) ? wine : nil
     }
 }
 

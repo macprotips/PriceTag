@@ -74,8 +74,9 @@ and pass `report.txt` as the argument.
 
 ## Workaround (verified on M3 Max)
 
-A `d3d12.dll` placed in the game folder sits between the game and D3DMetal. It passes
-every call through unchanged, except:
+A small `d3d12.dll` placed in the game folder (source: `shim/fix.c`, about 450 lines) sits
+between the game and D3DMetal. It hooks three device methods, starts no threads and never
+touches the game's code or data. It passes every call through unchanged, except:
 
 1. **Large typed views.** A typed 32-bit buffer SRV with more than 2^28 elements is
    created as a raw view instead (`R32_TYPELESS` + `D3D12_BUFFER_SRV_FLAG_RAW`).
@@ -98,7 +99,7 @@ override in the bottle:
 | `d3d12.dll` (the shim) | game folder |
 | `sm2fix-pool-3d50acdb571dce22.dxil`, built from the user's own `Spider-Man2.exe` | game folder |
 | `sm2fix-pool-14902794dd7134e4.dxil`, built the same way | game folder |
-| `sm2fix.ini` containing `mode = off` and `pool_fix = 1` | game folder |
+| `sm2fix.ini`: the game build the fix was set up for, and the shader list | game folder |
 | `d3d12` = `native,builtin` for `Spider-Man2.exe` only | `HKCU\Software\Wine\AppDefaults\Spider-Man2.exe\DllOverrides` |
 
 The shim loads the real D3DMetal from `C:\windows\system32\d3d12.dll`. No game files are
@@ -111,9 +112,10 @@ remove it again with the same app. Source,
 tests and the app are here:
 <https://github.com/macprotips/PriceTag/tree/claude/elegant-dijkstra-9yhhvx/spiderman2-tpose-fix>
 
-**Limits.** The fix applies only to this game: the shader replacements are matched by
-hash, so a game update that changes those shaders turns the fix off silently. M5 Macs
-don't need it, and on them it is harmless. The proper fix belongs in D3DMetal.
+**Limits.** The fix applies only to this game and only to the exact game build it was set
+up for (the DLL compares the running exe's PE timestamp and image size with `sm2fix.ini`).
+After a game update it changes nothing until the app has rebuilt the shaders from the new
+exe. M5 Macs don't need it, and on them it is harmless. The proper fix belongs in D3DMetal.
 
 **License.** The workaround is public domain (Unlicense). Use, change, bundle or ship it
 any way you like; no attribution is needed. It contains no game files.
