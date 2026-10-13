@@ -8,11 +8,13 @@
 
 ## What it does
 
-- **A watchlist of specific cards.** Each entry is one printing in one finish, like *Sheoldred, the Apocalypse · Dominaria United · Foil*.
+- **A watchlist of specific cards.** Each entry is one printing in one finish, like *Sheoldred, the Apocalypse · Dominaria United · Foil*. Search and filter it by game.
 - **Price, change and a chart.** Today's price, the change since yesterday, and a chart for 1W, 1M, 3M, 6M, 1Y or All. Hover over the chart to see the price on any day.
-- **Widgets.** A small widget for one card (pick one, or it shows your biggest mover) and medium and large widgets for your watchlist.
+- **Your collection's value.** Enter how many copies you own and what you paid, and see what they're worth and your gain or loss.
+- **Price alerts.** Get a notification when a card rises above or falls below a price you choose.
+- **Widgets.** One card (pick one, or it shows your biggest mover), your watchlist, or your collection's value.
 - **Dollars or euros.** USD prices come from TCGplayer and EUR prices from Cardmarket.
-- **Buy links** to TCGplayer and Cardmarket for every card.
+- **Export** your watchlist as a CSV spreadsheet, and buy links to TCGplayer and Cardmarket for every card.
 
 ## Where prices come from
 
@@ -29,8 +31,12 @@ CardStock only uses these public APIs, which allow this use. It doesn't scrape a
 | --- | --- |
 | ⌘N | Add Card |
 | ⌘R | Refresh Prices |
+| ⌘F | Search the watchlist |
+| ⌘C | Copy the selected card's name and price |
 | Delete | Remove the selected card (⌘Z to undo) |
 | ⌘1 – ⌘6 | Chart range 1W, 1M, 3M, 6M, 1Y, All |
+| ⇧⌘E | Export the watchlist as CSV |
+| ⌃⌘S | Show or hide the sidebar |
 | ↑ ↓ then Return | Choose a search result and add it |
 
 ## Install

@@ -24,10 +24,12 @@ Collectors and content creators who keep an eye on a few dozen cards. They want 
 
 | In | Out (for now) |
 | --- | --- |
-| Watchlist of specific printings, each with a finish (normal, foil, holo…) | Collection or portfolio valuation |
+| Watchlist of specific printings, each with a finish (normal, foil, holo…) | Full collection management (conditions, grading, binders) |
 | Search Magic and Pokémon cards and add them | Graded card (PSA, BGS) prices |
 | Price, day change and change since added | Sealed product |
-| Price chart for 1W, 1M, 3M, 6M, 1Y and All | Alerts and notifications (v1.1) |
+| Price chart for 1W, 1M, 3M, 6M, 1Y and All | |
+| Copies owned, price paid and collection value | |
+| Price alerts as notifications | |
 | Card image, set, number and rarity | iOS and iPad (the shared code is ready for it) |
 | Links to buy on TCGplayer and Cardmarket | Menu bar ticker (v1.1) |
 | Small, medium and large widgets | Accounts and sync |
@@ -175,7 +177,7 @@ The reference is Stocks on macOS, along with Mail, Notes and System Settings. Th
 └────────────────────────────┴─────────────────────────────────────────────┘
 ```
 
-- **Sidebar rows** follow Stocks: a thumbnail, name on top and set code plus finish underneath in secondary text, a sparkline, the price in monospaced digits, and a change pill. Clicking the pill switches every row between percent, amount and price, like Stocks.
+- **Sidebar rows** follow Stocks: a thumbnail, name on top and set code plus finish underneath in secondary text, a sparkline, the price in monospaced digits, and a change pill. Clicking the pill switches every row between percent and amount.
 - **Detail:** the title in large semibold, the price at 34 pt with monospaced digits, and the change in green or red. A segmented control picks the range. The chart is a single line with a very light fill under it, colored by whether the range is up or down. Hovering shows a vertical rule with the date and price, like Stocks.
 - **Card image:** the whole card, with corners matching a real card (about 4.7% of the width) and a soft shadow. Clicking to enlarge it comes in Phase 2.
 - **Stats:** a two-column grid of label and value, labels in secondary text. No boxes or cards around them.
@@ -235,33 +237,31 @@ Widgets use the system widget background and `containerBackground`, and look rig
 
 ## 6. Roadmap
 
-### Phase 1: foundation (this change)
+### Done
 
 - [x] Plan and design spec
 - [x] CardStockKit: models, Scryfall and TCGdex providers, store, history, formatting, tests
 - [x] App: watchlist, detail with chart, add card, refresh, settings
-- [x] Widgets: small, medium, large
+- [x] Widgets: card, watchlist and collection value
 - [x] Undo for removing cards, reordering by drag and drop
-- [x] CI that builds and tests everything
+- [x] Search and filter the watchlist by game
+- [x] Holdings: quantity and price paid, collection value and gain
+- [x] Price alerts as local notifications
+- [x] Copy and CSV export
+- [x] Safe storage: damaged or newer files are never overwritten
+- [x] Privacy manifests
 
-### Phase 2: polish (v1.0)
+### Before 1.0
 
 - [ ] App icon, designed properly (the current one is a drawn placeholder)
+- [ ] Developer ID signing and notarization, download from GitHub Releases
+- [ ] A week of real use on a Mac to check refresh timing, widgets and alerts
 - [ ] Audio graphs for charts
 - [ ] Swift 6 language mode
-- [ ] Interactive widget: a refresh button
-- [ ] Clicking the card image enlarges it
-- [ ] Import and export the watchlist (CSV and JSON)
-- [ ] Notarized download from GitHub Releases
-
-### Phase 3: v1.1
-
-- [ ] Price alerts ("tell me when this is above $100") as local notifications
-- [ ] Menu bar ticker
-- [ ] Quantity and price paid, for a simple gain/loss view
-- [ ] Optional history backfill with your own Scrydex or JustTCG key
 
 ### Later
 
+- [ ] Menu bar ticker
+- [ ] Optional history backfill with your own Scrydex or JustTCG key
 - [ ] iPhone and iPad app with the same CardStockKit, synced through iCloud
 - [ ] More games (Lorcana, One Piece, Yu-Gi-Oh!) as sources allow
