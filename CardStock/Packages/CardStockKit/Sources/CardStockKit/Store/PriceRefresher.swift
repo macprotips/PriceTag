@@ -7,6 +7,9 @@ public struct PriceRefresher: Sendable {
         public var items: [WatchItem]
         /// Sources that couldn't be reached at all, with the reason.
         public var failures: [DataSource: String]
+        /// How many items got a fresh quote. Zero means nothing was updated,
+        /// so the watchlist shouldn't be marked as refreshed.
+        public var updatedCount: Int
     }
 
     private let providers: [Game: any PriceProvider]
@@ -39,12 +42,14 @@ public struct PriceRefresher: Sendable {
         }
 
         var failures: [DataSource: String] = [:]
+        var updatedCount = 0
         let updated = items.map { item -> WatchItem in
             var item = item
             switch batches[item.card.game] {
             case .some(.success(let batch)):
                 if let quote = batch.quotes[item.card.sourceID] {
                     item.apply(quote, at: now, calendar: calendar)
+                    updatedCount += 1
                 } else {
                     item.lastError = batch.failures[item.card.sourceID] ?? "No price right now."
                 }
@@ -57,7 +62,7 @@ public struct PriceRefresher: Sendable {
             }
             return item
         }
-        return Result(items: updated, failures: failures)
+        return Result(items: updated, failures: failures, updatedCount: updatedCount)
     }
 
     /// Refreshes the saved watchlist if it's older than `maxAge` (or always,
@@ -72,9 +77,11 @@ public struct PriceRefresher: Sendable {
         guard !document.items.isEmpty else { return document }
         let result = await refresh(document.items, now: now)
         let refreshed = result.items
+        let succeeded = result.updatedCount > 0
         return try await store.update { document in
             document.merge(refreshed: refreshed)
-            document.lastRefresh = now
+            // Only claim the prices are fresh if some actually are.
+            if succeeded { document.lastRefresh = now }
         }
     }
 }

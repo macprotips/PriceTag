@@ -44,6 +44,7 @@ final class RefresherTests: XCTestCase {
         XCTAssertEqual(result.items[1].lastError, ProviderError.offline.localizedDescription)
         XCTAssertEqual(result.items[2].lastError, "Gone")
         XCTAssertEqual(result.failures.keys.sorted(by: { $0.rawValue < $1.rawValue }), [.tcgdex])
+        XCTAssertEqual(result.updatedCount, 1)
     }
 
     func testStoreRefreshSkipsFreshData() async throws {
@@ -63,4 +64,25 @@ final class RefresherTests: XCTestCase {
         XCTAssertEqual(stale.items[0].price?.usd, Amount(cents: 150))
         XCTAssertEqual(stale.lastRefresh, day(3, hour: 20))
     }
+}
+
+final class RefreshHonestyTests: XCTestCase {
+    func testFailedRefreshDoesNotLookFresh() async throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let store = WatchlistStore(fileURL: url)
+        try await store.save(WatchlistDocument(items: [WatchItem(card: sampleCard("m"), finish: .nonfoil)], lastRefresh: day(1)))
+        let offline = PriceRefresher(providers: [OfflineProvider()])
+
+        let document = try await offline.refresh(store: store, olderThan: nil, now: day(5))
+        XCTAssertEqual(document.lastRefresh, day(1))
+        XCTAssertNotNil(document.items[0].lastError)
+    }
+}
+
+private struct OfflineProvider: PriceProvider {
+    let game = Game.magic
+    func search(_ query: String) async throws -> [CardQuote] { throw ProviderError.offline }
+    func quote(for sourceID: String) async throws -> CardQuote { throw ProviderError.offline }
+    func quotes(for sourceIDs: [String]) async throws -> QuoteBatch { throw ProviderError.offline }
 }

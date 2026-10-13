@@ -128,10 +128,11 @@ public struct TCGdexProvider: PriceProvider {
         }
 
         let setCode = card.set.id.uppercased()
-        let search = card.name.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? card.name
         let links = [
-            URL(string: "https://www.tcgplayer.com/search/pokemon/product?q=\(search)").map { PurchaseLink(title: "TCGplayer", url: $0) },
-            URL(string: "https://www.cardmarket.com/en/Pokemon/Products/Search?searchString=\(search)").map { PurchaseLink(title: "Cardmarket", url: $0) },
+            searchURL("https://www.tcgplayer.com/search/pokemon/product", query: "q", card.name)
+                .map { PurchaseLink(title: "TCGplayer", url: $0) },
+            searchURL("https://www.cardmarket.com/en/Pokemon/Products/Search", query: "searchString", card.name)
+                .map { PurchaseLink(title: "Cardmarket", url: $0) },
         ].compactMap { $0 }
 
         let updated = [tcgplayer?.updated, cardmarket?.updated].compactMap { $0 }.compactMap(parseDate).max()
@@ -169,6 +170,15 @@ public struct TCGdexProvider: PriceProvider {
         if card.variants?.holo == true { finishes.append(.holofoil) }
         if card.variants?.reverse == true { finishes.append(.reverseHolofoil) }
         return finishes.isEmpty ? [.normal] : finishes
+    }
+
+    /// A store search link. Everything but letters, digits and "-._~" is
+    /// percent-encoded, so names with "&" or "+" (like "Pikachu & Zekrom-GX")
+    /// stay whole.
+    static func searchURL(_ base: String, query name: String, _ value: String) -> URL? {
+        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+        guard let encoded = value.addingPercentEncoding(withAllowedCharacters: allowed) else { return nil }
+        return URL(string: "\(base)?\(name)=\(encoded)")
     }
 
     /// `"swsh3-136"` with local ID `"136"` → `"swsh3"`.

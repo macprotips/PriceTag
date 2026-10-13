@@ -8,8 +8,11 @@ import Foundation
 /// the app works, but the widget can't see its data.
 public enum SharedContainer {
     public static var appGroupID: String? {
+        // Without a team, Xcode leaves the team prefix empty and the group
+        // can't be used, so only accept "ABCDE12345.com.macprotips.CardStock".
         guard let id = Bundle.main.object(forInfoDictionaryKey: "CardStockAppGroup") as? String,
-              !id.isEmpty, !id.contains("$(")
+              let prefix = id.split(separator: ".").first,
+              prefix.count == 10, prefix.allSatisfy({ $0.isUppercase || $0.isNumber })
         else { return nil }
         return id
     }

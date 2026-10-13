@@ -29,9 +29,10 @@ public struct Amount: Hashable, Comparable, Sendable, Codable {
         cents = NSDecimalNumber(decimal: rounded).intValue
     }
 
-    /// Rounds to the nearest cent. Returns nil for nil, NaN or infinity.
+    /// Rounds to the nearest cent. Returns nil for nil, NaN, infinity, or a
+    /// value too large to be a real price (which would otherwise overflow).
     public init?(double: Double?) {
-        guard let double, double.isFinite else { return nil }
+        guard let double, double.isFinite, abs(double) < 1e12 else { return nil }
         cents = Int((double * 100).rounded())
     }
 

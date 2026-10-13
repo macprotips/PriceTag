@@ -36,3 +36,15 @@ final class AmountTests: XCTestCase {
         XCTAssertNil(PriceChange(from: .zero, to: Amount(cents: 100)).fraction)
     }
 }
+
+final class AmountLimitTests: XCTestCase {
+    func testHugeValuesAreRejected() {
+        XCTAssertNil(Amount(double: 1e20))
+        XCTAssertNotNil(Amount(double: 99_999.99))
+    }
+
+    func testStoreLinksKeepAmpersands() {
+        let url = TCGdexProvider.searchURL("https://example.com/search", query: "q", "Pikachu & Zekrom-GX+")
+        XCTAssertEqual(url?.absoluteString, "https://example.com/search?q=Pikachu%20%26%20Zekrom-GX%2B")
+    }
+}

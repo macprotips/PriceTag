@@ -78,6 +78,12 @@ public extension WatchItem {
         price?.amount(in: currency) ?? history.last(where: { $0.amount(in: currency) != nil })?.amount(in: currency)
     }
 
+    /// Whether the latest refresh had a price in this currency. When it
+    /// didn't, `currentAmount` is an older price from history.
+    func hasCurrentPrice(in currency: Currency) -> Bool {
+        price?.amount(in: currency) != nil
+    }
+
     /// Prices for a chart range.
     func series(in currency: Currency, range: ChartRange, now: Date = Date(), calendar: Calendar = .current) -> PriceSeries {
         let all = history.compactMap { point in

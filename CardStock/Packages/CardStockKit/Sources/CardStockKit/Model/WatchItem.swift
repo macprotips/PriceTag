@@ -15,6 +15,10 @@ public struct WatchItem: Identifiable, Hashable, Codable, Sendable {
     public var sourceUpdated: Date?
     /// Why the last refresh failed, if it did. Cleared on success.
     public var lastError: String?
+    /// How many you own and what you paid, if you've said.
+    public var holding: Holding?
+    /// Notify when the price crosses a level, if set.
+    public var alert: PriceAlert?
 
     public init(
         card: Card,
@@ -24,7 +28,9 @@ public struct WatchItem: Identifiable, Hashable, Codable, Sendable {
         history: [PricePoint] = [],
         lastUpdated: Date? = nil,
         sourceUpdated: Date? = nil,
-        lastError: String? = nil
+        lastError: String? = nil,
+        holding: Holding? = nil,
+        alert: PriceAlert? = nil
     ) {
         self.card = card
         self.finish = finish
@@ -34,6 +40,8 @@ public struct WatchItem: Identifiable, Hashable, Codable, Sendable {
         self.lastUpdated = lastUpdated
         self.sourceUpdated = sourceUpdated
         self.lastError = lastError
+        self.holding = holding
+        self.alert = alert
     }
 
     /// Starts watching a card, recording its current price as the first point.
@@ -98,4 +106,35 @@ public struct PricePoint: Hashable, Codable, Sendable {
         case .eur: eur
         }
     }
+}
+
+/// The copies of a card you own.
+public struct Holding: Hashable, Codable, Sendable {
+    public var quantity: Int
+    /// What you paid for each copy, in `currency`.
+    public var pricePaid: Amount?
+    public var currency: Currency
+
+    public init(quantity: Int, pricePaid: Amount? = nil, currency: Currency) {
+        self.quantity = quantity
+        self.pricePaid = pricePaid
+        self.currency = currency
+    }
+}
+
+/// Price levels to be told about.
+public struct PriceAlert: Hashable, Codable, Sendable {
+    /// Notify when the price rises to this or above.
+    public var above: Amount?
+    /// Notify when the price falls to this or below.
+    public var below: Amount?
+    public var currency: Currency
+
+    public init(above: Amount? = nil, below: Amount? = nil, currency: Currency) {
+        self.above = above
+        self.below = below
+        self.currency = currency
+    }
+
+    public var isEmpty: Bool { above == nil && below == nil }
 }

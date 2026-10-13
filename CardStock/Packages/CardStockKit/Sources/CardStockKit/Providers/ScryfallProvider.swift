@@ -56,14 +56,27 @@ public struct ScryfallProvider: PriceProvider {
         for start in stride(from: 0, to: unique.count, by: Self.collectionLimit) {
             let chunk = Array(unique[start..<min(start + Self.collectionLimit, unique.count)])
             let body = ScryfallCollectionRequest(identifiers: chunk.map { .init(id: $0) })
-            let response = try await http.post(Self.base.appending(path: "cards/collection"), body: body,
+            let response: ScryfallCollection
+            do {
+                response = try await http.post(Self.base.appending(path: "cards/collection"), body: body,
                                                as: ScryfallCollection.self, decoder: Self.decoder)
+            } catch ProviderError.offline {
+                throw ProviderError.offline
+            } catch {
+                // Keep the chunks that worked; mark this one's cards as failed.
+                for id in chunk { batch.failures[id] = error.localizedDescription }
+                continue
+            }
             for card in response.data {
                 batch.quotes[card.id] = Self.quote(from: card)
             }
             for missing in response.notFound ?? [] {
                 if let id = missing.id { batch.failures[id] = "Scryfall no longer lists this card." }
             }
+        }
+        if batch.quotes.isEmpty, let failure = batch.failures.values.first, !unique.isEmpty {
+            // Nothing worked at all: report it as the source failing.
+            throw ProviderError.transport(failure)
         }
         return batch
     }

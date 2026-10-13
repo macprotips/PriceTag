@@ -49,16 +49,44 @@ public struct WidgetSnapshot: Codable, Equatable, Sendable {
         public var change: PriceChange? { dayChange ?? rangeChange }
     }
 
+    /// The value of the cards you own, for the Collection widget.
+    public struct CollectionValue: Codable, Equatable, Sendable {
+        public var value: Amount
+        public var dayChange: PriceChange?
+        public var gain: PriceChange?
+        public var cardCount: Int
+        public var sparkline: [Double]
+
+        public init(value: Amount, dayChange: PriceChange?, gain: PriceChange?, cardCount: Int, sparkline: [Double]) {
+            self.value = value
+            self.dayChange = dayChange
+            self.gain = gain
+            self.cardCount = cardCount
+            self.sparkline = sparkline
+        }
+
+        /// Change over the sparkline's 30 days, which colors it.
+        public var rangeChange: PriceChange? {
+            guard sparkline.count > 1, let first = sparkline.first, let last = sparkline.last,
+                  let start = Amount(double: first), let end = Amount(double: last)
+            else { return nil }
+            return PriceChange(from: start, to: end)
+        }
+    }
+
     public var generated: Date
     public var currency: Currency
     public var lastRefresh: Date?
     public var rows: [Row]
+    /// Nil when you haven't entered how many of any card you own.
+    public var collection: CollectionValue?
 
-    public init(generated: Date, currency: Currency, lastRefresh: Date?, rows: [Row]) {
+    public init(generated: Date, currency: Currency, lastRefresh: Date?, rows: [Row], collection: CollectionValue? = nil) {
         self.generated = generated
         self.currency = currency
         self.lastRefresh = lastRefresh
         self.rows = rows
+        self.collection = collection
     }
 
     public static func make(from document: WatchlistDocument, currency: Currency, now: Date = Date(), calendar: Calendar = .current) -> WidgetSnapshot {
@@ -77,7 +105,13 @@ public struct WidgetSnapshot: Codable, Equatable, Sendable {
                 isStale: item.isStale(now: now)
             )
         }
-        return WidgetSnapshot(generated: now, currency: currency, lastRefresh: document.lastRefresh, rows: rows)
+        let collection = CollectionSummary.make(from: document.items, currency: currency, days: 30, now: now, calendar: calendar)
+            .map { summary in
+                CollectionValue(value: summary.value, dayChange: summary.dayChange, gain: summary.gain,
+                           cardCount: summary.cardCount,
+                           sparkline: WatchItem.downsample(summary.history.map(\.value), to: 30))
+            }
+        return WidgetSnapshot(generated: now, currency: currency, lastRefresh: document.lastRefresh, rows: rows, collection: collection)
     }
 
     public static func load(from url: URL = SharedContainer.snapshotURL) -> WidgetSnapshot? {
@@ -120,6 +154,13 @@ public struct WidgetSnapshot: Codable, Equatable, Sendable {
             Row(id: "8", game: .pokemon, name: "Mew ex", subtitle: "MEW · Holo",
                 price: Amount(cents: 615), dayChange: PriceChange(from: Amount(cents: 640), to: Amount(cents: 615)), rangeChange: nil,
                 sparkline: [6.6, 6.5, 6.45, 6.3, 6.2, 6.15], thumbnail: nil, isStale: false),
-        ]
+        ],
+        collection: CollectionValue(
+            value: Amount(cents: 184_250),
+            dayChange: PriceChange(from: Amount(cents: 181_020), to: Amount(cents: 184_250)),
+            gain: PriceChange(from: Amount(cents: 152_000), to: Amount(cents: 184_250)),
+            cardCount: 24,
+            sparkline: [1712, 1725, 1719, 1748, 1760, 1752, 1781, 1795, 1790, 1810, 1842.5]
+        )
     )
 }
