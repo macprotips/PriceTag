@@ -44,6 +44,8 @@ final class AppModel {
     private(set) var items: [WatchItem] = []
     var selection: WatchItem.ID?
     var isAddingCard = false
+    /// A search to start the Add Card sheet with, from the welcome screen.
+    var suggestedSearch: (game: Game, query: String)?
 
     var currency: Currency = Preferences.currency {
         didSet {
@@ -336,6 +338,12 @@ final class AppModel {
             gameFilter = nil
             selection = id
         }
+    }
+
+    /// Opens Add Card with a search already typed in.
+    func startAdding(game: Game, query: String) {
+        suggestedSearch = (game, query)
+        isAddingCard = true
     }
 
     // MARK: Copy and export

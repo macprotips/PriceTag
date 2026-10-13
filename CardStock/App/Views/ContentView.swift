@@ -15,7 +15,6 @@ struct ContentView: View {
             detail
         }
         .navigationTitle("CardStock")
-        .modifier(HiddenWindowTitle())
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
                 Button {
@@ -50,30 +49,10 @@ struct ContentView: View {
             CardDetailView(item: item)
                 .id(item.id)
         } else if model.isLoaded && model.items.isEmpty {
-            ContentUnavailableView {
-                Label("Start Your Watchlist", systemImage: "rectangle.portrait.on.rectangle.portrait")
-            } description: {
-                Text("Add Magic and Pokémon cards to follow their prices, like stocks.")
-            } actions: {
-                Button("Add Card") { model.isAddingCard = true }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
-            }
+            WelcomeView()
         } else if model.isLoaded {
             ContentUnavailableView("No Card Selected", systemImage: "rectangle.portrait",
                                    description: Text("Choose a card from your watchlist."))
-        }
-    }
-}
-
-/// The card's name is already the detail view's headline, so the toolbar
-/// doesn't repeat it. The window keeps its title for the Window menu.
-private struct HiddenWindowTitle: ViewModifier {
-    func body(content: Content) -> some View {
-        if #available(macOS 15.0, *) {
-            content.toolbar(removing: .title)
-        } else {
-            content
         }
     }
 }

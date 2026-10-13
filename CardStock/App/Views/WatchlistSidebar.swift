@@ -48,6 +48,14 @@ struct WatchlistSidebar: View {
         .overlay {
             if model.isFiltering && items.isEmpty {
                 ContentUnavailableView.search(text: model.searchText)
+            } else if model.isLoaded && model.items.isEmpty {
+                VStack(spacing: 8) {
+                    Text("No Cards")
+                        .font(.headline)
+                        .foregroundStyle(.secondary)
+                    Button("Add Card…") { model.isAddingCard = true }
+                        .buttonStyle(.link)
+                }
             }
         }
         .onDeleteCommand {
@@ -73,7 +81,9 @@ struct WatchlistSidebar: View {
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            StatusFooter()
+            if model.isRefreshing || model.refreshProblem != nil || (model.lastRefresh != nil && !model.items.isEmpty) {
+                StatusFooter()
+            }
         }
     }
 
@@ -196,8 +206,6 @@ private struct StatusFooter: View {
                     TimelineView(.periodic(from: .now, by: 60)) { _ in
                         Text("Updated \(lastRefresh, format: .relative(presentation: .named))")
                     }
-                } else {
-                    Text(model.items.isEmpty ? "" : "Not updated yet")
                 }
             }
             .font(.footnote)

@@ -81,7 +81,14 @@ struct AddCardSheet: View {
         }
         .frame(width: 620, height: 580)
         .defaultFocus($searchFocused, true)
-        .onAppear { searchFocused = true }
+        .onAppear {
+            if let suggestion = model.suggestedSearch {
+                search.game = suggestion.game
+                search.query = suggestion.query
+                model.suggestedSearch = nil
+            }
+            searchFocused = true
+        }
         .task(id: searchKey) {
             // Wait for a pause in typing.
             try? await Task.sleep(for: .milliseconds(300))
