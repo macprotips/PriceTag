@@ -29,19 +29,28 @@ struct WatchlistProvider: TimelineProvider {
             completion(placeholder(in: context))
             return
         }
-        // WidgetKit's completion handlers aren't Sendable but are safe to call from any thread.
-        nonisolated(unsafe) let completion = completion
+        let reply = Reply(completion)
         Task {
-            completion(WatchlistEntry(date: Date(), snapshot: await WidgetData.snapshot()))
+            reply.send(WatchlistEntry(date: Date(), snapshot: await WidgetData.snapshot()))
         }
     }
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<WatchlistEntry>) -> Void) {
-        nonisolated(unsafe) let completion = completion
+        let reply = Reply(completion)
         Task {
             let entry = WatchlistEntry(date: Date(), snapshot: await WidgetData.snapshot())
-            completion(Timeline(entries: [entry], policy: .after(Date().addingTimeInterval(WidgetData.reloadInterval))))
+            reply.send(Timeline(entries: [entry], policy: .after(Date().addingTimeInterval(WidgetData.reloadInterval))))
         }
+    }
+}
+
+/// WidgetKit's completion handlers aren't marked Sendable, but WidgetKit
+/// documents them as safe to call from any thread.
+private struct Reply<Value>: @unchecked Sendable {
+    let send: (Value) -> Void
+
+    init(_ send: @escaping (Value) -> Void) {
+        self.send = send
     }
 }
 
