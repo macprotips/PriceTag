@@ -1,24 +1,27 @@
-import Charts
 import CardStockKit
+import Charts
 import SwiftUI
 
-/// The price line for a range. One color for the whole line (green if the
-/// range is up, red if it's down), a faint fill under it, and a dotted line
-/// at the starting price. Hovering shows a rule and that day's price.
+/// The price line for a range, like Stocks: one color for the whole line
+/// (green if the range is up, red if down), a faint fill under it, and a
+/// dotted line at the starting price. Hovering shows a rule and that day's
+/// price, which the header above picks up.
 struct PriceChart: View {
     var series: PriceSeries
     var currency: Currency
-    /// When the card's history began, for the empty state.
+    var range: ChartRange
+    /// When the card's history began, for the note under a new card's chart.
     var historyStart: Date?
     @Binding var hovered: PriceSeries.Point?
 
-    @State private var hoveredDate: Date?
-
     var body: some View {
-        if plotted.count < 2 {
-            emptyState
-        } else {
+        VStack(alignment: .leading, spacing: 8) {
             chart
+            if plotted.count < 2 {
+                Text(note)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -36,95 +39,107 @@ struct PriceChart: View {
 
     private var chart: some View {
         let domain = yDomain
+        let points = plotted
 
         return Chart {
             if let baseline = series.baseline {
                 RuleMark(y: .value("Start", baseline.value))
                     .lineStyle(StrokeStyle(lineWidth: 1, dash: [2, 3]))
-                    .foregroundStyle(Color.secondary.opacity(0.6))
+                    .foregroundStyle(Color.secondary.opacity(0.55))
             }
 
-            ForEach(plotted) { point in
-                AreaMark(
-                    x: .value("Date", point.date),
-                    yStart: .value("Floor", domain.lowerBound),
-                    yEnd: .value("Price", point.value)
-                )
-                .foregroundStyle(
-                    LinearGradient(colors: [color.opacity(0.16), color.opacity(0)], startPoint: .top, endPoint: .bottom)
-                )
+            if points.count > 1 {
+                ForEach(points) { point in
+                    AreaMark(
+                        x: .value("Date", point.date),
+                        yStart: .value("Floor", domain.lowerBound),
+                        yEnd: .value("Price", point.value)
+                    )
+                    .foregroundStyle(
+                        LinearGradient(colors: [color.opacity(0.18), color.opacity(0)], startPoint: .top, endPoint: .bottom)
+                    )
 
-                LineMark(x: .value("Date", point.date), y: .value("Price", point.value))
-                    .foregroundStyle(color)
-                    .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                    LineMark(x: .value("Date", point.date), y: .value("Price", point.value))
+                        .foregroundStyle(color)
+                        .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                }
+            } else if let only = points.first {
+                // One price so far: mark it at the right edge.
+                PointMark(x: .value("Date", only.date), y: .value("Price", only.value))
+                    .foregroundStyle(Color.secondary)
+                    .symbolSize(36)
             }
 
             if let hovered {
                 RuleMark(x: .value("Date", hovered.date))
-                    .foregroundStyle(Color.secondary.opacity(0.5))
+                    .foregroundStyle(Color.secondary.opacity(0.45))
+                    .lineStyle(StrokeStyle(lineWidth: 1))
                 PointMark(x: .value("Date", hovered.date), y: .value("Price", hovered.value))
-                    .foregroundStyle(color)
-                    .symbolSize(50)
+                    .symbol {
+                        Circle()
+                            .fill(color)
+                            .frame(width: 10, height: 10)
+                            .overlay(Circle().stroke(Color(nsColor: .windowBackgroundColor), lineWidth: 2))
+                    }
             }
         }
         .chartYScale(domain: domain)
         .chartXScale(domain: xDomain)
-        .chartXSelection(value: $hoveredDate)
         .chartYAxis {
             AxisMarks(position: .trailing, values: .automatic(desiredCount: 4)) { value in
                 AxisGridLine().foregroundStyle(Color.secondary.opacity(0.15))
                 AxisValueLabel {
                     if let amount = value.as(Double.self) {
-                        Text(PriceFormat.price(Amount(double: amount), currency))
+                        Text(axisPrice(amount))
+                            .monospacedDigit()
                     }
                 }
             }
         }
         .chartXAxis {
-            AxisMarks(values: .automatic(desiredCount: 5)) { _ in
-                AxisValueLabel(format: .dateTime.month(.abbreviated).day())
+            AxisMarks(values: .automatic(desiredCount: range == .week ? 7 : 5)) { _ in
+                AxisGridLine().foregroundStyle(Color.secondary.opacity(0.08))
+                AxisValueLabel(format: xFormat)
             }
         }
-        .onChange(of: hoveredDate) { _, date in
-            hovered = date.flatMap(nearestPoint(to:))
+        .chartOverlay { proxy in
+            // Follow the pointer, like Stocks, rather than needing a drag.
+            GeometryReader { geometry in
+                Rectangle()
+                    .fill(.clear)
+                    .contentShape(Rectangle())
+                    .onContinuousHover { phase in
+                        switch phase {
+                        case .active(let location):
+                            let plotX = proxy.plotFrame.map { geometry[$0].origin.x } ?? 0
+                            let date: Date? = proxy.value(atX: location.x - plotX)
+                            hovered = series.points.count > 1 ? date.flatMap(nearestPoint(to:)) : nil
+                        case .ended:
+                            hovered = nil
+                        }
+                    }
+            }
         }
         .accessibilityLabel(accessibilitySummary)
     }
 
-    private var emptyState: some View {
-        VStack(spacing: 6) {
-            Image(systemName: "chart.xyaxis.line")
-                .font(.system(size: 28, weight: .light))
-                .foregroundStyle(.tertiary)
-            Text(emptyTitle)
-                .font(.headline)
-            Text(emptyMessage)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 320)
+    // MARK: Axes
+
+    private var xFormat: Date.FormatStyle {
+        switch range {
+        case .week: .dateTime.weekday(.abbreviated)
+        case .month, .threeMonths: .dateTime.month(.abbreviated).day()
+        case .sixMonths, .year, .all: .dateTime.month(.abbreviated).year(.twoDigits)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.quinary))
     }
 
-    private var startsToday: Bool {
-        guard let historyStart else { return true }
-        return Calendar.current.isDateInToday(historyStart)
+    /// Round numbers on the axis: "$80" rather than "$80.00", unless the
+    /// prices are small enough that cents matter.
+    private func axisPrice(_ value: Double) -> String {
+        let span = yDomain.upperBound - yDomain.lowerBound
+        let decimals = span >= 5 ? 0 : 2
+        return Decimal(value).formatted(.currency(code: currency.code).precision(.fractionLength(decimals)))
     }
-
-    private var emptyTitle: String {
-        startsToday ? "History starts today" : "Not enough history yet"
-    }
-
-    private var emptyMessage: String {
-        if startsToday {
-            return "CardStock saves this card's price once a day. Check back tomorrow to see it move."
-        }
-        return "There aren't two prices in this range yet. Try a longer range, or check back tomorrow."
-    }
-
-    // MARK: Scales
 
     /// The lowest and highest price with some room around them, so the line
     /// never touches the edges. A flat line sits in the middle.
@@ -133,13 +148,20 @@ struct PriceChart: View {
         if let baseline = series.baseline { values.append(baseline.value) }
         let low = values.min() ?? 0
         let high = values.max() ?? 1
-        let padding = high > low ? (high - low) * 0.12 : max(high * 0.05, 0.05)
+        let padding = high > low ? (high - low) * 0.15 : max(high * 0.1, 0.1)
         return max(0, low - padding)...(high + padding)
     }
 
+    /// From the range's start to now. A card with one price shows it at the
+    /// right edge of the range rather than alone in the middle.
     private var xDomain: ClosedRange<Date> {
-        let first = plotted.first?.date ?? Date()
-        let last = plotted.last?.date ?? Date()
+        let now = Date()
+        let last = max(plotted.last?.date ?? now, now)
+        if plotted.count < 2 {
+            let start = range.start(endingAt: last) ?? last.addingTimeInterval(-7 * 24 * 60 * 60)
+            return start...last
+        }
+        let first = plotted.first?.date ?? last
         return first...max(last, first.addingTimeInterval(60 * 60))
     }
 
@@ -147,8 +169,17 @@ struct PriceChart: View {
         series.points.min { abs($0.date.timeIntervalSince(date)) < abs($1.date.timeIntervalSince(date)) }
     }
 
+    private var note: String {
+        if let historyStart, !Calendar.current.isDateInToday(historyStart) {
+            return "Not enough history in this range yet. Try a longer range."
+        }
+        return "Price history starts today. CardStock saves the price once a day, so the chart fills in over time."
+    }
+
     private var accessibilitySummary: String {
-        guard let first = series.points.first, let last = series.points.last else { return "No price history" }
+        guard let first = series.points.first, let last = series.points.last, series.points.count > 1 else {
+            return "Price chart. History starts today."
+        }
         let low = PriceFormat.price(series.low, currency)
         let high = PriceFormat.price(series.high, currency)
         return "Price chart from \(first.date.formatted(date: .abbreviated, time: .omitted)) to "

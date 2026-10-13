@@ -8,6 +8,7 @@ struct CardStockWidgets: WidgetBundle {
     var body: some Widget {
         CardWidget()
         WatchlistWidget()
+        CollectionWidget()
     }
 }
 
@@ -52,6 +53,19 @@ struct WatchlistWidget: Widget {
         .configurationDisplayName("Watchlist")
         .description("Prices and changes for the cards you watch.")
         .supportedFamilies([.systemMedium, .systemLarge])
+    }
+}
+
+// MARK: Collection value (small, medium)
+
+struct CollectionWidget: Widget {
+    var body: some WidgetConfiguration {
+        StaticConfiguration(kind: "Collection", provider: WatchlistProvider()) { entry in
+            CollectionWidgetView(entry: entry)
+        }
+        .configurationDisplayName("Collection Value")
+        .description("What the cards you own are worth, and how that's changing.")
+        .supportedFamilies([.systemSmall, .systemMedium])
     }
 }
 

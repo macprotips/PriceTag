@@ -10,33 +10,28 @@ struct ContentView: View {
 
         NavigationSplitView {
             WatchlistSidebar()
-                .navigationSplitViewColumnWidth(min: 270, ideal: 310, max: 400)
+                .navigationSplitViewColumnWidth(min: 280, ideal: 320, max: 420)
         } detail: {
             detail
         }
+        .navigationTitle("CardStock")
+        .modifier(HiddenWindowTitle())
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
-                if model.isRefreshing {
-                    ProgressView()
-                        .controlSize(.small)
-                        .frame(width: 28)
-                        .help("Updating prices…")
-                } else {
-                    Button {
-                        Task { await model.refresh() }
-                    } label: {
-                        Label("Refresh Prices", systemImage: "arrow.clockwise")
-                    }
-                    .help("Refresh prices (⌘R)")
-                    .disabled(model.items.isEmpty)
+                Button {
+                    Task { await model.refresh() }
+                } label: {
+                    Label("Refresh Prices", systemImage: "arrow.clockwise")
                 }
+                .help("Refresh Prices")
+                .disabled(model.isRefreshing || model.items.isEmpty)
 
                 Button {
                     model.isAddingCard = true
                 } label: {
                     Label("Add Card", systemImage: "plus")
                 }
-                .help("Add a card (⌘N)")
+                .help("Add Card")
             }
         }
         .sheet(isPresented: $model.isAddingCard) {
@@ -45,7 +40,7 @@ struct ContentView: View {
         .task { await model.start() }
         .onOpenURL { model.open($0) }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            Task { await model.refreshIfStale(olderThan: 6 * 60 * 60) }
+            Task { await model.becameActive() }
         }
     }
 
@@ -56,16 +51,29 @@ struct ContentView: View {
                 .id(item.id)
         } else if model.isLoaded && model.items.isEmpty {
             ContentUnavailableView {
-                Label("No Cards", systemImage: "rectangle.portrait.on.rectangle.portrait")
+                Label("Start Your Watchlist", systemImage: "rectangle.portrait.on.rectangle.portrait")
             } description: {
-                Text("Add Magic and Pokémon cards to follow their prices.")
+                Text("Add Magic and Pokémon cards to follow their prices, like stocks.")
             } actions: {
                 Button("Add Card") { model.isAddingCard = true }
-                    .controlSize(.large)
                     .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
             }
         } else if model.isLoaded {
-            ContentUnavailableView("No Card Selected", systemImage: "rectangle.portrait")
+            ContentUnavailableView("No Card Selected", systemImage: "rectangle.portrait",
+                                   description: Text("Choose a card from your watchlist."))
+        }
+    }
+}
+
+/// The card's name is already the detail view's headline, so the toolbar
+/// doesn't repeat it. The window keeps its title for the Window menu.
+private struct HiddenWindowTitle: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(macOS 15.0, *) {
+            content.toolbar(removing: .title)
+        } else {
+            content
         }
     }
 }

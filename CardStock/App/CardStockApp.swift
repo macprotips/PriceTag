@@ -1,8 +1,11 @@
+import AppKit
 import CardStockKit
 import SwiftUI
+import UserNotifications
 
 @main
 struct CardStockApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var model = AppModel()
 
     init() {
@@ -14,14 +17,52 @@ struct CardStockApp: App {
         Window("CardStock", id: "main") {
             ContentView()
                 .environment(model)
-                .frame(minWidth: 880, minHeight: 560)
+                .frame(minWidth: 880, minHeight: 580)
+                .onAppear { appDelegate.model = model }
         }
-        .defaultSize(width: 1120, height: 720)
-        .commands { CardStockCommands(model: model) }
+        .defaultSize(width: 1180, height: 760)
+        .commands {
+            SidebarCommands()
+            CardStockCommands(model: model)
+        }
 
         Settings {
             SettingsView()
                 .environment(model)
+        }
+    }
+}
+
+final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
+    weak var model: AppModel?
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        UNUserNotificationCenter.current().delegate = self
+    }
+
+    /// Lets the last save finish before quitting, so nothing is lost.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let model else { return .terminateNow }
+        Task { @MainActor in
+            await model.flush()
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
+
+    // Show alerts even while CardStock is open.
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
+        [.banner, .sound]
+    }
+
+    // Clicking an alert opens that card.
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
+        guard let link = response.notification.request.content.userInfo["url"] as? String,
+              let url = URL(string: link)
+        else { return }
+        await MainActor.run {
+            NSApp.activate()
+            NSWorkspace.shared.open(url)
         }
     }
 }
@@ -33,6 +74,12 @@ struct CardStockCommands: Commands {
         CommandGroup(replacing: .newItem) {
             Button("Add Card…") { model.isAddingCard = true }
                 .keyboardShortcut("n")
+        }
+
+        CommandGroup(replacing: .importExport) {
+            Button("Export Watchlist…") { model.exportCSV() }
+                .keyboardShortcut("e", modifiers: [.command, .shift])
+                .disabled(model.items.isEmpty)
         }
 
         CommandGroup(before: .toolbar) {

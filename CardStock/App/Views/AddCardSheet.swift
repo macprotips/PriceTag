@@ -65,6 +65,7 @@ struct AddCardSheet: View {
     @State private var search = CardSearch(refresher: PriceRefresher())
     /// Stops Return in the search field and the default button from adding twice.
     @State private var isAdding = false
+    @State private var addError: String?
     @State private var selection: CardQuote.ID?
     /// The finish picked for each result, when it isn't the suggested one.
     @State private var finishes: [CardQuote.ID: Finish] = [:]
@@ -78,7 +79,8 @@ struct AddCardSheet: View {
             Divider()
             bottomBar(search)
         }
-        .frame(width: 600, height: 560)
+        .frame(width: 620, height: 580)
+        .defaultFocus($searchFocused, true)
         .onAppear { searchFocused = true }
         .task(id: searchKey) {
             // Wait for a pause in typing.
@@ -125,6 +127,7 @@ struct AddCardSheet: View {
                     .task { await search.complete(quote) }
                 }
                 .listStyle(.inset)
+                .alternatingRowBackgrounds(.disabled)
                 // Double-clicking a result adds it.
                 .contextMenu(forSelectionType: CardQuote.ID.self) { _ in
                     EmptyView()
@@ -132,11 +135,6 @@ struct AddCardSheet: View {
                     guard let id = ids.first else { return }
                     selection = id
                     addSelected()
-                }
-                .overlay {
-                    if search.isSearching && search.results.isEmpty {
-                        ProgressView()
-                    }
                 }
                 .onChange(of: selection) { _, id in
                     if let id { proxy.scrollTo(id) }
@@ -147,10 +145,20 @@ struct AddCardSheet: View {
 
     private func bottomBar(_ search: CardSearch) -> some View {
         HStack {
-            Text("Cards and prices from \(search.game.source.name)")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
+            if let addError {
+                Label(addError, systemImage: "exclamationmark.triangle.fill")
+                    .symbolRenderingMode(.multicolor)
+                    .font(.footnote)
+                    .lineLimit(2)
+            } else {
+                Text("Cards and prices from \(search.game.source.name)")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
             Spacer()
+            if isAdding {
+                ProgressView().controlSize(.small)
+            }
             Button("Cancel") { dismiss() }
                 .keyboardShortcut(.cancelAction)
             Button(selectedIsAdded ? "Show Card" : "Add Card") { addSelected() }
@@ -190,11 +198,20 @@ struct AddCardSheet: View {
     private func addSelected() {
         guard let quote = selectedQuote, !isAdding else { return }
         isAdding = true
+        addError = nil
         Task {
-            // Make sure we save the full details, not a bare search result.
+            // Save the full details, never a bare search result: without them
+            // the card wouldn't know its finishes and could never be priced.
             var full = quote
-            if !quote.isComplete, let provider = model.refresher.provider(for: quote.card.game) {
-                full = (try? await provider.quote(for: quote.card.sourceID)) ?? quote
+            if !quote.isComplete {
+                do {
+                    guard let provider = model.refresher.provider(for: quote.card.game) else { return }
+                    full = try await provider.quote(for: quote.card.sourceID)
+                } catch {
+                    addError = "Couldn’t load this card: \(error.localizedDescription)"
+                    isAdding = false
+                    return
+                }
             }
             model.add(full, finish: finish(for: full))
             dismiss()
@@ -294,9 +311,11 @@ private struct SearchResultRow: View {
             .frame(minWidth: 72, alignment: .trailing)
 
             Image(systemName: "checkmark.circle.fill")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.green)
                 .opacity(isAdded ? 1 : 0)
-                .help("On your watchlist")
+                .help("On Your Watchlist")
+                .accessibilityLabel("On your watchlist")
+                .accessibilityHidden(!isAdded)
         }
         .padding(.vertical, 4)
     }
